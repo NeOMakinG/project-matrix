@@ -206,6 +206,15 @@ test("run token placeholder is replaced at launch", () => {
   expect(env.ANTHROPIC_API_KEY).toBe("mxr_abc");
 });
 
+const gitleaksInstalled = (() => {
+  try {
+    execFileSync("gitleaks", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 describe("secret gate hardening", () => {
   const secret = { name: "gateway", value: "sk-matrix-test-1234567890abcdef" };
   const git = (dir: string, ...args: string[]) =>
@@ -213,18 +222,21 @@ describe("secret gate hardening", () => {
       .toString()
       .trim();
 
-  test("repo allowlists and ignore files cannot silence gitleaks", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "matrix-gl-"));
-    git(dir, "init", "-q");
-    const token = `ghp_${"A1b2C3d4E5".repeat(4).slice(0, 36)}`;
-    await writeFile(join(dir, "a.txt"), `token = "${token}"\n`);
-    await writeFile(join(dir, ".gitleaks.toml"), '[allowlist]\npaths = [".*"]\n');
-    await writeFile(join(dir, ".gitleaksignore"), "*\n");
-    git(dir, "add", ".");
-    git(dir, "commit", "-qm", "c");
-    const result = await runSecretGate({ gitDir: join(dir, ".git") });
-    expect(result.findings.some((f) => f.source === "gitleaks")).toBe(true);
-  });
+  test.runIf(gitleaksInstalled)(
+    "repo allowlists and ignore files cannot silence gitleaks",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "matrix-gl-"));
+      git(dir, "init", "-q");
+      const token = `ghp_${"A1b2C3d4E5".repeat(4).slice(0, 36)}`;
+      await writeFile(join(dir, "a.txt"), `token = "${token}"\n`);
+      await writeFile(join(dir, ".gitleaks.toml"), '[allowlist]\npaths = [".*"]\n');
+      await writeFile(join(dir, ".gitleaksignore"), "*\n");
+      git(dir, "add", ".");
+      git(dir, "commit", "-qm", "c");
+      const result = await runSecretGate({ gitDir: join(dir, ".git") });
+      expect(result.findings.some((f) => f.source === "gitleaks")).toBe(true);
+    },
+  );
 
   test("git replace objects cannot hide a secret", async () => {
     const dir = await mkdtemp(join(tmpdir(), "matrix-rp-"));
