@@ -1,0 +1,14 @@
+# Runner image for Project Matrix agent runs. Contains coding CLIs and toolchains only; no credentials.
+FROM docker.io/library/node:22-bookworm-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep jq python3 \
+  && rm -rf /var/lib/apt/lists/*
+
+ARG CLAUDE_CODE_VERSION=latest
+ARG CODEX_VERSION=latest
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
+  && npm cache clean --force
+
+RUN mkdir -p /work /run/matrix /opt/matrix
+WORKDIR /work

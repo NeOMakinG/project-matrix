@@ -138,6 +138,9 @@
     "packages/qa": {
       "name": "@matrix/qa",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+      },
     },
     "packages/rules": {
       "name": "@matrix/rules",
@@ -158,6 +161,10 @@
     "packages/runners": {
       "name": "@matrix/runners",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+        "@matrix/sandbox": "workspace:*",
+      },
     },
     "packages/safe-fs": {
       "name": "@matrix/safe-fs",
@@ -166,6 +173,9 @@
     "packages/sandbox": {
       "name": "@matrix/sandbox",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+      },
     },
     "packages/sdk": {
       "name": "@matrix/sdk",
