@@ -1,0 +1,22 @@
+{
+  "name": "project-matrix",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "bun run --filter '*' typecheck",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "vitest run",
+    "check": "bun run typecheck && bun run lint && bun run test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
