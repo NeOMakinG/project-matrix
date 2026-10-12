@@ -200,6 +200,7 @@ export class Monitor {
           release: deploy.release,
           deployedAt: deploy.deployedAt,
           olderReleases: deployments.slice(0, idx).map((d) => d.release),
+          minTrust: issue.evidenceTrust,
         },
         this.deps.store,
         now,

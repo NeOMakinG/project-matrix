@@ -54,3 +54,67 @@ describe("redact (PR #5 round 2)", () => {
     }
   });
 });
+
+describe("redact (PR #5 round 3): passwords with special characters", () => {
+  test("reproduced payloads", () => {
+    expect(redact("connect postgres://app:pa/ss@db:5432/ledgerly")).toBe(
+      "connect postgres://[REDACTED]@db:5432/ledgerly",
+    );
+    expect(redact("mongodb+srv://u:p#w@cluster0.example.net/prod")).toBe(
+      "mongodb+srv://[REDACTED]@cluster0.example.net/prod",
+    );
+    expect(redact("redis://:rose'bud@cache:6379/0")).toBe("redis://[REDACTED]@cache:6379/0");
+  });
+
+  test("two DSNs on one line are redacted separately, an ordinary URL + email is left alone", () => {
+    expect(redact("from postgres://a:b@db1/x to redis://c:d@db2")).toBe(
+      "from postgres://[REDACTED]@db1/x to redis://[REDACTED]@db2",
+    );
+    expect(redact("GET https://api.example.com/v1/users failed for ops@example.com")).toBe(
+      "GET https://api.example.com/v1/users failed for [EMAIL]",
+    );
+  });
+
+  test("fuzz: random passwords with hostile characters never survive", () => {
+    let seed = 42;
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+    const alphabet = "abcXYZ0129/#?'\"@:;!$&*()=+%~^ ,.-_[]";
+    const schemes = [
+      "postgres",
+      "postgresql",
+      "mysql",
+      "redis",
+      "rediss",
+      "mongodb+srv",
+      "amqp",
+      "https",
+      "ftp",
+    ];
+    for (let i = 0; i < 2000; i++) {
+      const len = 6 + Math.floor(rand() * 18);
+      let pw = "";
+      for (let j = 0; j < len; j++) pw += alphabet[Math.floor(rand() * alphabet.length)];
+      // canary marker that must disappear, wrapped in hostile characters
+      const secret = `${pw.slice(0, len / 2)}ZQXcanary${i}${pw.slice(len / 2)}`;
+      const scheme = schemes[i % schemes.length];
+      const user = rand() < 0.3 ? "" : `user${i}`;
+      const line = `error connecting ${scheme}://${user}:${secret}@db-${i}.internal:5432/app?ssl=1`;
+      const out = redact(line);
+      expect(out, line).not.toContain(`ZQXcanary${i}`);
+      expect(out, line).toContain(`${scheme}://[REDACTED]@`);
+    }
+  });
+});
+
+test("documented trade-off: host:port followed by an email on the same line is over-redacted", () => {
+  expect(redact("http://localhost:3000 is down, mail me@example.com")).toBe(
+    "http://[REDACTED]@example.com",
+  );
+  // without a port the URL survives
+  expect(redact("http://localhost is down, mail me@example.com")).toBe(
+    "http://localhost is down, mail [EMAIL]",
+  );
+});

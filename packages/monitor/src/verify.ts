@@ -1,4 +1,4 @@
-import type { Issue, IssueStore, Occurrence } from "./group.js";
+import { type Issue, type IssueStore, type Occurrence, TRUST_RANK, type Trust } from "./group.js";
 
 export interface VerifyOptions {
   /** Hours before the fix deploy used as the baseline. */
@@ -33,6 +33,11 @@ export interface FixDeploy {
   deployedAt: string;
   /** Releases deployed before the fix: their occurrences after the deploy come from clients not yet updated. */
   olderReleases: string[];
+  /**
+   * Only occurrences from sources at least this trusted count (the issue's evidence trust), so
+   * forged client events can neither reopen a server-verified fix nor hide it.
+   */
+  minTrust?: Trust;
 }
 
 export interface VerifyResult {
@@ -67,7 +72,9 @@ export async function verifyFix(
   const deployMs = Date.parse(deploy.deployedAt);
   const nowMs = Date.parse(now);
   const beforeFrom = new Date(deployMs - options.beforeHours * HOUR).toISOString();
-  const before = await store.occurrences(issue.fingerprint, beforeFrom, deploy.deployedAt);
+  const trusted = (list: Occurrence[]) =>
+    list.filter((o) => TRUST_RANK[o.trust ?? "client"] >= TRUST_RANK[deploy.minTrust ?? "client"]);
+  const before = trusted(await store.occurrences(issue.fingerprint, beforeFrom, deploy.deployedAt));
   const beforeCount = sum(before);
   const beforePerHour = beforeCount / options.beforeHours;
 
@@ -76,7 +83,7 @@ export async function verifyFix(
   const windowHours = Math.min(options.maxAfterHours, Math.max(options.afterHours, needed));
   const windowEnd = deployMs + windowHours * HOUR;
   const afterTo = new Date(Math.min(nowMs, windowEnd)).toISOString();
-  const afterAll = await store.occurrences(issue.fingerprint, deploy.deployedAt, afterTo);
+  const afterAll = trusted(await store.occurrences(issue.fingerprint, deploy.deployedAt, afterTo));
   const stale = afterAll.filter(
     (o) => o.release !== undefined && deploy.olderReleases.includes(o.release),
   );

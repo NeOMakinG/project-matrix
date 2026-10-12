@@ -61,10 +61,44 @@ export function stripUrlQueries(text: string): string {
 
 /**
  * Drops credentials from any URL or DSN (`https://user:pass@host`, `postgres://…`, `mongodb+srv://…`,
- * `redis://:pass@…`, `amqp://…`): everything between `scheme://` and the last `@` before the host.
+ * `redis://:pass@…`, `amqp://…`). Passwords may contain `/`, `#`, `?`, quotes or spaces, so the
+ * credentials are everything from `scheme://` to the LAST `@` that is followed by a host, within
+ * the same line and without crossing into the next `scheme://`.
  */
+const SCHEME = "[a-z][a-z0-9+.-]*:\\/\\/";
+const HOST_AHEAD = "(?=[A-Za-z0-9[])";
+/**
+ * No whitespace in the span: `/`, `#` and quotes are allowed (passwords), `?` and `&` are not, so an
+ * email in a query string (`?email=a@b.com`) isn't mistaken for userinfo. Up to the last `@` before a host.
+ */
+const AUTHORITY_TOKEN = new RegExp(
+  `\\b(${SCHEME})((?:(?!${SCHEME})[^\\s?&]){0,512})@${HOST_AHEAD}`,
+  "gi",
+);
+/**
+ * `scheme://word:…@host` form: the password may contain anything, spaces, `/` and `@` included, so
+ * redact up to the last `@host` on the line. A `host:port` followed later on the same line by an
+ * email looks identical (`http://localhost:3000 down, mail me@x.com`); that rare prose loses the URL,
+ * which is the safe side of the ambiguity.
+ */
+const AUTHORITY_USERPASS = new RegExp(
+  `\\b(${SCHEME})([^\\s:/@]*:(?:(?!${SCHEME})[^\\n]){0,512})@${HOST_AHEAD}`,
+  "gi",
+);
+
 export function stripUserinfo(text: string): string {
-  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#"'<>]*@/gi, "$1[REDACTED]@");
+  return (
+    text
+      // Greediest first: an explicit user:password may hide another "@" inside the password.
+      .replace(AUTHORITY_USERPASS, "$1[REDACTED]@")
+      .replace(AUTHORITY_TOKEN, (m, scheme: string, span: string) =>
+        span.startsWith("[REDACTED]") ? m : `${scheme}[REDACTED]@`,
+      )
+      // Generic fallback for any `scheme://…@` left, still never across a query string.
+      .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s@?&]*@/gi, (m, scheme: string) =>
+        m.endsWith("[REDACTED]@") ? m : `${scheme}[REDACTED]@`,
+      )
+  );
 }
 
 /** Masks secrets and personal data. Applied before anything is stored, sent to an LLM or put in a ticket. */

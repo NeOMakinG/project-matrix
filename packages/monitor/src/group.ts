@@ -30,6 +30,7 @@ export interface Occurrence {
   at: string;
   count: number;
   release?: string;
+  trust?: Trust;
 }
 
 /**
@@ -243,13 +244,19 @@ function fold(issue: Issue, s: Signal): void {
     issue.urls = s.url ? [s.url] : [];
     if (s.exceptionType) issue.exceptionType = s.exceptionType;
     else delete issue.exceptionType;
+    // Releases and environments from lower-trust sources are dropped along with their content.
+    issue.releases = {};
+    issue.environments = [];
   } else if (rank === 0) {
     if (issue.frames.length === 0 && s.frames.length > 0) issue.frames = s.frames;
     issue.urls = addUnique(issue.urls, s.url).slice(0, 10);
   }
   issue.providers = addUnique(issue.providers, s.provider);
   issue.trust = addUnique(issue.trust, s.trust);
-  issue.environments = addUnique(issue.environments, s.environment);
+  // Client signals can't attach release or environment names to a server/infra-sourced issue:
+  // those feed regression detection and the ticket header.
+  const sameOrHigher = rank >= 0;
+  if (sameOrHigher) issue.environments = addUnique(issue.environments, s.environment);
   issue.reportedUsers = Math.max(issue.reportedUsers, s.reportedUsers);
   for (const h of s.userHashes) {
     if (issue.userHashes.length >= MAX_USER_HASHES) break;
@@ -263,7 +270,7 @@ function fold(issue: Issue, s: Signal): void {
     ...s.frames.flatMap((f) => [f.file, f.function]),
   ]);
   for (const f of flags) issue.flags = addUnique(issue.flags, f);
-  if (s.release) {
+  if (s.release && sameOrHigher) {
     const r = issue.releases[s.release];
     issue.releases[s.release] = r
       ? {
@@ -291,7 +298,12 @@ export async function ingest(store: IssueStore, signals: Signal[]): Promise<Inge
     if (recurred) issue.status = "reopened";
     fold(issue, s);
 
-    const occurrence: Occurrence = { signalId: key, at: s.occurredAt, count: s.count };
+    const occurrence: Occurrence = {
+      signalId: key,
+      at: s.occurredAt,
+      count: s.count,
+      trust: s.trust,
+    };
     if (s.release) occurrence.release = s.release;
     await store.addOccurrence(fp, occurrence);
     await store.save(issue);

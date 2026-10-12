@@ -30,6 +30,23 @@ const RULES: [string, RegExp][] = [
   ["exec", /\b(curl|wget)\b[^\n]{0,80}\|\s*(ba)?sh\b|\brm\s+-rf\b|\beval\(|\bchild_process\b/i],
   ["exfil", /\b(send|post|upload|exfiltrate|leak)\b.{0,40}\b(to|at)\b.{0,10}\bhttps?:\/\//i],
   ["markdown-escape", /(```|~~~)/],
+  // Subtler shapes that read like normal error text but address whoever fixes the bug.
+  [
+    "addressed",
+    /\b(note|message|hint|instructions?|reminder|todo|fyi)\b\s*(to|for)\s+(the\s+)?(developer|engineer|agent|maintainer|reviewer|ai|bot|fixer|on-?call|whoever)\b/i,
+  ],
+  [
+    "prescribed-fix",
+    /\b(the\s+)?(correct|proper|right|only|real|intended|recommended)\s+(fix|solution|patch)\s+(is|would be|here is)\b|\bto\s+(fix|resolve|solve)\s+this\b.{0,30}\b(add|remove|delete|disable|grant|set|change|replace|whitelist|allowlist)\b/i,
+  ],
+  [
+    "privilege",
+    /\bgrant\b.{0,30}\b(admin|root|superuser|owner|all)\b.{0,20}\b(access|roles?|permissions?|privileges?|rights)\b|\b(roles?|permissions?|privileges?)\b.{0,20}\b(to|=|:)\s*["']?(admin|root|superuser|owner)\b/i,
+  ],
+  [
+    "allowlist",
+    /\b(whitelist|allowlist|trust|exempt)\b.{0,30}\b(this|my|the following|attacker|external)\b.{0,30}\b(ip|domain|host|origin|user|account|email)\b/i,
+  ],
 ];
 
 export function instructionFlags(texts: (string | undefined)[]): string[] {
