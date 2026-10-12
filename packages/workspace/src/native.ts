@@ -10,12 +10,15 @@ import {
   safeGitEnv,
   verifyWorktreeLink,
 } from "@matrix/sandbox";
+import { gitdirFromCommonDir, TrustedWorktrees } from "./trusted.js";
 
 export interface NativeWorkspaceOptions {
   /** Directory under which worktrees are created: `<root>/<project>/<ticket>`. */
   root: string;
   /** Stops any runner still attached to a ticket (e.g. `PodmanSandbox.stop`) before its worktree is replaced. */
   stopRunners?: (target: { projectId: string; ticketId: string }) => Promise<unknown>;
+  /** Host-side gitdir registry; defaults to `<root>/.matrix/worktrees.json` (outside every worktree). */
+  trusted?: TrustedWorktrees;
   executor?: LineExecutor;
   gitBinary?: string;
 }
@@ -31,8 +34,12 @@ export class NativeWorkspace implements Workspace {
   readonly kind = "native" as const;
   readonly #o: NativeWorkspaceOptions;
 
+  readonly trusted: TrustedWorktrees;
+
   constructor(options: NativeWorkspaceOptions) {
     this.#o = options;
+    this.trusted =
+      options.trusted ?? new TrustedWorktrees(join(options.root, ".matrix", "worktrees.json"));
   }
 
   /** Host git, always against host-owned metadata, never discovering anything from a worktree. */
@@ -60,20 +67,6 @@ export class NativeWorkspace implements Workspace {
     return realpath(dotGit);
   }
 
-  /** Reads the gitdir a worktree points at and checks it lives under `<common>/worktrees/`. */
-  async #worktreeGitDir(workdir: string, commonDir: string): Promise<string> {
-    const marker = join(workdir, ".git");
-    const stat = await lstat(marker);
-    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 4096)
-      throw new Error(`tampered .git in ${workdir}`);
-    const pointer = (await readFile(marker, "utf8")).trim();
-    const gitdir = await realpath(pointer.replace(/^gitdir: /, ""));
-    if (!gitdir.startsWith(`${join(commonDir, "worktrees")}${sep}`))
-      throw new Error(`${workdir} points outside ${commonDir}`);
-    await verifyWorktreeLink(workdir, gitdir);
-    return gitdir;
-  }
-
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {
     const commonDir = await this.#commonDir(target.repoPath);
     const repo = gitLocation(commonDir);
@@ -92,7 +85,9 @@ export class NativeWorkspace implements Workspace {
         : ["worktree", "add", "-b", target.branch, "--", workdir, target.baseBranch];
       await this.#git(repo, add);
     }
-    const gitdir = await this.#worktreeGitDir(workdir, commonDir);
+    const gitdir = await gitdirFromCommonDir(commonDir, workdir);
+    await verifyWorktreeLink(workdir, gitdir);
+    await this.trusted.record(workdir, { gitdir, commonDir });
     const branch = await this.#git(gitLocation(gitdir), ["symbolic-ref", "--short", "HEAD"]);
     if (branch !== target.branch)
       throw new Error(`workspace ${workdir} is on ${branch}, expected ${target.branch}`);
@@ -102,12 +97,13 @@ export class NativeWorkspace implements Workspace {
   async cleanup(prepared: PreparedWorkspace): Promise<void> {
     const { commonDir } = JSON.parse(prepared.ref) as { commonDir: string; gitdir: string };
     await this.#remove(prepared.workdir, commonDir);
+    await this.trusted.forget(prepared.workdir);
   }
 
   async #remove(workdir: string, commonDir: string): Promise<void> {
     const prepared = { workdir };
     try {
-      await this.#worktreeGitDir(workdir, commonDir);
+      await verifyWorktreeLink(workdir, await gitdirFromCommonDir(commonDir, workdir));
       await this.#git(gitLocation(commonDir), [
         "worktree",
         "remove",

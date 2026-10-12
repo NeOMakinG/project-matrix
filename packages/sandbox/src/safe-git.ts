@@ -1,5 +1,5 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 
 /**
  * Config forced on every host-side git call. Passed through GIT_CONFIG_COUNT so it outranks any repo
@@ -8,6 +8,7 @@ import { basename, dirname, join } from "node:path";
 export const SAFE_GIT_CONFIG: Array<[string, string]> = [
   ["core.hooksPath", "/dev/null"],
   ["core.fsmonitor", "false"],
+  ["core.attributesFile", "/dev/null"],
   ["core.untrackedCache", "false"],
   ["credential.helper", ""],
   ["core.sshCommand", "false"],
@@ -19,7 +20,11 @@ export const SAFE_GIT_CONFIG: Array<[string, string]> = [
 ];
 
 /** Environment for host git: no system/global config, no replace objects, no prompts. */
-export function safeGitEnv(extra: Record<string, string> = {}): Record<string, string> {
+export function safeGitEnv(
+  extra: Record<string, string> = {},
+  extraConfig: Array<[string, string]> = [],
+): Record<string, string> {
+  const config = [...SAFE_GIT_CONFIG, ...extraConfig];
   const env: Record<string, string> = {
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     HOME: process.env.HOME ?? "/tmp",
@@ -28,9 +33,9 @@ export function safeGitEnv(extra: Record<string, string> = {}): Record<string, s
     GIT_NO_REPLACE_OBJECTS: "1",
     GIT_TERMINAL_PROMPT: "0",
     GIT_ATTR_NOSYSTEM: "1",
-    GIT_CONFIG_COUNT: String(SAFE_GIT_CONFIG.length),
+    GIT_CONFIG_COUNT: String(config.length),
   };
-  SAFE_GIT_CONFIG.forEach(([key, value], i) => {
+  config.forEach(([key, value], i) => {
     env[`GIT_CONFIG_KEY_${i}`] = key;
     env[`GIT_CONFIG_VALUE_${i}`] = value;
   });
@@ -65,30 +70,4 @@ export async function verifyWorktreeLink(workdir: string, expectedGitDir: string
       `worktree ${workdir} .git points to ${target || "nothing"}, expected ${expected}`,
     );
   }
-}
-
-/**
- * Finds the host-owned gitdir of a linked worktree without trusting it: the `.git` pointer must
- * name `<common>/worktrees/<name>`, and that gitdir's own `gitdir` back-link (written by git on
- * the host, not visible to the sandbox) must point back at this worktree.
- */
-export async function resolveWorktreeGitDir(
-  workdir: string,
-): Promise<{ gitdir: string; commonDir: string }> {
-  const marker = join(workdir, ".git");
-  const stat = await lstat(marker);
-  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 4096)
-    throw new Error(`tampered .git in ${workdir}`);
-  const pointer = (await readFile(marker, "utf8")).trim();
-  if (!pointer.startsWith("gitdir: ")) throw new Error(`${workdir} is not a linked worktree`);
-  const gitdir = await realpath(pointer.slice(8).trim());
-  if (basename(dirname(gitdir)) !== "worktrees")
-    throw new Error(`${workdir} points outside a worktrees dir`);
-  const back = await realpath((await readFile(join(gitdir, "gitdir"), "utf8")).trim()).catch(
-    () => "",
-  );
-  if (back !== (await realpath(marker)))
-    throw new Error(`${workdir} .git does not match its gitdir back-link`);
-  await verifyWorktreeLink(workdir, gitdir);
-  return { gitdir, commonDir: dirname(dirname(gitdir)) };
 }

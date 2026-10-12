@@ -219,7 +219,7 @@ describe("worktree git port", () => {
       branch: "matrix/g",
       baseBranch: "main",
     });
-    const git = new WorktreeGitPort();
+    const git = new WorktreeGitPort({ trusted: ws.trusted });
     expect(await git.headSha(workdir)).toBe(
       execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath }).toString().trim(),
     );
@@ -255,8 +255,8 @@ describe("worktree git port", () => {
     });
     const { readFile: rf } = await import("node:fs/promises");
     await writeFile(join(a.workdir, ".git"), await rf(join(b.workdir, ".git"), "utf8"));
-    await expect(new WorktreeGitPort().headSha(a.workdir)).rejects.toThrow(
-      /back-link|tampered|match/,
+    await expect(new WorktreeGitPort({ trusted: ws.trusted }).headSha(a.workdir)).rejects.toThrow(
+      /points to|tampered|match/,
     );
   });
 });
@@ -284,4 +284,70 @@ test("lease takeover: old runner stopped and worktree recreated, never reused", 
   expect(second.workdir).toBe(first.workdir);
   expect(existsSync(join(second.workdir, "half-written.ts"))).toBe(false);
   expect(existsSync(join(second.workdir, "README.md"))).toBe(true);
+});
+
+describe("git port trusts only host-recorded gitdirs (round 2 PoC)", () => {
+  const sh = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd })
+      .toString()
+      .trim();
+
+  test("a fake repo built inside the worktree can't forge HEAD or run its filters", async () => {
+    const repoPath = await repo();
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const { workdir } = await ws.prepare({
+      projectId: "p",
+      ticketId: "F",
+      repoPath,
+      branch: "matrix/f",
+      baseBranch: "main",
+    });
+    const real = await new WorktreeGitPort({ trusted: ws.trusted }).headSha(workdir);
+    const pwned = join(await mkdtemp(join(tmpdir(), "matrix-pwn-")), "pwned");
+    const fake = join(workdir, ".fake");
+    sh(workdir, "init", "-q", fake);
+    await writeFile(join(fake, "x"), "forged");
+    sh(fake, "add", "x");
+    sh(fake, "commit", "-qm", "forged");
+    const { mkdir: md } = await import("node:fs/promises");
+    await md(join(fake, ".git", "worktrees", "w"), { recursive: true });
+    await writeFile(join(fake, ".git", "worktrees", "w", "gitdir"), `${join(workdir, ".git")}\n`);
+    await writeFile(
+      join(fake, ".git", "worktrees", "w", "HEAD"),
+      `${sh(fake, "rev-parse", "HEAD")}\n`,
+    );
+    await writeFile(join(fake, ".git", "worktrees", "w", "commondir"), "../..\n");
+    await writeFile(
+      join(fake, ".git", "config"),
+      `[filter "evil"]\n\tclean = touch ${pwned}\n\tsmudge = touch ${pwned}\n`,
+    );
+    await writeFile(join(workdir, ".gitattributes"), "* filter=evil\n");
+    await writeFile(join(workdir, ".git"), `gitdir: ${join(fake, ".git", "worktrees", "w")}\n`);
+    const port = new WorktreeGitPort({ trusted: ws.trusted });
+    await expect(port.headSha(workdir)).rejects.toThrow();
+    await expect(port.isClean(workdir)).rejects.toThrow();
+    expect(existsSync(pwned)).toBe(false);
+    expect(real).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  test("filter drivers in the trusted config never run on worktree content", async () => {
+    const repoPath = await repo();
+    const pwned = join(await mkdtemp(join(tmpdir(), "matrix-pwn-")), "pwned");
+    sh(repoPath, "config", "filter.evil.clean", `touch ${pwned}`);
+    sh(repoPath, "config", "filter.evil.process", `touch ${pwned}`);
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const { workdir } = await ws.prepare({
+      projectId: "p",
+      ticketId: "E",
+      repoPath,
+      branch: "matrix/e",
+      baseBranch: "main",
+    });
+    await writeFile(join(workdir, ".gitattributes"), "* filter=evil\n");
+    await writeFile(join(workdir, "README.md"), "changed");
+    const port = new WorktreeGitPort({ trusted: ws.trusted });
+    expect(await port.isClean(workdir)).toBe(false);
+    await port.treeState(workdir);
+    expect(existsSync(pwned)).toBe(false);
+  });
 });

@@ -1,7 +1,9 @@
 import { realpath } from "node:fs/promises";
+import { join } from "node:path";
 import type { PreparedWorkspace, Workspace, WorkspaceTarget } from "@matrix/core";
 import { hostExecutor, type LineExecutor, runToCompletion } from "@matrix/sandbox";
 import { safeSegment } from "./native.js";
+import { gitdirFromCommonDir, type TrustedWorktrees } from "./trusted.js";
 
 /** The parts of Orca's CLI contract this adapter relies on. */
 export const ORCA_REQUIRED_COMMANDS: Record<string, string[]> = {
@@ -20,6 +22,8 @@ export interface OrcaWorkspaceOptions {
   issue?: (target: WorkspaceTarget) => number | undefined;
   /** Orca runtime environment to target, e.g. the bosgame `orca serve` pairing. */
   environment?: string;
+  /** Records each worktree's gitdir host-side (from the canonical repo) for WorktreeGitPort. */
+  trusted?: TrustedWorktrees;
 }
 
 interface OrcaEnvelope {
@@ -143,6 +147,13 @@ export class OrcaWorkspace implements Workspace {
     const id = typeof worktree.id === "string" ? worktree.id : undefined;
     const path = typeof worktree.path === "string" ? worktree.path : undefined;
     if (!id || !path) throw new Error("orca worktree create returned no id/path");
+    if (this.#o.trusted) {
+      const commonDir = await realpath(join(target.repoPath, ".git"));
+      await this.#o.trusted.record(path, {
+        gitdir: await gitdirFromCommonDir(commonDir, path),
+        commonDir,
+      });
+    }
     return { workdir: path, ref: id };
   }
 
