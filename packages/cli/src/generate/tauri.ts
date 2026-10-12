@@ -1,12 +1,13 @@
 import type { MatrixConfig } from "@matrix/config";
 import type { Files } from "./docs";
-import { html, jsxText, tomlString } from "./escape";
+import { html, identSegment, jsxText, tomlString } from "./escape";
 import { pick } from "./versions";
 
 type Desktop = NonNullable<MatrixConfig["desktop"]>;
 
 const json = (v: unknown) => `${JSON.stringify(v, null, 2)}\n`;
-const crate = (pkg: string) => pkg.replace(/[^a-z0-9_]/g, "_") || "app";
+/** Rust crate and lib names must be identifiers: letters, digits, `_`, starting with a letter. */
+const crate = (pkg: string) => identSegment(pkg, "_");
 
 /** First brand colour if it is a plain hex colour (it lands inside SVG markup). */
 const accent = (c: MatrixConfig) =>
@@ -138,7 +139,7 @@ pub fn run() {
       $schema: "https://schema.tauri.app/config/2",
       productName: name,
       version: "0.1.0",
-      identifier: `com.${crate(pkg).replace(/_/g, "")}.desktop`,
+      identifier: `com.${identSegment(pkg)}.desktop`,
       build: {
         beforeDevCommand: "bun run dev",
         devUrl: "http://localhost:1420",

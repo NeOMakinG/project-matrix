@@ -103,7 +103,14 @@ func main() {
 \tslog.SetDefault(logger)
 
 \taddr := ":" + envOr("PORT", "8080")
-\tsrv := &http.Server{Addr: addr, Handler: httpapi.New(), ReadHeaderTimeout: 10 * time.Second}
+\tsrv := &http.Server{
+		Addr:              addr,
+		Handler:           httpapi.New(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 \tctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 \tdefer stop()

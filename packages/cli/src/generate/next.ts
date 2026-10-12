@@ -1,6 +1,7 @@
 import type { MatrixConfig } from "@matrix/config";
 import type { Files } from "./docs";
 import { jsxText, tsString } from "./escape";
+import { headersLiteral } from "./headers";
 import { type ReactStack, reactLibraryDeps } from "./react-libs";
 import { pick } from "./versions";
 
@@ -46,9 +47,19 @@ export function nextFiles(c: MatrixConfig, fe: ReactStack, pkg: string): Files {
       '/// <reference types="next" />\n/// <reference types="next/image-types/global" />\n',
     "apps/web/next.config.ts": `import type { NextConfig } from "next";
 
+const securityHeaders = ${headersLiteral("")};
+
 const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: Object.entries(securityHeaders).map(([key, value]) => ({ key, value })),
+      },
+    ];
+  },
 };
 
 export default config;

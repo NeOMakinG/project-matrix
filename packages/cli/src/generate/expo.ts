@@ -1,6 +1,6 @@
 import type { MatrixConfig } from "@matrix/config";
 import type { Files } from "./docs";
-import { jsxText } from "./escape";
+import { identSegment, jsxText } from "./escape";
 import { expoSdk, versions } from "./versions";
 
 type Mobile = NonNullable<MatrixConfig["mobile"]>;
@@ -11,7 +11,7 @@ const sdk = (names: string[]) => Object.fromEntries(names.map((n) => [n, expoSdk
 const npm = (names: string[]) => Object.fromEntries(names.map((n) => [n, versions[n] ?? "latest"]));
 
 /** Reverse-DNS app id from the package name, e.g. com.ledgerly.app. */
-const appId = (pkg: string) => `com.${pkg.replace(/[^a-z0-9]/g, "") || "matrix"}.app`;
+const appId = (pkg: string) => `com.${identSegment(pkg)}.app`;
 
 /** Expo (expo-router) app in apps/mobile. */
 export function expoFiles(c: MatrixConfig, m: Mobile, pkg: string): Files {
@@ -66,7 +66,7 @@ export function expoFiles(c: MatrixConfig, m: Mobile, pkg: string): Files {
       expo: {
         name,
         slug: pkg,
-        scheme: pkg,
+        scheme: identSegment(pkg),
         version: "0.1.0",
         orientation: "portrait",
         userInterfaceStyle: c.design.theme === "both" ? "automatic" : c.design.theme,

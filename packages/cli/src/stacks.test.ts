@@ -6,6 +6,8 @@ import { parseConfig } from "@matrix/config";
 import { type Answers, findContradictions, sampleAnswers } from "@matrix/packs";
 import { checkProject } from "@matrix/rules";
 import { describe, expect, test } from "vitest";
+import { SECURITY_HEADERS } from "./generate/headers";
+import { MAX_SKILL_FILE_BYTES, skillFiles } from "./generate/skills";
 import { runInit } from "./init";
 
 const fresh = () => mkdtemp(join(tmpdir(), "matrix-stack-"));
@@ -235,6 +237,61 @@ describe("ADR rules of every stack", () => {
     expect(dirty.ok).toBe(false);
     const flagged = new Set(dirty.violations.map((v) => v.file));
     for (const file of Object.keys(bypasses)) expect(flagged, file).toContain(file);
+  });
+});
+
+describe("PR #24 review P2 hardening", () => {
+  test("Next.js and TanStack Start send security headers", async () => {
+    for (const [name, file] of [
+      ["next", "apps/web/next.config.ts"],
+      ["tanstack-start", "apps/web/src/start.ts"],
+    ] as const) {
+      const { out, r } = await init(stacks.find((s) => s.name === name) as Stack);
+      expect(r.status).toBe("ok");
+      const text = await readFile(join(out, file), "utf8");
+      for (const header of Object.keys(SECURITY_HEADERS))
+        expect(text, `${name}: ${header}`).toContain(header);
+      expect(text).toContain("frame-ancestors 'none'");
+    }
+  });
+
+  test("Go server sets read, write, idle and header timeouts", async () => {
+    const { out } = await init(stacks.find((s) => s.name === "go") as Stack);
+    const main = await readFile(join(out, "services/api/cmd/api/main.go"), "utf8");
+    for (const t of ["ReadHeaderTimeout", "ReadTimeout", "WriteTimeout", "IdleTimeout"])
+      expect(main).toContain(t);
+  });
+
+  test("names starting with a digit still give valid crate, package and bundle identifiers", async () => {
+    const out = await fresh();
+    const r = await runInit({
+      answers: {
+        ...sampleAnswers,
+        "business.name": "42 Labs",
+        "platforms.targets": ["ios", "desktop"],
+      },
+      outDir: out,
+      acceptRecommended: true,
+      scaffold: true,
+    });
+    expect(r.status).toBe("ok");
+    const cargo = await readFile(join(out, "apps/desktop/src-tauri/Cargo.toml"), "utf8");
+    for (const m of cargo.matchAll(/^name = "([^"]+)"/gm))
+      expect(m[1]).toMatch(/^[a-z][a-z0-9_]*$/);
+    const conf = JSON.parse(
+      await readFile(join(out, "apps/desktop/src-tauri/tauri.conf.json"), "utf8"),
+    );
+    const app = JSON.parse(await readFile(join(out, "apps/mobile/app.json"), "utf8")).expo;
+    for (const id of [conf.identifier, app.android.package, app.ios.bundleIdentifier])
+      for (const seg of String(id).split(".")) expect(seg, id).toMatch(/^[a-z][a-z0-9]*$/);
+    expect(app.scheme).toMatch(/^[a-z][a-z0-9]*$/);
+  });
+
+  test("oversized skill files are refused before reading", async () => {
+    const dir = await fresh();
+    await mkdir(join(dir, "big"), { recursive: true });
+    await writeFile(join(dir, "big/SKILL.md"), "x".repeat(MAX_SKILL_FILE_BYTES + 1));
+    await expect(skillFiles(["big"], dir)).rejects.toThrow(/under/);
   });
 });
 

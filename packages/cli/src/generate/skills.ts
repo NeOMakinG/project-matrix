@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { MatrixConfig } from "@matrix/config";
 import type { Files } from "./docs";
@@ -29,6 +29,9 @@ export function skillsFor(c: MatrixConfig): string[] {
 
 const SAFE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 
+/** Skills are short markdown; anything bigger is refused rather than copied. */
+export const MAX_SKILL_FILE_BYTES = 256 * 1024;
+
 /** Copies the chosen skills into `.claude/skills/<name>/` of the generated project. */
 export async function skillFiles(names: string[], dir = SKILLS_DIR): Promise<Files> {
   const files: Files = {};
@@ -37,7 +40,13 @@ export async function skillFiles(names: string[], dir = SKILLS_DIR): Promise<Fil
     const entries = await readdir(join(dir, name), { withFileTypes: true });
     for (const e of entries) {
       if (!e.isFile() || !e.name.endsWith(".md")) continue;
-      files[`.claude/skills/${name}/${e.name}`] = await readFile(join(dir, name, e.name), "utf8");
+      const path = join(dir, name, e.name);
+      const st = await lstat(path);
+      if (!st.isFile() || st.size > MAX_SKILL_FILE_BYTES)
+        throw new Error(
+          `skill file ${name}/${e.name} is not a regular file under ${MAX_SKILL_FILE_BYTES} bytes`,
+        );
+      files[`.claude/skills/${name}/${e.name}`] = await readFile(path, "utf8");
     }
     if (!files[`.claude/skills/${name}/SKILL.md`]) throw new Error(`skill ${name} has no SKILL.md`);
   }

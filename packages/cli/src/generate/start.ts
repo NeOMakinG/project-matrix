@@ -1,6 +1,7 @@
 import type { MatrixConfig } from "@matrix/config";
 import type { Files } from "./docs";
 import { jsxText, tsString } from "./escape";
+import { headersLiteral } from "./headers";
 import { type ReactStack, reactLibraryDeps } from "./react-libs";
 import { pick } from "./versions";
 
@@ -56,6 +57,21 @@ export default defineConfig({
   resolve: { tsconfigPaths: true },
   plugins: [${tailwind ? "tailwindcss(), " : ""}tanstackStart({ srcDirectory: "src" }), viteReact()],
 });
+`,
+    "apps/web/src/start.ts": `import { createMiddleware, createStart } from "@tanstack/react-start";
+
+const securityHeaders: Record<string, string> = ${headersLiteral("")};
+
+/** Sends the security headers on every response (pages and server functions). */
+const securityHeadersMiddleware = createMiddleware({ type: "request" }).server(async ({ next }) => {
+  const result = await next();
+  for (const [name, value] of Object.entries(securityHeaders)) result.response.headers.set(name, value);
+  return result;
+});
+
+export const startInstance = createStart(() => ({
+  requestMiddleware: [securityHeadersMiddleware],
+}));
 `,
     "apps/web/src/router.tsx": `import { createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";

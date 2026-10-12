@@ -30,3 +30,17 @@ export const goString = (s: string): string => JSON.stringify(s);
 
 /** A TOML basic string. */
 export const tomlString = (s: string): string => JSON.stringify(s);
+
+/**
+ * A platform identifier segment (Rust crate, Android package, bundle id, URL scheme):
+ * lowercase ASCII letters and digits, always starting with a letter.
+ */
+export const identSegment = (s: string, sep = ""): string => {
+  const parts = s
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const joined = parts.join(sep);
+  if (!joined) return "app";
+  return /^[a-z]/.test(joined) ? joined : `app${sep}${joined}`;
+};
