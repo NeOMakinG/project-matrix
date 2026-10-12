@@ -78,6 +78,11 @@
     "packages/compound": {
       "name": "@matrix/compound",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+        "@matrix/tickets": "workspace:*",
+        "zod": "^4",
+      },
     },
     "packages/config": {
       "name": "@matrix/config",
