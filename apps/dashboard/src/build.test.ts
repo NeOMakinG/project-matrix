@@ -40,4 +40,25 @@ describe("production build", () => {
       expect(code.includes(marker), marker).toBe(false);
     }
   }, 120_000);
+
+  it("builds a static bundle the server can mount under a prefix", async () => {
+    const { build } = await import("vite");
+    const prefixed = mkdtempSync(join(tmpdir(), "matrix-dashboard-prefixed-"));
+    process.env.VITE_BASE = "/dashboard/";
+    try {
+      await build({
+        root: resolve(__dirname, ".."),
+        configFile: resolve(__dirname, "../vite.config.ts"),
+        logLevel: "silent",
+        mode: "production",
+        build: { outDir: prefixed, emptyOutDir: true },
+      });
+      const html = readFileSync(join(prefixed, "index.html"), "utf8");
+      expect(html).toMatch(/src="\/dashboard\/assets\/index-[\w-]+\.js"/);
+      expect(html).not.toMatch(/src="\/assets\//);
+    } finally {
+      delete process.env.VITE_BASE;
+      rmSync(prefixed, { recursive: true, force: true });
+    }
+  }, 120_000);
 });
