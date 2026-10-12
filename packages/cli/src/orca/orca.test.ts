@@ -270,3 +270,112 @@ test("hook command shell-quotes the script path", async () => {
   );
   expect(shellQuote("a'b")).toBe(`'a'\\''b'`);
 });
+
+describe("round 2: parser errors and structure-preserving edits", () => {
+  const opts = (home: string) => ({
+    serverUrl: "https://matrix.example",
+    projects: ["p"],
+    actions: ["read"],
+    home,
+    apply: false,
+    log: () => {},
+  });
+
+  test("PoC: a malformed config never surfaces its secret, even in dry run", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mx-home-"));
+    await writeFile(join(home, ".claude.json"), '{"oauthToken": "sk-live-SUPERSECRET-123" "x": }');
+    let message = "";
+    try {
+      await registerMcp({ ...opts(home), agents: ["claude-code"] });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/is not valid JSON at line 1, column \d+/);
+    expect(message).not.toContain("SUPERSECRET");
+    const cli = await new Promise<string>((resolve) => {
+      execFile(
+        "bun",
+        [
+          join(__dirname, "..", "bin.ts"),
+          "orca",
+          "register-mcp",
+          "--server",
+          "https://m.example",
+          "--project",
+          "p",
+          "--agents",
+          "claude-code",
+          "--home",
+          home,
+        ],
+        (_e, stdout, stderr) => resolve(stdout + stderr),
+      );
+    });
+    expect(cli).toContain("is not valid JSON");
+    expect(cli).not.toContain("SUPERSECRET");
+  });
+
+  test("OpenCode JSONC: comments and trailing commas survive the edit", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mx-home-"));
+    const dir = join(home, ".config", "opencode");
+    await mkdir(dir, { recursive: true });
+    const original =
+      '{\n  // my theme\n  "theme": "opencode",\n  "mcp": {\n    "other": { "type": "local" }, // keep me\n  },\n}\n';
+    await writeFile(join(dir, "opencode.json"), original);
+    const bodies: Array<Record<string, unknown>> = [];
+    await registerMcp({
+      ...opts(home),
+      agents: ["opencode"],
+      apply: true,
+      adminKey: "a",
+      fetchImpl: tokenFetch(bodies),
+    });
+    const after = await readFile(join(dir, "opencode.json"), "utf8");
+    expect(after).toContain("// my theme");
+    expect(after).toContain("// keep me");
+    const { parse: parseJsonc } = await import("jsonc-parser");
+    expect(parseJsonc(after).mcp.other).toEqual({ type: "local" });
+    expect(parseJsonc(after).theme).toBe("opencode");
+    expect(after).toContain('"matrix"');
+  });
+
+  test("Codex TOML: other tables and comments untouched; unsafe forms refused before any key", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mx-home-"));
+    await mkdir(join(home, ".codex"));
+    const toml =
+      '# top comment\nmodel = "gpt"\n\n[mcp_servers.matrix]\nurl = "old"\n\n[profiles.fast]\nmodel = "mini" # inline\n';
+    await writeFile(join(home, ".codex", "config.toml"), toml);
+    const bodies: Array<Record<string, unknown>> = [];
+    await registerMcp({
+      ...opts(home),
+      agents: ["codex"],
+      apply: true,
+      adminKey: "a",
+      fetchImpl: tokenFetch(bodies),
+    });
+    const after = await readFile(join(home, ".codex", "config.toml"), "utf8");
+    expect(after).toContain('# top comment\nmodel = "gpt"');
+    expect(after).toContain('[profiles.fast]\nmodel = "mini" # inline');
+    expect(after).not.toContain('url = "old"');
+    expect(after.match(/\[mcp_servers\.matrix\]/g)).toHaveLength(1);
+
+    const home2 = await mkdtemp(join(tmpdir(), "mx-home-"));
+    await mkdir(join(home2, ".codex"));
+    await writeFile(join(home2, ".codex", "config.toml"), 'x = """\n[mcp_servers.matrix]\n"""\n');
+    const calls: Array<Record<string, unknown>> = [];
+    await expect(
+      registerMcp({
+        ...opts(home2),
+        agents: ["codex"],
+        apply: true,
+        adminKey: "a",
+        fetchImpl: tokenFetch(calls),
+      }),
+    ).rejects.toThrow(/multi-line strings/);
+    expect(calls).toHaveLength(0);
+    await writeFile(join(home2, ".codex", "config.toml"), 'mcp_servers.matrix.url = "x"\n');
+    await expect(registerMcp({ ...opts(home2), agents: ["codex"] })).rejects.toThrow(
+      /can't edit safely/,
+    );
+  });
+});

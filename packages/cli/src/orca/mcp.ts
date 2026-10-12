@@ -1,6 +1,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { readFileSafe, writeFileSafe } from "@matrix/safe-fs";
+import { hasJsoncPath, hasTomlMatrixTable, setJsonc, setTomlMatrixTable } from "./config-edit";
 
 export type OrcaAgent = "claude-code" | "codex" | "opencode";
 export const ORCA_AGENTS: OrcaAgent[] = ["claude-code", "codex", "opencode"];
@@ -32,38 +33,31 @@ export function redact(text: string): string {
     );
 }
 
-/** Where each agent reads MCP servers, and the merged file content for the Matrix server. */
+/** Where each agent reads MCP servers, and a structure-preserving edit adding the Matrix server. */
 export function mcpConfigFor(agent: OrcaAgent, home: string, url: string, token: string) {
   const auth = `Bearer ${token}`;
-  if (agent === "claude-code") {
+  if (agent === "claude-code" || agent === "opencode") {
+    const file =
+      agent === "claude-code"
+        ? join(home, ".claude.json")
+        : join(home, ".config", "opencode", "opencode.json");
+    const path = agent === "claude-code" ? ["mcpServers", "matrix"] : ["mcp", "matrix"];
+    const value =
+      agent === "claude-code"
+        ? { type: "http", url, headers: { Authorization: auth } }
+        : { type: "remote", url, enabled: true, headers: { Authorization: auth } };
     return {
-      file: join(home, ".claude.json"),
-      merge: (current: string) => {
-        const doc = current.trim() ? (JSON.parse(current) as Record<string, unknown>) : {};
-        const servers = (doc.mcpServers as Record<string, unknown> | undefined) ?? {};
-        servers.matrix = { type: "http", url, headers: { Authorization: auth } };
-        return `${JSON.stringify({ ...doc, mcpServers: servers }, null, 2)}\n`;
-      },
+      file,
+      exists: (current: string) => hasJsoncPath(file, current, path),
+      merge: (current: string) => setJsonc(file, current, path, value),
     };
   }
-  if (agent === "opencode") {
-    return {
-      file: join(home, ".config", "opencode", "opencode.json"),
-      merge: (current: string) => {
-        const doc = current.trim() ? (JSON.parse(current) as Record<string, unknown>) : {};
-        const mcp = (doc.mcp as Record<string, unknown> | undefined) ?? {};
-        mcp.matrix = { type: "remote", url, enabled: true, headers: { Authorization: auth } };
-        return `${JSON.stringify({ ...doc, mcp }, null, 2)}\n`;
-      },
-    };
-  }
+  const file = join(home, ".codex", "config.toml");
+  const block = `[mcp_servers.matrix]\nurl = ${JSON.stringify(url)}\nhttp_headers = { Authorization = ${JSON.stringify(auth)} }\n`;
   return {
-    file: join(home, ".codex", "config.toml"),
-    merge: (current: string) => {
-      const block = `[mcp_servers.matrix]\nurl = ${JSON.stringify(url)}\nhttp_headers = { Authorization = ${JSON.stringify(auth)} }\n`;
-      const without = current.replace(/\n?\[mcp_servers\.matrix\][^[]*/s, "\n");
-      return `${without.trimEnd()}\n\n${block}`;
-    },
+    file,
+    exists: (current: string) => hasTomlMatrixTable(current),
+    merge: (current: string) => setTomlMatrixTable(file, current, block),
   };
 }
 
@@ -151,6 +145,11 @@ export async function registerMcp(o: RegisterMcpOptions): Promise<AgentRegistrat
   const out: AgentRegistration[] = [];
   const writes: Array<{ file: string; before: string; after: string }> = [];
   try {
+    // Pre-flight every edit with a placeholder: unreadable or unsafe configs fail before any key exists.
+    for (const agent of o.agents) {
+      const t = mcpConfigFor(agent, o.home, url, PLACEHOLDER);
+      t.merge((await readFileSafe(o.home, t.file)) ?? "");
+    }
     for (const agent of o.agents) {
       const spec = keySpec(agent, o.projects, o.actions);
       let token = PLACEHOLDER;
@@ -165,7 +164,7 @@ export async function registerMcp(o: RegisterMcpOptions): Promise<AgentRegistrat
       const target = mcpConfigFor(agent, o.home, url, token);
       const before = (await readFileSafe(o.home, target.file)) ?? "";
       const after = target.merge(before);
-      const replaced = /"matrix"\s*:|\[mcp_servers\.matrix\]/.test(before);
+      const replaced = target.exists(before);
       const summary = [
         `# ${agent}: ${target.file}`,
         `  ${replaced ? "replace" : "add"} MCP server "matrix" -> ${url} (auth: bearer [redacted])`,
@@ -195,7 +194,9 @@ export async function registerMcp(o: RegisterMcpOptions): Promise<AgentRegistrat
     for (const id of created)
       await call(`/v1/keys/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => undefined);
     if (created.length) log(`revoked ${created.length} key(s) created before the failure`);
-    throw error;
+    throw error instanceof Error
+      ? new Error(redact(error.message))
+      : new Error("register-mcp failed");
   }
   if (!o.apply) log("(dry run — nothing written, no keys created. Re-run with --apply.)");
   return out;

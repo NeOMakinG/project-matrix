@@ -8,6 +8,7 @@ import { GRAPH_USAGE, graphCommand } from "./graph";
 import { runInit } from "./init";
 import { interview } from "./interactive";
 import { ORCA_USAGE, orcaCommand } from "./orca/command";
+import { redact } from "./orca/mcp";
 
 const USAGE = `matrix init [dir] [options]   run the init interview and generate the project
 matrix init next --answers <file>   print the next interview round as JSON (for agents)
@@ -27,7 +28,12 @@ async function readAnswers(path: string | undefined): Promise<Answers> {
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === "check") return checkCommand(argv.slice(1));
   if (argv[0] === "graph") return graphCommand(argv.slice(1));
-  if (argv[0] === "orca") return orcaCommand(argv.slice(1));
+  if (argv[0] === "orca") {
+    // Config and network errors may quote input; only redacted messages ever reach the terminal.
+    return orcaCommand(argv.slice(1)).catch((e: unknown) => {
+      throw new Error(redact(e instanceof Error ? e.message : String(e)));
+    });
+  }
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
