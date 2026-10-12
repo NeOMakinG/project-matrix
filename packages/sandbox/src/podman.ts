@@ -124,6 +124,7 @@ export class PodmanSandbox implements Sandbox {
         await chmod(envDir, 0o700);
         const envFile = join(envDir, "env");
         const env = this.containerEnv(spec, policy.network, grant.token);
+        await this.#o.broker.assertNoSecrets(Object.values(env));
         const lines = Object.entries(env).map(([k, v]) => {
           assertEnvName(k);
           if (/[\r\n]/.test(v)) throw new Error(`env var ${k} contains a newline`);
@@ -131,6 +132,7 @@ export class PodmanSandbox implements Sandbox {
         });
         await writeFile(envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
         const argv = this.argv(spec, grant, envFile, policy.runId);
+        await this.#o.broker.assertNoSecrets(argv);
         return await exec(
           {
             cmd: argv,

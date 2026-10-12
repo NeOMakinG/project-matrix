@@ -83,9 +83,11 @@ export class BwrapSandbox implements Sandbox {
         ...(policy.allowHosts ? { allowHosts: policy.allowHosts } : {}),
       });
       try {
+        const argv = this.argv(spec, grant);
+        await this.#o.broker.assertNoSecrets(argv);
         return await exec(
           {
-            cmd: this.argv(spec, grant),
+            cmd: argv,
             cwd: spec.cwd,
             env: { PATH: process.env.PATH ?? "/usr/bin:/bin" },
             ...(spec.stdin !== undefined ? { stdin: spec.stdin } : {}),

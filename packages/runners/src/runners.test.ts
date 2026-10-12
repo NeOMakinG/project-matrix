@@ -2,14 +2,14 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent, RunRequest } from "@matrix/core";
-import type { LineExecutor, ProcessSpec } from "@matrix/sandbox";
+import { asRunToken, type LineExecutor, type ProcessSpec } from "@matrix/sandbox";
 import { describe, expect, test } from "vitest";
 import { claudeCodeRunner, codexRunner, createRunner, opencodeRunner } from "./index";
 
 const gateway = {
   anthropicBaseUrl: "http://127.0.0.1:18080",
   openaiBaseUrl: "http://127.0.0.1:18080/v1",
-  apiKey: "run-token-123",
+  apiKey: asRunToken("mxr_test123"),
 };
 
 const req: RunRequest = {
@@ -97,7 +97,7 @@ describe("claude-code runner", () => {
     expect(call?.env).toMatchObject({
       PATH: "/usr/bin",
       ANTHROPIC_BASE_URL: "http://127.0.0.1:18080",
-      ANTHROPIC_API_KEY: "run-token-123",
+      ANTHROPIC_API_KEY: "mxr_test123",
     });
     expect(Object.keys(call?.env ?? {})).not.toContain("HOME");
   });
@@ -221,7 +221,7 @@ describe("codex runner", () => {
     expect(call?.cmd).toContain('model_providers.matrix.base_url="http://127.0.0.1:18080/v1"');
     expect(call?.cmd).toContain("workspace-write");
     expect(call?.cmd.at(-1)).toBe("-");
-    expect(call?.env.MATRIX_GATEWAY_KEY).toBe("run-token-123");
+    expect(call?.env.MATRIX_GATEWAY_KEY).toBe("mxr_test123");
   });
 
   test("parses items and usage", async () => {
@@ -279,7 +279,7 @@ describe("opencode runner", () => {
     );
     const config = JSON.parse(calls[0]?.env.OPENCODE_CONFIG_CONTENT ?? "{}");
     expect(config.provider.matrix.options.baseURL).toBe("http://127.0.0.1:18080/v1");
-    expect(JSON.stringify(config)).not.toContain("run-token-123");
+    expect(JSON.stringify(config)).not.toContain("mxr_test123");
     expect(calls[0]?.cmd).toContain("matrix/GLM-5.3");
     expect(result).toMatchObject({
       status: "ok",
@@ -305,4 +305,11 @@ test("readOnly requests reach the executor", async () => {
     new AbortController().signal,
   );
   expect(calls[0]?.readOnly).toBe(true);
+});
+
+test("a plain string can't be passed as the gateway apiKey", () => {
+  // @ts-expect-error real keys are plain strings, not RunToken
+  const bad: Parameters<typeof claudeCodeRunner>[0]["gateway"]["apiKey"] = "sk-real-key";
+  expect(bad).toBe("sk-real-key");
+  expect(() => asRunToken("sk-real-key")).toThrow();
 });

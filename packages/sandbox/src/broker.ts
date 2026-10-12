@@ -9,6 +9,8 @@ import { join } from "node:path";
 import type { NetworkPolicy } from "@matrix/core";
 import { type CredentialSource, resolveCredential } from "./credentials.js";
 import { isPrivateAddress } from "./ip.js";
+import { asRunToken, type RunToken } from "./launch.js";
+import { secretNeedles } from "./secret-gate.js";
 
 /** Routes a sandbox may call on the model gateway. Everything else is answered 403 and never forwarded. */
 export const DEFAULT_LLM_ROUTES: Array<{ method: string; path: RegExp }> = [
@@ -57,7 +59,7 @@ export interface Grant {
   /** Directory holding `llm.sock` and, for allowlist runs, `egress.sock`. Undefined for network "none". */
   socketDir?: string;
   /** Run token the sandbox presents to the LLM socket. Worthless outside this grant. */
-  token: string;
+  token: RunToken;
   network: NetworkPolicy;
   close(): Promise<void>;
 }
@@ -117,10 +119,21 @@ export class CredentialBroker {
     return [await this.#gatewayKey()];
   }
 
+  /** Throws if any value carries a real credential (raw, base64 or hex). Called before every launch. */
+  async assertNoSecrets(values: string[]): Promise<void> {
+    const needles = (await this.secretValues()).flatMap((v) => secretNeedles(v));
+    for (const value of values) {
+      const buf = Buffer.from(value);
+      if (needles.some((n) => buf.includes(n))) {
+        throw new Error("refusing to place a real gateway credential inside a sandbox");
+      }
+    }
+  }
+
   async grant(request: GrantRequest): Promise<Grant> {
     if (this.#grants.has(request.runId))
       throw new Error(`grant already open for run ${request.runId}`);
-    const token = `mxr_${randomBytes(24).toString("hex")}`;
+    const token = asRunToken(`mxr_${randomBytes(24).toString("hex")}`);
     if (request.network === "none") {
       const grant: Grant = { runId: request.runId, token, network: "none", close: async () => {} };
       return grant;

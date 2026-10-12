@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { CredentialBroker } from "./broker";
 import { BwrapSandbox } from "./bwrap";
-import { mapPath, RUN_TOKEN_PLACEHOLDER, withBridge } from "./launch";
+import { asRunToken, mapPath, RUN_TOKEN_PLACEHOLDER, withBridge } from "./launch";
 import { PodmanSandbox } from "./podman";
 import { hostExecutor, type LineExecutor, runToCompletion } from "./process";
 import { runSecretGate, secretNeedles } from "./secret-gate";
@@ -85,7 +85,7 @@ describe("podman argv", () => {
 describe("bwrap argv", () => {
   test("no network, no host home, worktree writable", () => {
     const sandbox = new BwrapSandbox({ broker, readOnlyBinds: ["/opt/node"] });
-    const argv = sandbox.argv(spec, { network: "none", token: "t" });
+    const argv = sandbox.argv(spec, { network: "none", token: asRunToken("mxr_t") });
     expect(argv).toEqual(
       expect.arrayContaining(["--unshare-all", "--clearenv", "--die-with-parent"]),
     );
@@ -279,7 +279,47 @@ test("readOnly runs mount the worktree read-only in both sandboxes", () => {
     "r",
   );
   expect(podman).toContain("--volume=/host/wt:/work:ro");
-  const bwrap = new BwrapSandbox({ broker }).argv(ro, { network: "none", token: "t" }).join(" ");
+  const bwrap = new BwrapSandbox({ broker })
+    .argv(ro, { network: "none", token: asRunToken("mxr_t") })
+    .join(" ");
   expect(bwrap).toContain("--ro-bind /host/wt /host/wt");
   expect(bwrap).not.toContain("--bind /host/wt /host/wt");
+});
+
+test("sandboxes refuse to launch with the real key in env or argv", async () => {
+  const realKey = "k".repeat(20);
+  const executor: LineExecutor = async () => ({
+    exitCode: 0,
+    timedOut: false,
+    cancelled: false,
+    stderrTail: "",
+  });
+  const podman = new PodmanSandbox({ broker, image: "img", executor });
+  await expect(
+    podman.exec({
+      workdir: "/host/wt",
+      cmd: ["true"],
+      env: { LEAK: realKey },
+      network: "none",
+      timeoutMs: 1000,
+    }),
+  ).rejects.toThrow(/real gateway credential/);
+  await expect(
+    podman.exec({
+      workdir: "/host/wt",
+      cmd: ["echo", Buffer.from(realKey).toString("base64")],
+      network: "none",
+      timeoutMs: 1000,
+    }),
+  ).rejects.toThrow(/real gateway credential/);
+  const bwrap = new BwrapSandbox({ broker, executor });
+  await expect(
+    bwrap.exec({
+      workdir: "/host/wt",
+      cmd: ["true"],
+      env: { LEAK: realKey },
+      network: "none",
+      timeoutMs: 1000,
+    }),
+  ).rejects.toThrow(/real gateway credential/);
 });

@@ -10,7 +10,7 @@ import type {
   RunRequest,
   RunResult,
 } from "@matrix/core";
-import { hostExecutor, type LineExecutor } from "@matrix/sandbox";
+import { hostExecutor, type LineExecutor, type SandboxApiKey } from "@matrix/sandbox";
 
 export interface ParsedEvent {
   kind: RunEventKind;
@@ -34,7 +34,8 @@ export interface EventParser {
 export interface GatewayConfig {
   anthropicBaseUrl: string;
   openaiBaseUrl: string;
-  apiKey: string;
+  /** A run token or the placeholder the sandbox fills; a real key does not typecheck. */
+  apiKey: SandboxApiKey;
 }
 
 export interface CliRunnerOptions {

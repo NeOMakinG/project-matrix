@@ -8,6 +8,17 @@ export const READY_FILE = "/tmp/.matrix-bridge-ready";
 /** Put this in a runner's gateway apiKey; the sandbox swaps in the per-run token minted at launch. */
 export const RUN_TOKEN_PLACEHOLDER = "__MATRIX_RUN_TOKEN__";
 
+declare const runTokenBrand: unique symbol;
+/** A per-run token minted by the broker. Plain strings (e.g. a real API key) don't typecheck. */
+export type RunToken = string & { readonly [runTokenBrand]: true };
+/** The only credential shapes a runner may hand to a sandboxed CLI. */
+export type SandboxApiKey = typeof RUN_TOKEN_PLACEHOLDER | RunToken;
+
+export function asRunToken(value: string): RunToken {
+  if (!/^mxr_[A-Za-z0-9]+$/.test(value)) throw new Error("not a matrix run token");
+  return value as RunToken;
+}
+
 export function fillRunToken(value: string, token: string): string {
   return value.split(RUN_TOKEN_PLACEHOLDER).join(token);
 }
