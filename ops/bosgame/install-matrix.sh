@@ -39,7 +39,8 @@ if [ ! -f "$cfg/server.env" ]; then
     echo "MATRIX_BOOTSTRAP_TOKEN=${token}"
     echo "MATRIX_GATEWAY_URL=${MATRIX_GATEWAY_URL}"
     echo "MATRIX_GATEWAY_KEY_FILE=${MATRIX_GATEWAY_KEY_FILE:-$HOME/.hermes/config.yaml}"
-    echo 'MATRIX_GATEWAY_KEY_PATTERN=^\s*api_key:\s*(\S+)'
+    # No backslashes: systemd EnvironmentFile strips them.
+    echo 'MATRIX_GATEWAY_KEY_PATTERN=^ *api_key: *([^ ]+)'
     echo "MATRIX_RUNNER_IMAGE=matrix-runner:dev"
     echo "MATRIX_GITLEAKS=${MATRIX_GITLEAKS:-$HOME/tools/bin/gitleaks}"
     echo "MATRIX_SENTRY_SECRET=$(openssl rand -hex 24)"

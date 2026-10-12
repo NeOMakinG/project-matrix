@@ -410,6 +410,19 @@ export class Operations {
     return this.op(p, "read", "/orca/runtime", { kind: "list" })(() => this.core.getOrcaRuntime());
   }
 
+  /** Audited admin check on one project, for actions that don't go through the core. */
+  async authorizeProjectAdmin(p: Principal, projectId: string, path: string) {
+    await this.op(
+      p,
+      "admin",
+      path,
+      projectId,
+    )(async () => {
+      if (!(await this.core.getProject(projectId)))
+        throw new CoreError("not_found", `project ${projectId} not found`);
+    });
+  }
+
   listAdrs(p: Principal, projectId: string) {
     return this.op(
       p,

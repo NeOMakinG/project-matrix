@@ -4,6 +4,7 @@ import { KeyStore } from "../auth/keys.js";
 import { AuditLog, BudgetTracker, type Clock, RateLimiter } from "../auth/limits.js";
 import { ReplayLog } from "../auth/replay-log.js";
 import { SessionStore } from "../auth/sessions.js";
+import { WebhookSecretStore } from "../auth/webhook-secrets.js";
 import type { CorePort } from "../core-port.js";
 import { handleMcp } from "../mcp.js";
 import { Operations } from "../ops.js";
@@ -11,7 +12,7 @@ import { RunEventLog } from "../run-event-log.js";
 import type { WebhookSecrets } from "../webhooks.js";
 import { dashboardRoutes as serveDashboard } from "./dashboard-static.js";
 import type { AppEnv } from "./route.js";
-import { adminRoutes } from "./routes-admin.js";
+import { adminRoutes, webhookSecretRoutes } from "./routes-admin.js";
 import { dashboardRoutes } from "./routes-dashboard.js";
 import { hookRoutes } from "./routes-hooks.js";
 import { projectRoutes } from "./routes-projects.js";
@@ -29,6 +30,8 @@ export interface ServerOptions {
   replayLogFile?: string;
   /** Built dashboard (apps/dashboard/dist) served same-origin; omit to serve the API only. */
   dashboardDir?: string;
+  /** Per-project webhook secrets issued through the API (JSON, mode 600). */
+  webhookSecretsFile?: string;
   /** Extra health details (store, runtime, loop state) for /healthz. */
   health?: () => Promise<Record<string, unknown>>;
 }
@@ -73,10 +76,14 @@ export function createServer(options: ServerOptions) {
     return c.json({ ...details, ok }, ok ? 200 : 503);
   });
 
+  const webhookSecrets = new WebhookSecretStore(options.webhookSecretsFile);
+  // Statically configured per-project secrets (env/file) are merged into the live store.
+  Object.assign(webhookSecrets.projects, options.secrets?.projects ?? {});
+  const liveSecrets = { ...(options.secrets ?? {}), projects: webhookSecrets.projects };
   hookRoutes(
     app,
     options.core,
-    options.secrets ?? {},
+    liveSecrets,
     new ReplayLog({
       ...(options.replayLogFile ? { file: options.replayLogFile } : {}),
       ...(options.clock ? { clock: options.clock } : {}),
@@ -96,7 +103,8 @@ export function createServer(options: ServerOptions) {
   projectRoutes(app, ops);
   runRoutes(app, ops, keys, new RunEventLog(options.core));
   adminRoutes(app, ops);
-  const secrets = options.secrets ?? {};
+  webhookSecretRoutes(app, ops, webhookSecrets);
+  const secrets = liveSecrets;
   const configured = (source: "sentry" | "github" | "posthog" | "otel" | "orca") =>
     Boolean(secrets[source]) ||
     Object.values(secrets.projects ?? {}).some((project) => Boolean(project[source]));

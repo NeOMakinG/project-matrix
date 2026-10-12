@@ -128,8 +128,11 @@ describe("server on the real core (fake runtime)", () => {
         tickets: { kind: "markdown" },
       }),
     );
-    const secrets = { ...SECRETS, projects: { [project.id]: { sentry: "project-sentry-secret" } } };
-    const app = createServer({ core: f.core, secrets }).app;
+    const issued = await json<{ secret: string; url: string }>(
+      call("POST", `/v1/projects/${project.id}/webhooks/sentry/secret`),
+    );
+    expect(issued.url).toBe(`/hooks/sentry?project=${project.id}`);
+    const app = server.app;
     const body = JSON.stringify({
       action: "created",
       data: {
@@ -146,7 +149,7 @@ describe("server on the real core (fake runtime)", () => {
       body,
       headers: {
         "content-type": "application/json",
-        "sentry-hook-signature": hmacHex("project-sentry-secret", body),
+        "sentry-hook-signature": hmacHex(issued.secret, body),
         "sentry-hook-timestamp": nowTs(),
       },
     });
@@ -158,6 +161,5 @@ describe("server on the real core (fake runtime)", () => {
       call("GET", `/v1/projects/${project.id}/tickets`),
     );
     expect(tickets.length).toBeGreaterThan(0);
-    void server;
   });
 });
