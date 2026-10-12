@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type AutonomyMode, PHASES, type Phase, type Receipt, type RunEvent } from "@matrix/core";
 import type { NewTicket, Ticket, TicketPatch, TicketQuery } from "@matrix/tickets";
 import {
+  type Actor,
   type Adr,
   type Approval,
   type ApprovalDecision,
@@ -30,6 +31,7 @@ export class MemoryCore implements CorePort {
   readonly runs = new Map<string, Run>();
   readonly receipts = new Map<string, Receipt[]>();
   readonly approvals: Approval[] = [];
+  readonly merged = new Map<string, string>();
   readonly signals: MonitorSignal[] = [];
   readonly orca: OrcaStatus[] = [];
   readonly inits = new Map<string, InitSession>();
@@ -139,11 +141,15 @@ export class MemoryCore implements CorePort {
     return this.runs.get(id) ?? null;
   }
 
-  async startRun(input: { projectId: string; ticketId: string; phase: Phase }) {
+  async startRun(input: { projectId: string; ticketId: string; phase: Phase }, actor: Actor) {
     this.project(input.projectId);
+    if (!(this.tickets.get(input.projectId) ?? []).some((t) => t.id === input.ticketId)) {
+      throw new CoreError("not_found", `ticket ${input.ticketId} not found in this project`);
+    }
     const run: Run = {
       id: randomUUID(),
       ...input,
+      startedBy: actor.keyId,
       state: "queued",
       runner: "claude-code",
       model: "claude-fable-5-1",
@@ -153,6 +159,13 @@ export class MemoryCore implements CorePort {
     };
     this.runs.set(run.id, run);
     this.receipts.set(run.id, []);
+    return run;
+  }
+
+  /** Test/fake helper: a new commit replaces the head and voids earlier approvals. */
+  setHead(runId: string, sha: string, state: Run["state"] = "awaiting_approval") {
+    const run = { ...this.run(runId), headSha: sha, state, updatedAt: now() };
+    this.runs.set(runId, run);
     return run;
   }
 
@@ -177,29 +190,92 @@ export class MemoryCore implements CorePort {
     return this.receipts.get(runId) ?? [];
   }
 
-  async approve(runId: string, decision: ApprovalDecision, by: string, comment?: string) {
-    const run = this.run(runId);
+  async approve(input: {
+    runId: string;
+    decision: ApprovalDecision;
+    commitSha: string;
+    actor: Actor;
+    comment?: string;
+  }) {
+    const run = this.run(input.runId);
+    const project = this.project(run.projectId);
     if (run.state !== "awaiting_approval") {
       throw new CoreError("invalid_state", "run is not awaiting approval");
     }
-    const approval: Approval = { runId, decision, by, at: now(), ...(comment ? { comment } : {}) };
+    if (!run.headSha || input.commitSha !== run.headSha) {
+      throw new CoreError("conflict", "approval must target the run's current head commit");
+    }
+    if (input.actor.keyId === run.startedBy) {
+      throw new CoreError("forbidden", "a key cannot approve a run it started");
+    }
+    if (project.autonomy.merge === "human" && input.actor.kind !== "human") {
+      throw new CoreError("forbidden", "this project requires a human approval");
+    }
+    const approval: Approval = {
+      runId: run.id,
+      decision: input.decision,
+      commitSha: input.commitSha,
+      by: input.actor.keyId,
+      byKind: input.actor.kind,
+      at: now(),
+      ...(input.comment ? { comment: input.comment } : {}),
+    };
     this.approvals.push(approval);
-    this.transition(runId, decision === "approve" ? "running" : "queued");
+    if (input.decision === "request_changes") this.transition(run.id, "queued");
     return approval;
   }
 
-  async merge(runId: string, _by: string) {
+  async merge(runId: string, _actor: Actor) {
     const run = this.run(runId);
     const project = this.project(run.projectId);
-    const approved = this.approvals.some((a) => a.runId === runId && a.decision === "approve");
-    if (project.autonomy.merge === "human" && !approved) {
-      throw new CoreError("invalid_state", "merge requires a human approval for this project");
+    if (["failed", "cancelled", "timeout"].includes(run.state)) {
+      throw new CoreError("invalid_state", `a ${run.state} run can never be merged`);
     }
+    if (this.merged.has(runId)) throw new CoreError("conflict", "run already merged");
+    if (run.state !== "awaiting_approval" || !run.headSha) {
+      throw new CoreError("invalid_state", "run has not finished QA");
+    }
+    const receipts = this.receipts.get(runId) ?? [];
+    if (receipts.length === 0 || receipts.some((r) => !r.ok)) {
+      throw new CoreError("invalid_state", "all receipts must be present and passing before merge");
+    }
+    if (project.autonomy.merge === "human") {
+      const approved = this.approvals.some(
+        (a) =>
+          a.runId === runId &&
+          a.decision === "approve" &&
+          a.byKind === "human" &&
+          a.commitSha === run.headSha,
+      );
+      if (!approved) {
+        throw new CoreError(
+          "invalid_state",
+          "merge requires a human approval of the current commit",
+        );
+      }
+    }
+    this.merged.set(runId, now());
     return this.transition(runId, "ok");
   }
 
-  async deploy(projectId: string, _by: string) {
-    this.project(projectId);
+  async deploy(projectId: string, actor: Actor) {
+    const project = this.project(projectId);
+    const mode = project.autonomy.deploy;
+    if (mode === "human" && actor.kind !== "human") {
+      throw new CoreError("forbidden", "this project only allows human deploys");
+    }
+    if (mode === "gated") {
+      const merged = [...this.merged.entries()]
+        .map(([id, at]) => ({ run: this.runs.get(id), at }))
+        .filter((m) => m.run?.projectId === projectId)
+        .sort((a, b) => a.at.localeCompare(b.at));
+      const latest = merged.at(-1)?.run;
+      if (!latest) throw new CoreError("invalid_state", "nothing merged to deploy");
+      const receipts = this.receipts.get(latest.id) ?? [];
+      if (receipts.length === 0 || receipts.some((r) => !r.ok)) {
+        throw new CoreError("invalid_state", "latest merged run has failing receipts");
+      }
+    }
     return { id: randomUUID(), state: "queued" };
   }
 

@@ -12,10 +12,20 @@ export interface Project {
 
 export type RunState = "queued" | "running" | "paused" | "awaiting_approval" | RunStatus;
 
+/** Who performs an action. `kind` comes from the API key: humans vs automated agents. */
+export interface Actor {
+  keyId: string;
+  kind: "human" | "agent";
+}
+
 export interface Run {
   id: string;
   projectId: string;
   ticketId: string;
+  /** Key that started the run; it may never approve its own run. */
+  startedBy: string;
+  /** Commit currently under review. Approvals are bound to it; a new commit voids them. */
+  headSha?: string;
   phase: Phase;
   state: RunState;
   runner: string;
@@ -31,8 +41,10 @@ export type ApprovalDecision = "approve" | "request_changes";
 export interface Approval {
   runId: string;
   decision: ApprovalDecision;
+  commitSha: string;
   comment?: string;
   by: string;
+  byKind: Actor["kind"];
   at: string;
 }
 
@@ -104,18 +116,36 @@ export interface CorePort {
 
   listRuns(projectId?: string): Promise<Run[]>;
   getRun(id: string): Promise<Run | null>;
-  startRun(input: { projectId: string; ticketId: string; phase: Phase }): Promise<Run>;
+  /** Must reject (not_found) when the ticket doesn't belong to the project. */
+  startRun(
+    input: { projectId: string; ticketId: string; phase: Phase },
+    actor: Actor,
+  ): Promise<Run>;
   pauseRun(id: string): Promise<Run>;
   cancelRun(id: string): Promise<Run>;
   listReceipts(runId: string): Promise<Receipt[]>;
-  approve(
-    runId: string,
-    decision: ApprovalDecision,
-    by: string,
-    comment?: string,
-  ): Promise<Approval>;
-  merge(runId: string, by: string): Promise<Run>;
-  deploy(projectId: string, by: string): Promise<{ id: string; state: string }>;
+  /**
+   * Must enforce: the run is awaiting approval; `commitSha` equals the run's `headSha`; the actor is not
+   * the key that started the run; when the project's merge autonomy is `human`, the actor is a human key.
+   */
+  approve(input: {
+    runId: string;
+    decision: ApprovalDecision;
+    commitSha: string;
+    actor: Actor;
+    comment?: string;
+  }): Promise<Approval>;
+  /**
+   * Must enforce: failed, cancelled and timed-out runs are never mergeable; an already merged run is a
+   * conflict; every receipt must be present and passing (all modes); in `human` merge mode there must be
+   * an `approve` by a human key bound to the current `headSha`.
+   */
+  merge(runId: string, actor: Actor): Promise<Run>;
+  /**
+   * Must enforce deploy autonomy: `human` requires a human actor; `gated` requires at least one merged
+   * run and passing receipts on the latest merged run; `autonomous` allows agent deploys.
+   */
+  deploy(projectId: string, actor: Actor): Promise<{ id: string; state: string }>;
   subscribe(runId: string, listener: (event: RunEvent) => void): () => void;
 
   listAdrs(projectId: string): Promise<Adr[]>;
@@ -134,7 +164,7 @@ export interface CorePort {
 
 export class CoreError extends Error {
   constructor(
-    readonly code: "not_found" | "conflict" | "invalid_state",
+    readonly code: "not_found" | "conflict" | "invalid_state" | "forbidden",
     message: string,
   ) {
     super(message);
