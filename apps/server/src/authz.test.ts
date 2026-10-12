@@ -83,6 +83,7 @@ const cases: Case[] = [
     action: "deploy",
     run: async (c, t) => {
       await c.core.setAutonomy(c.project.id, "deploy", "autonomous");
+      c.core.merged.set(await readyRun(c), new Date().toISOString());
       return c.call(t, "POST", `/v1/projects/${c.project.id}/deploy`);
     },
   },
@@ -173,7 +174,7 @@ describe("authentication", () => {
     );
     expect(created.token).toMatch(/^mx_[a-z0-9]{12}_/);
     const listed = await (await ctx.call(ctx.admin, "GET", "/v1/keys")).text();
-    expect(listed).not.toContain(created.token.split("_")[2]);
+    expect(listed).not.toContain(created.token.slice(16));
     expect(listed).not.toContain("hash");
   });
 

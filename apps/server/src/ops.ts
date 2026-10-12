@@ -221,7 +221,7 @@ export class Operations {
       if (project?.autonomy[approval.phase] === "human" && p.key.kind !== "human") {
         throw new CoreError("forbidden", "this phase requires a decision from a human key");
       }
-      return this.core.decideApproval(id, decision, this.actor(p).id, note);
+      return this.core.decideApproval(id, decision, this.actor(p), note);
     });
   }
 

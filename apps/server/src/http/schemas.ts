@@ -137,6 +137,7 @@ export const Approval = z
     requestedAt: z.string(),
     decidedAt: z.string().optional(),
     decidedBy: z.string().optional(),
+    decidedByKind: z.enum(["human", "agent"]).optional(),
     note: z.string().optional(),
   })
   .openapi("Approval");

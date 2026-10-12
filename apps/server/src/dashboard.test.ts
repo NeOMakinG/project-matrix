@@ -61,7 +61,7 @@ describe("dashboard session auth", () => {
     expect(setCookie).toMatch(/HttpOnly/i);
     expect(setCookie).toMatch(/Secure/i);
     expect(setCookie).toMatch(/SameSite=Strict/i);
-    expect(setCookie).not.toContain(s.human.split("_")[2]);
+    expect(setCookie).not.toContain(s.human.slice(16));
     expect(csrf.length).toBeGreaterThan(20);
   });
 

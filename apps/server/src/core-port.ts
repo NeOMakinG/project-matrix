@@ -57,6 +57,8 @@ export interface Approval {
   requestedAt: string;
   decidedAt?: string;
   decidedBy?: string;
+  /** Whether the decider was a human or an agent key; merge and deploy check it against autonomy. */
+  decidedByKind?: Actor["kind"];
   note?: string;
 }
 
@@ -180,23 +182,26 @@ export interface CorePort {
   /**
    * Same rules as core's `decideApproval`: the identity that requested it, any `reconciler:*` identity
    * and the run's owner can't decide; the approval must be pending; approving requires the run to have
-   * succeeded and HEAD to still be the approval's `headSha`.
+   * succeeded and HEAD to still be the approval's `headSha`. The decider's kind is recorded with the
+   * decision (core receives `by.id`).
    */
   decideApproval(
     id: string,
     decision: ApprovalDecision,
-    by: string,
+    by: Actor,
     note?: string,
   ): Promise<Approval>;
   /**
    * Must enforce: failed, cancelled and timed-out runs are never mergeable; an already merged run is a
    * conflict; every receipt must be present and passing (all modes); in `human` merge mode there must be
-   * an approved approval for the run bound to its current `headSha`.
+   * an approved approval whose phase is `merge`, for this run, bound to its current `headSha`, and
+   * decided by a human. Approvals of other phases (e.g. `review`) never count.
    */
   merge(runId: string, actor: Actor): Promise<Run>;
   /**
-   * Must enforce deploy autonomy: `human` requires a human actor; `gated` requires at least one merged
-   * run and passing receipts on the latest merged run; `autonomous` allows agent deploys.
+   * Must enforce deploy autonomy. All modes need a merged run. `human` requires an approved approval
+   * whose phase is `deploy`, for the latest merged run and its `headSha`, decided by a human; `gated`
+   * requires passing receipts on the latest merged run; `autonomous` allows agent deploys.
    */
   deploy(projectId: string, actor: Actor): Promise<{ id: string; state: string }>;
   subscribe(runId: string, listener: (event: RunEvent) => void): () => void;

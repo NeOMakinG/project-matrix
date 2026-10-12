@@ -230,7 +230,8 @@ export class MemoryCore implements CorePort {
     return this.approvals.find((a) => a.id === id) ?? null;
   }
 
-  async decideApproval(id: string, decision: ApprovalDecision, by: string, note?: string) {
+  async decideApproval(id: string, decision: ApprovalDecision, actor: Actor, note?: string) {
+    const by = actor.id;
     const index = this.approvals.findIndex((a) => a.id === id);
     const approval = this.approvals[index];
     if (!approval) throw new CoreError("not_found", `approval ${id} not found`);
@@ -262,6 +263,7 @@ export class MemoryCore implements CorePort {
       status: decision,
       decidedAt: now(),
       decidedBy: by,
+      decidedByKind: actor.kind,
       ...(note ? { note } : {}),
     };
     this.approvals[index] = decided;
@@ -284,11 +286,11 @@ export class MemoryCore implements CorePort {
       throw new CoreError("invalid_state", "all receipts must be present and passing before merge");
     }
     if (project.autonomy.merge === "human") {
-      const approved = this.approvals.some(
-        (a) => a.runId === runId && a.status === "approved" && a.headSha === run.headSha,
-      );
-      if (!approved) {
-        throw new CoreError("invalid_state", "merge requires an approval of the current commit");
+      if (!this.hasHumanApproval("merge", runId, run.headSha)) {
+        throw new CoreError(
+          "invalid_state",
+          "merge requires a human-approved merge approval of the current commit",
+        );
       }
     }
     this.merged.set(runId, now());
@@ -298,22 +300,37 @@ export class MemoryCore implements CorePort {
   async deploy(projectId: string, actor: Actor) {
     const project = this.project(projectId);
     const mode = project.autonomy.deploy;
-    if (mode === "human" && actor.kind !== "human") {
-      throw new CoreError("forbidden", "this project only allows human deploys");
+    const latest = [...this.merged.entries()]
+      .map(([id, at]) => ({ run: this.runs.get(id), at }))
+      .filter((m) => m.run?.projectId === projectId)
+      .sort((a, b) => a.at.localeCompare(b.at))
+      .at(-1)?.run;
+    if (!latest) throw new CoreError("invalid_state", "nothing merged to deploy");
+    if (mode === "human" && !this.hasHumanApproval("deploy", latest.id, latest.headSha)) {
+      throw new CoreError(
+        "forbidden",
+        `deploy requires a human-approved deploy approval (requested by ${actor.id})`,
+      );
     }
     if (mode === "gated") {
-      const merged = [...this.merged.entries()]
-        .map(([id, at]) => ({ run: this.runs.get(id), at }))
-        .filter((m) => m.run?.projectId === projectId)
-        .sort((a, b) => a.at.localeCompare(b.at));
-      const latest = merged.at(-1)?.run;
-      if (!latest) throw new CoreError("invalid_state", "nothing merged to deploy");
       const receipts = this.receipts.get(latest.id) ?? [];
       if (receipts.length === 0 || receipts.some((r) => !r.ok)) {
         throw new CoreError("invalid_state", "latest merged run has failing receipts");
       }
     }
     return { id: randomUUID(), state: "queued" };
+  }
+
+  private hasHumanApproval(phase: Phase, runId: string, headSha: string | undefined): boolean {
+    return this.approvals.some(
+      (a) =>
+        a.phase === phase &&
+        a.runId === runId &&
+        a.status === "approved" &&
+        a.decidedByKind === "human" &&
+        headSha !== undefined &&
+        a.headSha === headSha,
+    );
   }
 
   subscribe(runId: string, listener: (event: RunEvent) => void) {

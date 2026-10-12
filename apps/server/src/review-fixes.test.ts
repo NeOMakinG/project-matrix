@@ -122,10 +122,13 @@ describe("P2: approval, merge and deploy gates", () => {
       `key:${ctx.key(["read"]).split("_")[1]}`,
     );
     await expect(
-      ctx.core.decideApproval(requested.id, "approved", requested.requestedBy),
+      ctx.core.decideApproval(requested.id, "approved", {
+        id: requested.requestedBy,
+        kind: "human",
+      }),
     ).rejects.toThrow(/requested/);
     await expect(
-      ctx.core.decideApproval(approval.id, "approved", "reconciler:other"),
+      ctx.core.decideApproval(approval.id, "approved", { id: "reconciler:other", kind: "agent" }),
     ).rejects.toThrow(/requested/);
 
     await ctx.core.setAutonomy(ctx.project.id, "merge", "human");
@@ -150,22 +153,81 @@ describe("P2: approval, merge and deploy gates", () => {
     expect((await ctx.call(merger, "POST", `/v1/runs/${passing}/merge`)).status).toBe(200);
   });
 
-  test("deploy honours deploy autonomy", async () => {
+  test("deploy honours deploy autonomy and needs a human-decided deploy approval", async () => {
     const ctx = await setup();
     const agent = ctx.key(["deploy", "merge"]);
-    const person = human(ctx, ["deploy"]);
+    const person = human(ctx, ["deploy", "runs:approve"]);
     const deploy = (token: string) =>
       ctx.call(token, "POST", `/v1/projects/${ctx.project.id}/deploy`);
 
-    expect((await deploy(agent)).status).toBe(403); // human mode (default)
-    expect((await deploy(person)).status).toBe(200);
-
-    await ctx.core.setAutonomy(ctx.project.id, "deploy", "gated");
-    expect((await deploy(agent)).status).toBe(409); // nothing merged yet
+    expect((await deploy(person)).status).toBe(409); // nothing merged yet
     await ctx.core.setAutonomy(ctx.project.id, "merge", "gated");
     const runId = await readyRun(ctx);
     expect((await ctx.call(agent, "POST", `/v1/runs/${runId}/merge`)).status).toBe(200);
+
+    // human deploy mode: no deploy approval yet, even a human key can't just deploy
+    expect((await deploy(person)).status).toBe(403);
+    // a merge-phase approval doesn't unlock deploy
+    const mergeApproval = ctx.core.requestApproval(runId, "merge");
+    ctx.core.setHead(runId, SHA);
+    expect(
+      (
+        await ctx.call(person, "POST", `/v1/approvals/${mergeApproval.id}/decision`, {
+          decision: "approved",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await deploy(agent)).status).toBe(403);
+
+    const deployApproval = ctx.core.requestApproval(runId, "deploy");
+    expect(
+      (
+        await ctx.call(person, "POST", `/v1/approvals/${deployApproval.id}/decision`, {
+          decision: "approved",
+        })
+      ).status,
+    ).toBe(200);
     expect((await deploy(agent)).status).toBe(200);
+
+    await ctx.core.setAutonomy(ctx.project.id, "deploy", "autonomous");
+    expect((await deploy(agent)).status).toBe(200);
+  });
+
+  test("merge only counts a human-decided approval of the merge phase (P1 round 2)", async () => {
+    const ctx = await setup();
+    // merge = human (default); the review phase is gated so an agent may decide it
+    await ctx.core.setAutonomy(ctx.project.id, "review", "gated");
+    const runId = await readyRun(ctx);
+    const agent = ctx.key(["runs:approve", "merge"]);
+
+    const review = ctx.core.requestApproval(runId, "review");
+    expect(
+      (
+        await ctx.call(agent, "POST", `/v1/approvals/${review.id}/decision`, {
+          decision: "approved",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await ctx.call(agent, "POST", `/v1/runs/${runId}/merge`)).status).toBe(409);
+
+    // an agent-decided merge approval doesn't count either, even if recorded directly in core
+    const mergeByAgent = ctx.core.requestApproval(runId, "merge");
+    await ctx.core.decideApproval(mergeByAgent.id, "approved", {
+      id: "key:other-agent",
+      kind: "agent",
+    });
+    expect((await ctx.call(agent, "POST", `/v1/runs/${runId}/merge`)).status).toBe(409);
+
+    const mergeByHuman = ctx.core.requestApproval(runId, "merge");
+    const person = human(ctx, ["runs:approve"]);
+    expect(
+      (
+        await ctx.call(person, "POST", `/v1/approvals/${mergeByHuman.id}/decision`, {
+          decision: "approved",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await ctx.call(agent, "POST", `/v1/runs/${runId}/merge`)).status).toBe(200);
   });
 
   test("starting a run on another project's ticket is refused", async () => {
