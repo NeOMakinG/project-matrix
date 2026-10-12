@@ -168,3 +168,104 @@ describe("P2 hardening", () => {
     expect(r.invalid[0]?.message).toMatch(/unsafe regex/);
   });
 });
+
+describe("round 2", () => {
+  test("P2: this.method(...) call patterns match again", async () => {
+    const r = await runRuleCase({
+      rules: [
+        {
+          description: "No raw SQL execution outside repositories.",
+          check: { type: "call-pattern", pattern: "this.execute($$$)" },
+        },
+      ],
+      files: {
+        "src/svc.ts": [
+          "class Svc {",
+          "  execute(q: string) { return q; }",
+          '  run() { return this.execute("select 1"); }',
+          "}",
+          'new Svc().execute("x");',
+        ].join("\n"),
+      },
+    });
+    expect(r.hits).toEqual(["ADR-0099 src/svc.ts:3"]);
+  });
+});
+
+describe("round 2: submodules", () => {
+  const subGit = (cwd: string, ...args: string[]) =>
+    git(cwd, "-c", "protocol.file.allow=always", ...args);
+
+  const setup = async (manifest?: object) => {
+    const lib = await fixtureProject({
+      "x.ts": 'import { eq } from "drizzle-orm";\nexport const x = eq;\n',
+    });
+    git(lib, "init", "-q", "-b", "main");
+    git(lib, "add", ".");
+    git(lib, "commit", "-q", "-m", "lib");
+    const root = await fixtureProject({
+      "docs/adr/0023-orm.md": ormAdr,
+      "src/a.ts": "export const a = 1;\n",
+      ...(manifest ? { ".matrix/rules-manifest.json": JSON.stringify(manifest) } : {}),
+    });
+    git(root, "init", "-q", "-b", "main");
+    subGit(root, "submodule", "add", "-q", lib, "vendor/lib");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "base");
+    return root;
+  };
+
+  test("P1: a populated submodule fails closed instead of hiding its code", async () => {
+    const r = await checkProject(await setup());
+    expect(r.ok).toBe(false);
+    expect(r.failures).toEqual([expect.stringMatching(/submodule vendor\/lib hides code/)]);
+    expect(r.violations).toEqual([]);
+  });
+
+  test("P1: an allowed submodule is checked recursively", async () => {
+    const r = await checkProject(
+      await setup({ version: 1, adrDir: "docs/adr", minRules: 1, allowSubmodules: ["vendor/*"] }),
+    );
+    expect(r.failures).toEqual([]);
+    expect(r.violations.map((v) => `${v.adr} ${v.file}:${v.line}`)).toEqual([
+      "ADR-0023 vendor/lib/x.ts:1",
+    ]);
+  });
+
+  test("P1: an allowed but uninitialised submodule fails closed", async () => {
+    const root = await setup({
+      version: 1,
+      adrDir: "docs/adr",
+      minRules: 1,
+      allowSubmodules: ["vendor/lib"],
+    });
+    git(root, "submodule", "deinit", "-q", "-f", "vendor/lib");
+    const r = await checkProject(root);
+    expect(r.failures).toEqual([
+      expect.stringMatching(/vendor\/lib is allowed but not checked out/),
+    ]);
+  });
+
+  test("P1: a branch cannot allow its own submodule when rules come from the base", async () => {
+    const root = await setup();
+    git(root, "checkout", "-q", "-b", "feat");
+    await put(
+      root,
+      ".matrix/rules-manifest.json",
+      JSON.stringify({ version: 1, adrDir: "docs/adr", minRules: 1, allowSubmodules: ["**"] }),
+    );
+    expect((await checkProject(root)).failures).toEqual([]);
+    const gated = await checkProject(root, { rulesFrom: "main" });
+    expect(gated.failures).toEqual([expect.stringMatching(/submodule vendor\/lib hides code/)]);
+  });
+
+  test("P1: nested repositories are detected outside git too", async () => {
+    const root = await fixtureProject({
+      "docs/adr/0023-orm.md": ormAdr,
+      "vendor/inner/.git/HEAD": "ref: refs/heads/main\n",
+      "vendor/inner/x.ts": 'import "drizzle-orm";\n',
+    });
+    const r = await checkProject(root);
+    expect(r.failures).toEqual([expect.stringMatching(/submodule vendor\/inner hides code/)]);
+  });
+});

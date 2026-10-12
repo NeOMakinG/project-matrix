@@ -29,6 +29,8 @@ const GLOBAL_OBJECTS = new Set(["globalThis", "window", "self", "global"]);
 const calleeText = (expr: ts.Expression): string | undefined => {
   if (ts.isParenthesizedExpression(expr)) return calleeText(expr.expression);
   if (ts.isIdentifier(expr)) return expr.text;
+  if (expr.kind === ts.SyntaxKind.ThisKeyword) return "this";
+  if (expr.kind === ts.SyntaxKind.SuperKeyword) return "super";
   if (ts.isPropertyAccessExpression(expr)) {
     const left = calleeText(expr.expression);
     return left ? `${left}.${expr.name.text}` : undefined;
