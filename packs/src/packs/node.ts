@@ -1,5 +1,5 @@
 import type { Answers, Option, Pack, Question, RuleStub } from "../types";
-import { hasBackend, opt } from "./helpers";
+import { hasBackend, hasGoBackend, hasServer, opt } from "./helpers";
 
 interface Choice {
   key: string;
@@ -42,7 +42,7 @@ const choice = (c: Choice): Question => ({
   },
 });
 
-const noneUnlessBackend = (fallback: string) => (a: Answers) => (hasBackend(a) ? fallback : "none");
+const noneUnlessBackend = (fallback: string) => (a: Answers) => (hasServer(a) ? fallback : "none");
 
 export const nodePack: Pack = {
   id: "backend",
@@ -59,13 +59,16 @@ export const nodePack: Pack = {
       rationale: "A TypeScript API shares types and validation with the frontend.",
       options: [
         opt("node-api", "TypeScript API (Bun/Node)"),
-        opt("none", "No backend (static or BaaS)"),
-        opt("other", "Other (Go, Python… packs coming)"),
+        opt("go", "Go API", "Static binary, low memory, strong concurrency."),
+        opt("none", "No backend (static, BaaS, or full-stack framework routes)"),
+        opt("other", "Other (Python… packs coming)"),
       ],
       infer: (ctx) =>
         ["hono", "fastify", "elysia", "express"].some((p) => ctx.dependencies.has(p))
           ? "node-api"
-          : undefined,
+          : ctx.files.has("go.mod") || ctx.files.has("services/api/go.mod")
+            ? "go"
+            : undefined,
       adr: {
         topic: "backend",
         context: "The backend shape decides deployment, auth and data ownership.",
@@ -116,7 +119,8 @@ export const nodePack: Pack = {
         opt("prisma", "Prisma"),
         opt("none", "None"),
       ],
-      recommended: (a) => (a["backend.database"] === "none" ? "none" : "drizzle"),
+      recommended: (a) =>
+        a["backend.database"] === "none" || hasGoBackend(a) ? "none" : "drizzle",
       rationale: "Drizzle keeps SQL visible and types exact.",
       detect: { drizzle: "drizzle-orm", prisma: "@prisma/client" },
       topic: "ORM",
@@ -156,8 +160,9 @@ export const nodePack: Pack = {
         opt("clerk", "Clerk", "Hosted."),
         opt("none", "None"),
       ],
-      recommended: noneUnlessBackend("better-auth"),
-      rationale: "Keeps user data in your own database.",
+      recommended: (a) => (hasBackend(a) ? "better-auth" : hasGoBackend(a) ? "clerk" : "none"),
+      rationale:
+        "better-auth keeps user data in your own database (TypeScript only); a Go API verifies Clerk sessions with its Go SDK.",
       detect: { "better-auth": "better-auth", clerk: "@clerk/backend" },
       topic: "authentication",
       context: "Auth sets session handling, user data location and tenancy checks.",
@@ -171,7 +176,7 @@ export const nodePack: Pack = {
         opt("lemonsqueezy", "Lemon Squeezy", "Merchant of record, handles VAT."),
         opt("none", "None"),
       ],
-      recommended: (a) => (a["business.pricing"] === "free" || !hasBackend(a) ? "none" : "stripe"),
+      recommended: (a) => (a["business.pricing"] === "free" || !hasServer(a) ? "none" : "stripe"),
       rationale: "Stripe for subscriptions and usage billing.",
       detect: { stripe: "stripe" },
       topic: "payments",

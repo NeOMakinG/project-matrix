@@ -144,6 +144,7 @@ export async function checkProject(root: string, opts: CheckOptions = {}): Promi
   const listing = await scanSources(root, { includeSubmodule: (p) => allowSubmodule(p) });
   const resolver = await createResolver(root, listing.files);
   const index = createSourceIndex(listing.files, (f) => readFile(join(root, f), "utf8"), {
+    textFiles: listing.textFiles,
     root,
     resolver,
   });

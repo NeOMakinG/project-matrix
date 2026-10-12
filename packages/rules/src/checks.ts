@@ -24,6 +24,8 @@ export interface Hit {
 /** Lazily reads and caches file text, parsed imports, source trees and a type-checked program. */
 export interface SourceIndex {
   files: string[];
+  /** Non-JS text files (Go, Rust, JSON, YAML…) scanned only by text rules. */
+  textFiles: string[];
   known: ReadonlySet<string>;
   text(file: string): Promise<string>;
   imports(file: string): Promise<ImportRef[]>;
@@ -40,6 +42,10 @@ export { parseCallPattern } from "./callpattern";
 
 const filesInScope = (index: SourceIndex, check: Scope) =>
   index.files.filter((f) => inScope(f, check));
+
+/** Text rules see JS/TS sources plus other text files. */
+const textFilesInScope = (index: SourceIndex, check: Scope) =>
+  [...index.files, ...index.textFiles].filter((f) => inScope(f, check));
 
 const computedHit = (file: string, ref: ImportRef): Hit => ({
   file,
@@ -88,7 +94,7 @@ export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hi
       break;
     case "regex": {
       const re = compileSafeRegex(check.pattern, `${(check.flags ?? "").replace("g", "")}g`);
-      for (const file of filesInScope(index, check)) {
+      for (const file of textFilesInScope(index, check)) {
         const text = await index.text(file);
         if (text.length > MAX_REGEX_SCAN_BYTES) {
           hits.push({ file, line: 1, message: "file too large for regex rules; not scanned" });
@@ -102,7 +108,7 @@ export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hi
     }
     case "required-header": {
       const re = compileSafeRegex(check.header, "m");
-      for (const file of filesInScope(index, check)) {
+      for (const file of textFilesInScope(index, check)) {
         const head = (await index.text(file)).split("\n").slice(0, 10).join("\n");
         if (!re.test(head)) hits.push({ file, line: 1, message: "missing required header" });
       }
@@ -116,6 +122,8 @@ export interface SourceIndexOptions {
   /** Absolute project root; a virtual root is used for in-memory sources. */
   root: string;
   resolver: Resolver;
+  /** Non-JS text files for regex and header rules. */
+  textFiles?: string[];
 }
 
 const PROGRAM_OPTIONS: ts.CompilerOptions = {
@@ -169,6 +177,7 @@ export function createSourceIndex(
 
   return {
     files,
+    textFiles: opts.textFiles ?? [],
     known: new Set(files),
     text,
     absolute,

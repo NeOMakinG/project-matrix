@@ -1,11 +1,11 @@
-import type { Option, Pack, Question, RuleStub } from "../types";
-import { hasWebUi, opt, usesReact } from "./helpers";
+import type { Answers, Option, Pack, Question, RuleStub } from "../types";
+import { hasGoBackend, hasWebUi, opt, usesReact } from "./helpers";
 
 interface LibQuestion {
   key: string;
   prompt: string;
   options: Option[];
-  recommended: string;
+  recommended: string | ((a: Answers) => string);
   rationale: string;
   /** npm package that reveals each option in an existing repo. */
   detect?: Record<string, string>;
@@ -95,8 +95,10 @@ export const reactPack: Pack = {
         opt("react-router", "React Router"),
         opt("next-app-router", "Next.js App Router"),
       ],
-      recommended: "tanstack-router",
-      rationale: "Type-safe routes and search params catch broken links at compile time.",
+      recommended: (a) =>
+        a["frontend.bundler"] === "next" ? "next-app-router" : "tanstack-router",
+      rationale:
+        "Type-safe routes and search params catch broken links at compile time; Next.js brings its own App Router.",
       detect: { "tanstack-router": "@tanstack/react-router", "react-router": "react-router" },
       topic: "routing",
       context: "Routing defines URL structure, data loading and code splitting.",
@@ -200,9 +202,21 @@ export const reactPack: Pack = {
         opt("ts-rest", "ts-rest", "Typed REST contract, OpenAPI friendly."),
         opt("openapi-fetch", "OpenAPI + openapi-fetch", "For non-TS or public APIs."),
         opt("rest", "Plain REST"),
+        opt(
+          "server-functions",
+          "Framework server functions",
+          "TanStack Start server functions / Next.js server actions: typed, no separate API.",
+        ),
       ],
-      recommended: "trpc",
-      rationale: "With a TypeScript backend, tRPC removes a whole class of contract drift bugs.",
+      recommended: (a) =>
+        hasGoBackend(a)
+          ? "openapi-fetch"
+          : a["backend.kind"] === "none" &&
+              (a["frontend.bundler"] === "next" || a["frontend.bundler"] === "tanstack-start")
+            ? "server-functions"
+            : "trpc",
+      rationale:
+        "tRPC for a TypeScript API, OpenAPI for a Go API, framework server functions when the full-stack framework is the backend.",
       detect: {
         trpc: "@trpc/client",
         "ts-rest": "@ts-rest/core",

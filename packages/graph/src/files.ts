@@ -16,6 +16,11 @@ export const toPosix = (p: string) => p.split(sep).join("/");
 
 export const isSource = (path: string) => SOURCE_EXTENSIONS.some((ext) => path.endsWith(ext));
 
+/** Non-JS files that text rules (regex, required-header) also scan: Go, Rust, config, SQL. */
+export const TEXT_EXTENSIONS = [".go", ".rs", ".json", ".toml", ".yaml", ".yml", ".sql"];
+
+export const isText = (path: string) => TEXT_EXTENSIONS.some((ext) => path.endsWith(ext));
+
 export const isDeclaration = (path: string) => /\.d\.[cm]?ts$/.test(path);
 
 const rootExcluded = (rel: string) =>
@@ -38,6 +43,8 @@ export interface NestedRepo {
 
 export interface SourceListing {
   files: string[];
+  /** Non-JS text files (see TEXT_EXTENSIONS), for regex and header rules. */
+  textFiles: string[];
   escapes: SymlinkEscape[];
   submodules: NestedRepo[];
   /** How files were discovered. */
@@ -139,6 +146,7 @@ async function walkListing(root: string): Promise<GitListing> {
 export async function scanSources(root: string, opts: ScanOptions = {}): Promise<SourceListing> {
   const realTop = await realpath(root);
   const files: string[] = [];
+  const textFiles: string[] = [];
   const escapes: SymlinkEscape[] = [];
   const submodules: NestedRepo[] = [];
   let via: SourceListing["via"] = "walk";
@@ -164,6 +172,7 @@ export async function scanSources(root: string, opts: ScanOptions = {}): Promise
         if ((await lstat(target)).isDirectory()) continue;
       } else if (!st.isFile()) continue;
       if (isSource(rel) && !isDeclaration(rel)) files.push(full);
+      else if (isText(rel)) textFiles.push(full);
     }
     for (const sub of listing.nested) {
       const full = prefix + sub;
@@ -178,6 +187,7 @@ export async function scanSources(root: string, opts: ScanOptions = {}): Promise
   await scan(root, "", true);
   return {
     files: [...new Set(files)].sort(),
+    textFiles: [...new Set(textFiles)].sort(),
     escapes: escapes.sort((a, b) => a.path.localeCompare(b.path)),
     submodules: submodules.sort((a, b) => a.path.localeCompare(b.path)),
     via,
