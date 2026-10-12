@@ -85,16 +85,38 @@ describe("screens", () => {
     expect(await screen.findByRole("heading", { name: /MX-142/ })).toBeInTheDocument();
   });
 
-  it("init interview starts a session and walks questions", async () => {
+  it("new project creates the project, starts a session and asks a full round", async () => {
     const user = userEvent.setup();
-    const { router } = renderRoute("/p/ledgerly/init");
-    await user.click(await screen.findByRole("button", { name: "Start interview" }));
-    expect(await screen.findByRole("radio", { name: /TanStack Query \+ tRPC/ })).toBeChecked();
-    expect(router.state.location.search).toEqual({ session: "init_1" });
-    await user.click(screen.getByRole("button", { name: "Confirm & next" }));
+    const { router } = renderRoute("/new");
+    await user.type(await screen.findByPlaceholderText("ledgerly"), "Bad Name");
+    await user.click(screen.getByRole("button", { name: "Create and start the interview" }));
+    expect(await screen.findByText("Lowercase letters, digits and dashes")).toBeInTheDocument();
+    await user.clear(screen.getByPlaceholderText("ledgerly"));
+    await user.type(screen.getByPlaceholderText("ledgerly"), "shop");
+    await user.click(screen.getByRole("button", { name: "Create and start the interview" }));
     expect(
-      await screen.findByRole("heading", { name: "Which form library should the web app use?" }),
+      await screen.findByRole("heading", { name: "shop · Init interview" }, { timeout: 5000 }),
     ).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/p/prj_4/init");
+    expect(router.state.location.search).toEqual({ session: "init_1" });
+    expect(screen.getByRole("heading", { name: "Product name?" })).toBeInTheDocument();
+
+    // Text questions have no recommendation: submitting flags them.
+    await user.click(screen.getByRole("button", { name: /^Confirm \d+ answers$/ }));
+    expect((await screen.findAllByText("This question needs an answer.")).length).toBeGreaterThan(
+      0,
+    );
+    for (const input of screen.getAllByRole("textbox")) {
+      if ((input as HTMLInputElement).value === "") await user.type(input, "Answer");
+    }
+    await user.click(screen.getByRole("button", { name: /^Confirm \d+ answers$/ }));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Product name?" })).not.toBeInTheDocument(),
+    );
+    expect(Object.keys(mockDb().initSessions.get("init_1")?.answers ?? {})).toContain(
+      "business.name",
+    );
+    expect(screen.getByLabelText("matrix.config.ts preview")).toHaveTextContent('"name": "Answer"');
   });
 
   it("knowledge lists ADRs and rule violations", async () => {

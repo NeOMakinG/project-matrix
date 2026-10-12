@@ -8,7 +8,12 @@ import {
   adaptRunSummaries,
   adaptTickets,
 } from "./adapters";
-import { dashboardSettingsSchema, sessionSchema, verificationSchema } from "./contracts";
+import {
+  dashboardSettingsSchema,
+  finalizeSchema,
+  sessionSchema,
+  verificationSchema,
+} from "./contracts";
 import {
   ApiError,
   apiUrl,
@@ -173,13 +178,29 @@ export const endpoints = {
     ]);
     return { session, progress };
   },
-  answerInit: (sessionId: string, questionId: string, optionId: string) =>
+  answerInit: (sessionId: string, answers: Record<string, string | number | boolean | string[]>) =>
     unwrap(
       v1.POST("/v1/init/{id}/answers", {
         params: { path: { id: sessionId } },
-        body: { answers: { [questionId]: optionId } },
+        body: { answers },
       }),
     ),
+  createProject: (input: { name: string; description: string; workspace: "orca" | "native" }) =>
+    unwrap(
+      v1.POST("/v1/projects", {
+        body: { name: input.name, description: input.description, workspace: input.workspace },
+      }),
+    ),
+  /**
+   * Proposed: POST /v1/init/{id}/finalize (not on the server yet). Writes
+   * matrix.config.ts, the ADRs and the scaffold, seeds the backlog, and returns
+   * the created ticket ids. A 404 surfaces as a visible error in the UI.
+   */
+  finalizeInit: (sessionId: string) =>
+    contract(finalizeSchema, pathOf("/v1/init/{id}/finalize", { id: sessionId }), {
+      method: "POST",
+      body: "{}",
+    }),
 
   async settings(projectId: string): Promise<SettingsView> {
     const [project, res] = await Promise.all([

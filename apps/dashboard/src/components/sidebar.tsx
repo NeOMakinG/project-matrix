@@ -19,6 +19,7 @@ export function gatewayTone(healthy: number, total: number): "green" | "amber" |
 export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const projectId = useCurrentProjectId();
   const gateway = useQuery(queries.gateway());
+  const project = useQuery({ ...queries.project(projectId), retry: false });
   const client = useQueryClient();
   const navigate = useNavigate();
   const signOut = useMutation({
@@ -47,7 +48,7 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
           onClick={onOpenPalette}
           className="mt-5 flex h-9 items-center justify-between rounded-control border border-border-strong bg-canvas px-3 text-body text-fg hover:bg-hover"
         >
-          <span className="truncate">{projectId}</span>
+          <span className="truncate">{project.data?.name ?? projectId}</span>
           <kbd className="font-mono text-caption text-fg-muted">⌘K</kbd>
         </button>
 
@@ -66,7 +67,11 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
 
         <div className="mt-auto rounded-control border border-border-subtle bg-raised px-3 py-3">
           <div className="font-mono text-caption text-fg-muted">Model gateway</div>
-          {gateway.data ? (
+          {gateway.data && gateway.data.total === 0 ? (
+            <Pill tone="neutral" className="mt-2">
+              no models reported
+            </Pill>
+          ) : gateway.data ? (
             <Pill tone={gatewayTone(gateway.data.healthy, gateway.data.total)} className="mt-2">
               {gateway.data.healthy} of {gateway.data.total} models healthy
             </Pill>
