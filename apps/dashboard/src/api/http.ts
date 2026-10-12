@@ -1,5 +1,5 @@
+import type { paths } from "@matrix/sdk";
 import createClient, { type Middleware } from "openapi-fetch";
-import type { paths } from "./generated/v1";
 
 export class ApiError extends Error {
   constructor(

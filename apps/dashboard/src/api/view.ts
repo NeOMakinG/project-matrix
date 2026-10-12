@@ -1,5 +1,5 @@
+import type { components } from "@matrix/sdk";
 import type { PillData, Tone } from "./contracts";
-import type { components } from "./generated/v1";
 
 export type { PillData, Tone };
 export type S = components["schemas"];
