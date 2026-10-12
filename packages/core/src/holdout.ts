@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { Receipt } from "./ports.js";
 
 export interface HoldoutScenario {
@@ -16,6 +16,16 @@ export interface ScenarioVerdict {
 }
 
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
+
+/** Only holdout receipts produced by core's own judge carry this tag; drivers' receipts are dropped. */
+export const HOLDOUT_PROVENANCE = "core-judge";
+
+export function isTrustedHoldout(receipt: Receipt): boolean {
+  return (
+    receipt.kind === "holdout" &&
+    (receipt.data as { provenance?: string } | undefined)?.provenance === HOLDOUT_PROVENANCE
+  );
+}
 
 export function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -69,7 +79,14 @@ export function holdoutReceipt(
     kind: "holdout",
     ok: scenarios.length > 0,
     summary: `${satisfied}/${scenarios.length} holdout scenarios satisfied (judge ${judgeModel})`,
-    data: { satisfaction, satisfied, total: scenarios.length, judgeModel, verdicts },
+    data: {
+      provenance: HOLDOUT_PROVENANCE,
+      satisfaction,
+      satisfied,
+      total: scenarios.length,
+      judgeModel,
+      verdicts,
+    },
   };
 }
 
@@ -88,8 +105,18 @@ export class HoldoutStore {
     return join(this.root, projectId, `${ticketId}.json`);
   }
 
+  /** True when `path` is the store root or below it ("/data/holdouts-evil" is not inside "/data/holdouts"). */
   isInside(path: string): boolean {
-    return resolve(path).startsWith(this.root);
+    const rel = relative(this.root, resolve(path));
+    return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+  }
+
+  /** Refuses to operate when the store would sit inside a worktree the implementer can read. */
+  assertOutside(workdir: string): void {
+    const rel = relative(resolve(workdir), this.root);
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) {
+      throw new Error("holdout store must live outside the worktree");
+    }
   }
 
   async save(projectId: string, ticketId: string, scenarios: HoldoutScenario[]): Promise<void> {

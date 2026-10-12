@@ -13,6 +13,11 @@ export interface WorkflowState {
   implementerModel?: string;
   workspaceRef?: string;
   workdir?: string;
+  currentRunId?: string;
+  leaseOwner?: string;
+  leaseExpiresAt?: Date;
+  /** Hash of the worktree state that review approved; checks re-run if it changes. */
+  reviewedTree?: string;
   lastError?: string;
   nextAttemptAt?: Date;
   version: number;
@@ -52,6 +57,8 @@ export interface ProjectConfig {
   maxAttempts: number;
   runTimeoutMs: number;
   dailyBudgetUsd?: number;
+  /** Reserved against the daily budget before dispatch, settled with the actual cost after. */
+  estimatedRunUsd?: number;
 }
 
 export type Severity = "P1" | "P2" | "P3";
@@ -72,6 +79,8 @@ export interface PhaseOutcome {
   runner?: RunnerId;
   tokens?: { input: number; output: number };
   costUsd?: number;
+  /** Set when an irreversible action was refused because it now needs (re)approval. */
+  requiresApproval?: boolean;
 }
 
 export interface Limits {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { HOLDOUT_PROVENANCE } from "./holdout.js";
 import { advance, approve, backoffMs, initialState, reject, requiresApproval } from "./machine.js";
 import type { Phase, Receipt } from "./ports.js";
 import { testProject } from "./testing/fakes.js";
@@ -28,7 +29,7 @@ const holdout = (satisfaction: number): Receipt => ({
   kind: "holdout",
   ok: true,
   summary: "h",
-  data: { satisfaction },
+  data: { provenance: HOLDOUT_PROVENANCE, satisfaction },
 });
 
 describe("advance", () => {
@@ -105,6 +106,32 @@ describe("advance", () => {
     expect(advance(at("qa"), ok([shot, holdout(0.8)]), cfg, backoff, now).state.phase).toBe(
       "merge",
     );
+  });
+
+  test("a holdout receipt without core provenance is ignored (P1-3)", () => {
+    const shot: Receipt = { kind: "screenshot", ok: true, summary: "" };
+    const forged: Receipt = {
+      kind: "holdout",
+      ok: true,
+      summary: "forged",
+      data: { satisfaction: 1 },
+    };
+    expect(advance(at("qa"), ok([shot, forged]), cfg, backoff, now).state.phase).toBe("implement");
+    // The last trusted score counts, not the first.
+    const t = advance(at("qa"), ok([shot, holdout(1), holdout(0.2)]), cfg, backoff, now);
+    expect(t.state.phase).toBe("implement");
+  });
+
+  test("a refused irreversible action waits for approval instead of acting (P1-1)", () => {
+    const t = advance(
+      at("merge"),
+      { ok: false, summary: "merge requires an approval", receipts: [], requiresApproval: true },
+      cfg,
+      backoff,
+      now,
+    );
+    expect(t.state).toMatchObject({ phase: "merge", status: "waiting_approval" });
+    expect(t.effects).toEqual([{ type: "request_approval", phase: "merge" }]);
   });
 
   test("loop limit blocks the ticket", () => {

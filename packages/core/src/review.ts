@@ -19,9 +19,14 @@ export function pickReviewer(
   config: ProjectConfig,
   implementerModel: string | undefined,
 ): PhaseModel {
+  // Exclude both the model that actually implemented and the configured implementer model,
+  // so an unknown implementer can never silently be reviewed by itself.
+  const excluded = new Set([config.models.implement.model, implementerModel].filter(Boolean));
   const candidates = [config.models.review, ...config.reviewerFallbacks];
-  const pick = candidates.find((c) => c.model !== implementerModel);
-  if (!pick) throw new Error("no reviewer model differs from the implementer model");
+  const pick = candidates.find((c) => !excluded.has(c.model));
+  if (!pick) {
+    throw new Error(`no reviewer model differs from the implementer (${[...excluded].join(", ")})`);
+  }
   return pick;
 }
 

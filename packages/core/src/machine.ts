@@ -1,3 +1,4 @@
+import { isTrustedHoldout } from "./holdout.js";
 import { type AutonomyMode, PHASES, type Phase, type Receipt } from "./ports.js";
 import type {
   BackoffPolicy,
@@ -68,7 +69,7 @@ export function gate(phase: Phase, outcome: PhaseOutcome, config: ProjectConfig)
       const evidence = r.filter((x) => QA_EVIDENCE.has(x.kind));
       if (evidence.length === 0) return { pass: false, reason: "no QA receipts" };
       if (evidence.some((x) => !x.ok)) return { pass: false, reason: "QA receipt failed" };
-      const holdout = r.find((x) => x.kind === "holdout");
+      const holdout = r.filter(isTrustedHoldout).at(-1);
       const satisfaction = (holdout?.data as { satisfaction?: number } | undefined)?.satisfaction;
       if (typeof satisfaction !== "number") return { pass: false, reason: "no holdout score" };
       return satisfaction >= config.holdoutThreshold
@@ -113,6 +114,13 @@ export function advance(
   backoff: BackoffPolicy,
   now: Date,
 ): Transition {
+  if (outcome.requiresApproval && (state.phase === "merge" || state.phase === "deploy")) {
+    // Autonomy changed or the approval no longer matches: stop and ask again instead of acting.
+    return {
+      state: { ...state, status: "waiting_approval", lastError: outcome.summary },
+      effects: [{ type: "request_approval", phase: state.phase }],
+    };
+  }
   const crashed = outcome.runStatus !== undefined && outcome.runStatus !== "ok";
   const softFail =
     !crashed && !outcome.ok && (state.phase === "spike" || state.phase === "implement");

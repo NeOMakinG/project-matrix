@@ -44,6 +44,17 @@ describe("reviewer selection", () => {
     expect(pickReviewer(cfg, "gpt-6.1-sol").model).toBe("glm-5.3");
   });
 
+  test("never falls back to the configured implementer model (P2)", () => {
+    const cfg = testProject({
+      models: {
+        implement: { runner: "claude-code", model: "fable-5-1" },
+        review: { runner: "claude-code", model: "fable-5-1" },
+      },
+      reviewerFallbacks: [],
+    });
+    expect(() => pickReviewer(cfg, undefined)).toThrow("no reviewer model differs");
+  });
+
   test("throws when no different model is available", () => {
     const cfg = testProject({ reviewerFallbacks: [] });
     expect(() => pickReviewer(cfg, "gpt-6.1-sol")).toThrow();
@@ -51,6 +62,15 @@ describe("reviewer selection", () => {
 });
 
 describe("holdout store", () => {
+  test("isInside is not fooled by a shared prefix (P1-5)", () => {
+    const root = mkdtempSync(join(tmpdir(), "holdouts-"));
+    const store = new HoldoutStore(root);
+    expect(store.isInside(join(root, "p", "t.json"))).toBe(true);
+    expect(store.isInside(`${root}-evil/t.json`)).toBe(false);
+    expect(() => store.assertOutside(join(root, ".."))).toThrow("outside the worktree");
+    expect(() => store.assertOutside("/tmp/wt/T-1")).not.toThrow();
+  });
+
   test("rejects path traversal in ids", async () => {
     const store = new HoldoutStore(mkdtempSync(join(tmpdir(), "holdout-")));
     await expect(store.save("../x", "T-1", [])).rejects.toThrow("unsafe");
