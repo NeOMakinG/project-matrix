@@ -1,5 +1,5 @@
 import { lstat, readFile, realpath } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * Config forced on every host-side git call. Passed through GIT_CONFIG_COUNT so it outranks any repo
@@ -65,4 +65,30 @@ export async function verifyWorktreeLink(workdir: string, expectedGitDir: string
       `worktree ${workdir} .git points to ${target || "nothing"}, expected ${expected}`,
     );
   }
+}
+
+/**
+ * Finds the host-owned gitdir of a linked worktree without trusting it: the `.git` pointer must
+ * name `<common>/worktrees/<name>`, and that gitdir's own `gitdir` back-link (written by git on
+ * the host, not visible to the sandbox) must point back at this worktree.
+ */
+export async function resolveWorktreeGitDir(
+  workdir: string,
+): Promise<{ gitdir: string; commonDir: string }> {
+  const marker = join(workdir, ".git");
+  const stat = await lstat(marker);
+  if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 4096)
+    throw new Error(`tampered .git in ${workdir}`);
+  const pointer = (await readFile(marker, "utf8")).trim();
+  if (!pointer.startsWith("gitdir: ")) throw new Error(`${workdir} is not a linked worktree`);
+  const gitdir = await realpath(pointer.slice(8).trim());
+  if (basename(dirname(gitdir)) !== "worktrees")
+    throw new Error(`${workdir} points outside a worktrees dir`);
+  const back = await realpath((await readFile(join(gitdir, "gitdir"), "utf8")).trim()).catch(
+    () => "",
+  );
+  if (back !== (await realpath(marker)))
+    throw new Error(`${workdir} .git does not match its gitdir back-link`);
+  await verifyWorktreeLink(workdir, gitdir);
+  return { gitdir, commonDir: dirname(dirname(gitdir)) };
 }

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LineExecutor } from "@matrix/sandbox";
 import { describe, expect, test } from "vitest";
+import { WorktreeGitPort } from "./git-port";
 import { NativeWorkspace } from "./native";
 import { checkOrcaContract, OrcaWorkspace } from "./orca";
 
@@ -195,5 +196,63 @@ describe("orca workspace", () => {
         baseBranch: "main",
       }),
     ).rejects.toThrow(/not registered in Orca/);
+  });
+});
+
+describe("worktree git port", () => {
+  test("reports exact HEAD, ignores gitignored files, tracks tree state", async () => {
+    const repoPath = await repo();
+    await writeFile(join(repoPath, ".gitignore"), "dist/\n");
+    execFileSync("git", ["add", ".gitignore"], { cwd: repoPath });
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "gi"], {
+      cwd: repoPath,
+    });
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const { workdir } = await ws.prepare({
+      projectId: "p",
+      ticketId: "G",
+      repoPath,
+      branch: "matrix/g",
+      baseBranch: "main",
+    });
+    const git = new WorktreeGitPort();
+    expect(await git.headSha(workdir)).toBe(
+      execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoPath }).toString().trim(),
+    );
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(join(workdir, "dist"));
+    await writeFile(join(workdir, "dist", "bundle.js"), "x");
+    expect(await git.isClean(workdir)).toBe(true);
+    const before = await git.treeState(workdir);
+    await writeFile(join(workdir, "new.ts"), "a");
+    expect(await git.isClean(workdir)).toBe(false);
+    const after = await git.treeState(workdir);
+    expect(after).not.toBe(before);
+    await writeFile(join(workdir, "new.ts"), "b");
+    expect(await git.treeState(workdir)).not.toBe(after);
+  });
+
+  test("refuses a worktree whose .git was redirected", async () => {
+    const repoPath = await repo();
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const a = await ws.prepare({
+      projectId: "p",
+      ticketId: "A",
+      repoPath,
+      branch: "matrix/a",
+      baseBranch: "main",
+    });
+    const b = await ws.prepare({
+      projectId: "p",
+      ticketId: "B",
+      repoPath,
+      branch: "matrix/b",
+      baseBranch: "main",
+    });
+    const { readFile: rf } = await import("node:fs/promises");
+    await writeFile(join(a.workdir, ".git"), await rf(join(b.workdir, ".git"), "utf8"));
+    await expect(new WorktreeGitPort().headSha(a.workdir)).rejects.toThrow(
+      /back-link|tampered|match/,
+    );
   });
 });
