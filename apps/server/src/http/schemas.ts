@@ -239,3 +239,69 @@ export const AuditEntry = z
   .openapi("AuditEntry");
 
 export const Accepted = z.object({ id: z.string() }).openapi("Accepted");
+
+export const Overview = z
+  .object({
+    projects: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        workspace: z.enum(["orca", "native"]),
+        activeRuns: z.number(),
+        openIncidents: z.number(),
+      }),
+    ),
+    activeRuns: z.number(),
+    queuedRuns: z.number(),
+    costTodayUsd: z.number(),
+    pendingApprovals: z.number(),
+    openIncidents: z.number(),
+  })
+  .openapi("Overview");
+
+export const ModelHealth = z
+  .object({
+    model: z.string(),
+    provider: z.string(),
+    status: z.enum(["ok", "cooldown", "throttled", "down"]),
+    utilization: z.number().min(0).max(1).optional(),
+    resetsAt: z.string().optional(),
+    detail: z.string().optional(),
+  })
+  .openapi("ModelHealth");
+
+export const IncidentStatus = z.enum(["open", "fixing", "resolved"]).openapi("IncidentStatus");
+
+export const Incident = z
+  .object({
+    id: z.string(),
+    projectId: z.string().optional(),
+    source: z.enum(["sentry", "posthog", "github", "otel"]),
+    fingerprint: z.string(),
+    title: z.string(),
+    count: z.number(),
+    firstSeen: z.string(),
+    lastSeen: z.string(),
+    status: IncidentStatus,
+    fixability: z.number().min(0).max(1).optional(),
+    ticketId: z.string().optional(),
+  })
+  .openapi("Incident");
+
+export const OrcaRuntime = z
+  .object({
+    status: z.enum(["healthy", "degraded", "unknown"]),
+    host: z.string().optional(),
+    version: z.string().optional(),
+    activeWorktrees: z.number(),
+    lastSeen: z.string().optional(),
+  })
+  .openapi("OrcaRuntime");
+
+export const UpdateKey = z
+  .object({
+    name: z.string().min(1).max(100).optional(),
+    budget: KeyBudget.optional(),
+    ratePerMinute: z.number().int().min(1).max(10_000).optional(),
+  })
+  .openapi("UpdateKey");

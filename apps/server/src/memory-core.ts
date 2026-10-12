@@ -9,8 +9,12 @@ import {
   type ApprovalStatus,
   CoreError,
   type CorePort,
+  type Incident,
+  type IncidentStatus,
   type InitSession,
+  type ModelHealth,
   type MonitorSignal,
+  type OrcaRuntime,
   type OrcaStatus,
   type ProductGraph,
   type Project,
@@ -366,6 +370,55 @@ export class MemoryCore implements CorePort {
   async ingestSignal(signal: MonitorSignal) {
     this.signals.push(signal);
     return { id: randomUUID() };
+  }
+
+  readonly modelHealth: ModelHealth[] = [];
+
+  async listIncidents(query: { projectId?: string; status?: IncidentStatus }) {
+    const groups = new Map<string, Incident>();
+    for (const signal of this.signals) {
+      const fingerprint = signal.fingerprint ?? `${signal.source}:${signal.title}`;
+      const key = `${signal.projectId ?? "-"}|${fingerprint}`;
+      const current = groups.get(key);
+      if (current) {
+        current.count += 1;
+        current.lastSeen = signal.receivedAt;
+        continue;
+      }
+      groups.set(key, {
+        id: key,
+        source: signal.source,
+        fingerprint,
+        title: signal.title,
+        count: 1,
+        firstSeen: signal.receivedAt,
+        lastSeen: signal.receivedAt,
+        status: "open",
+        ...(signal.projectId ? { projectId: signal.projectId } : {}),
+      });
+    }
+    return [...groups.values()].filter(
+      (i) =>
+        (!query.projectId || i.projectId === query.projectId) &&
+        (!query.status || i.status === query.status),
+    );
+  }
+
+  async getModelHealth() {
+    return this.modelHealth;
+  }
+
+  async getOrcaRuntime(): Promise<OrcaRuntime> {
+    const latest = new Map<string, OrcaStatus>();
+    for (const status of this.orca) latest.set(status.worktree, status);
+    const last = this.orca.at(-1);
+    return {
+      status: last ? "healthy" : "unknown",
+      activeWorktrees: [...latest.values()].filter(
+        (s) => s.status !== "done" && s.status !== "idle",
+      ).length,
+      ...(last ? { lastSeen: last.receivedAt } : {}),
+    };
   }
 
   async recordOrcaStatus(status: OrcaStatus) {

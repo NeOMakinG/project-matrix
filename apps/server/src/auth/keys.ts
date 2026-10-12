@@ -173,6 +173,22 @@ export class KeyStore {
     return true;
   }
 
+  get(id: string): ApiKeyRecord | null {
+    return this.keys.get(id) ?? null;
+  }
+
+  update(
+    id: string,
+    patch: { name?: string; budget?: KeyBudget; ratePerMinute?: number },
+  ): PublicKey | null {
+    const record = this.keys.get(id);
+    if (!record || record.revokedAt) return null;
+    if (patch.name !== undefined) record.name = patch.name;
+    if (patch.budget !== undefined) record.budget = KeyBudgetSchema.parse(patch.budget);
+    if (patch.ratePerMinute !== undefined) record.ratePerMinute = patch.ratePerMinute;
+    return toPublic(record);
+  }
+
   isActive(id: string): boolean {
     const record = this.keys.get(id);
     return Boolean(record && !record.revokedAt);

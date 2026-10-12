@@ -112,6 +112,45 @@ export interface OrcaStatus {
   receivedAt: string;
 }
 
+export type ModelHealthStatus = "ok" | "cooldown" | "throttled" | "down";
+
+/** Health of one model route behind the gateway (e.g. CLIProxyAPI), for the dashboard. */
+export interface ModelHealth {
+  model: string;
+  provider: string;
+  status: ModelHealthStatus;
+  /** 0..1 share of the current quota window used, when the gateway reports it. */
+  utilization?: number;
+  resetsAt?: string;
+  detail?: string;
+}
+
+export type IncidentStatus = "open" | "fixing" | "resolved";
+
+/** Prod signals grouped by root cause (fingerprint). */
+export interface Incident {
+  id: string;
+  projectId?: string;
+  source: MonitorSignal["source"];
+  fingerprint: string;
+  title: string;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  status: IncidentStatus;
+  /** 0..1 estimate that an agent can fix it, once triage has run. */
+  fixability?: number;
+  ticketId?: string;
+}
+
+export interface OrcaRuntime {
+  status: "healthy" | "degraded" | "unknown";
+  host?: string;
+  version?: string;
+  activeWorktrees: number;
+  lastSeen?: string;
+}
+
 export interface CorePort {
   listProjects(): Promise<Project[]>;
   getProject(id: string): Promise<Project | null>;
@@ -173,6 +212,9 @@ export interface CorePort {
   updateSettings(patch: Record<string, unknown>): Promise<Record<string, unknown>>;
 
   ingestSignal(signal: MonitorSignal): Promise<{ id: string }>;
+  listIncidents(query: { projectId?: string; status?: IncidentStatus }): Promise<Incident[]>;
+  getModelHealth(): Promise<ModelHealth[]>;
+  getOrcaRuntime(): Promise<OrcaRuntime>;
   recordOrcaStatus(status: OrcaStatus): Promise<void>;
 }
 

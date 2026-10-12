@@ -17,6 +17,7 @@ import {
   type ApprovalStatus,
   CoreError,
   type CorePort,
+  type IncidentStatus,
   type Project,
 } from "./core-port.js";
 
@@ -248,6 +249,60 @@ export class Operations {
     await this.op(p, "read", `/runs/${runId}/events`, projectId)(async () => undefined);
   }
 
+  /** One call for the dashboard's factory overview, filtered to the key's projects. */
+  async getOverview(p: Principal) {
+    const [projects, runs, approvals, incidents] = await Promise.all([
+      this.listProjects(p),
+      this.listRuns(p),
+      this.listApprovals(p, { status: "pending" }),
+      this.listIncidents(p, { status: "open" }),
+    ]);
+    const today = new Date().toISOString().slice(0, 10);
+    const active = runs.filter((r) => r.state === "running" || r.state === "awaiting_approval");
+    return {
+      projects: projects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        workspace: project.workspace,
+        activeRuns: active.filter((r) => r.projectId === project.id).length,
+        openIncidents: incidents.filter((i) => i.projectId === project.id).length,
+      })),
+      activeRuns: active.length,
+      queuedRuns: runs.filter((r) => r.state === "queued").length,
+      costTodayUsd:
+        Math.round(
+          runs.filter((r) => r.startedAt.startsWith(today)).reduce((sum, r) => sum + r.costUsd, 0) *
+            100,
+        ) / 100,
+      pendingApprovals: approvals.length,
+      openIncidents: incidents.length,
+    };
+  }
+
+  async listIncidents(p: Principal, query: { projectId?: string; status?: IncidentStatus }) {
+    const incidents = await this.op(
+      p,
+      "read",
+      "/incidents",
+      query.projectId ?? { kind: "list" },
+    )(() => this.core.listIncidents(query));
+    const scope = p.key.scope.projects;
+    // Unattributed incidents (global webhook secrets) are only visible to all-projects keys.
+    return scope === "*"
+      ? incidents
+      : incidents.filter((i) => i.projectId !== undefined && scope.includes(i.projectId));
+  }
+
+  getModelHealth(p: Principal) {
+    return this.op(p, "read", "/gateway/health", { kind: "list" })(() =>
+      this.core.getModelHealth(),
+    );
+  }
+
+  getOrcaRuntime(p: Principal) {
+    return this.op(p, "read", "/orca/runtime", { kind: "list" })(() => this.core.getOrcaRuntime());
+  }
+
   listAdrs(p: Principal, projectId: string) {
     return this.op(
       p,
@@ -339,6 +394,31 @@ export class Operations {
         throw new HttpError(403, "forbidden", "only human keys can mint human keys");
       }
       return this.keys.create({ ...input, kind: input.kind ?? "agent" });
+    });
+  }
+
+  /** Renames a key or tightens/loosens its budget and rate limit, never beyond the caller's own. */
+  updateKey(
+    p: Principal,
+    id: string,
+    patch: { name?: string; budget?: KeyBudget; ratePerMinute?: number },
+  ) {
+    return this.op(
+      p,
+      "admin",
+      `/keys/${id}`,
+    )(async () => {
+      const current = this.keys.get(id);
+      if (!current || current.revokedAt) throw new CoreError("not_found", `key ${id} not found`);
+      const problem = withinLimits(p.key, {
+        scope: current.scope,
+        budget: patch.budget ?? current.budget,
+        ratePerMinute: patch.ratePerMinute ?? current.ratePerMinute,
+      });
+      if (problem) throw new HttpError(403, "forbidden", problem);
+      const updated = this.keys.update(id, patch);
+      if (!updated) throw new CoreError("not_found", `key ${id} not found`);
+      return updated;
     });
   }
 
