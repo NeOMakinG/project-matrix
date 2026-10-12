@@ -5,10 +5,29 @@ export const business = z.object({
   problem: z.string().min(1),
   targetCustomer: z.string().min(1),
   valueProposition: z.string().min(1),
-  pricing: z.enum(["free", "freemium", "subscription", "usage-based", "one-time", "marketplace-fee", "undecided"]),
+  pricing: z.enum([
+    "free",
+    "freemium",
+    "subscription",
+    "usage-based",
+    "one-time",
+    "marketplace-fee",
+    "undecided",
+  ]),
   competitors: z.array(z.string()).default([]),
   distribution: z.array(
-    z.enum(["seo", "content", "paid-ads", "social", "community", "sales-led", "partnerships", "app-stores", "product-led", "marketplaces"]),
+    z.enum([
+      "seo",
+      "content",
+      "paid-ads",
+      "social",
+      "community",
+      "sales-led",
+      "partnerships",
+      "app-stores",
+      "product-led",
+      "marketplaces",
+    ]),
   ),
   successMetrics: z.array(z.string()).default([]),
 });
@@ -19,6 +38,7 @@ export const product = z.object({
   mvpScope: z.array(z.string()).min(1),
   offlineFirst: z.boolean().default(false),
   multiTenant: z.boolean().default(false),
+  syncStrategy: z.enum(["local-first", "cache-only", "none"]).optional(),
 });
 
 export const platform = z.enum(["web", "ios", "android", "desktop", "cli", "api-only"]);
@@ -30,21 +50,25 @@ export const reactStack = z.object({
   data: z.enum(["tanstack-query", "swr", "none"]),
   forms: z.enum(["tanstack-form", "react-hook-form", "none"]),
   tables: z.enum(["tanstack-table", "none"]),
-  validation: z.literal("zod"),
+  validation: z.literal("zod").default("zod"),
   api: z.enum(["trpc", "ts-rest", "openapi-fetch", "rest"]),
   effects: z.enum(["effect", "none"]),
   authzProofs: z.enum(["gdp-ts", "none"]),
   ui: z.enum(["shadcn", "mantine", "chakra", "custom"]),
   styling: z.enum(["tailwind", "css-modules", "vanilla-extract"]),
   motion: z.enum(["motion", "none"]),
-  unitTests: z.literal("vitest"),
+  unitTests: z.literal("vitest").default("vitest"),
   e2e: z.enum(["playwright", "none"]),
   lint: z.enum(["biome", "eslint-prettier"]),
 });
 
 export const frontendStack = z.discriminatedUnion("framework", [
   reactStack,
-  z.object({ framework: z.literal("other"), name: z.string(), libraries: z.array(z.string()).default([]) }),
+  z.object({
+    framework: z.literal("other"),
+    name: z.string(),
+    libraries: z.array(z.string()).default([]),
+  }),
 ]);
 
 export const backend = z.object({
@@ -78,7 +102,16 @@ export const quality = z.object({
   testStrategy: z.enum(["tdd", "test-after", "e2e-heavy"]),
 });
 
-export const phase = z.enum(["spike", "implement", "checks", "review", "qa", "merge", "deploy", "verify"]);
+export const phase = z.enum([
+  "spike",
+  "implement",
+  "checks",
+  "review",
+  "qa",
+  "merge",
+  "deploy",
+  "verify",
+]);
 export const autonomyLevel = z.enum(["human", "gated-auto", "autonomous"]);
 
 export const processConfig = z.object({
@@ -86,7 +119,9 @@ export const processConfig = z.object({
   adrDir: z.string().default("docs/adr"),
   branching: z.enum(["trunk-with-prs", "gitflow"]),
   autonomy: z.object({ merge: autonomyLevel, deploy: autonomyLevel }),
-  reviewLanes: z.array(z.enum(["correctness-security", "architecture-adr", "ux-product", "performance"])).min(1),
+  reviewLanes: z
+    .array(z.enum(["correctness-security", "architecture-adr", "ux-product", "performance"]))
+    .min(1),
   budgets: z.object({ dailyUsd: z.number().positive(), perTicketUsd: z.number().positive() }),
 });
 

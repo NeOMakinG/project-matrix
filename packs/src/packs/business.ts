@@ -5,7 +5,13 @@ export const businessPack: Pack = {
   id: "business",
   title: "Business",
   questions: [
-    { id: "business.name", pack: "business", kind: "text", field: "business.name", prompt: "Product name?" },
+    {
+      id: "business.name",
+      pack: "business",
+      kind: "text",
+      field: "business.name",
+      prompt: "Product name?",
+    },
     {
       id: "business.problem",
       pack: "business",
@@ -14,8 +20,20 @@ export const businessPack: Pack = {
       prompt: "What problem does it solve, in one sentence?",
       rationale: "Every ticket traces back to this. Be concrete about the pain.",
     },
-    { id: "business.targetCustomer", pack: "business", kind: "text", field: "business.targetCustomer", prompt: "Who pays for it? (role, company size, market)" },
-    { id: "business.valueProposition", pack: "business", kind: "text", field: "business.valueProposition", prompt: "Why would they choose it over what they do today?" },
+    {
+      id: "business.targetCustomer",
+      pack: "business",
+      kind: "text",
+      field: "business.targetCustomer",
+      prompt: "Who pays for it? (role, company size, market)",
+    },
+    {
+      id: "business.valueProposition",
+      pack: "business",
+      kind: "text",
+      field: "business.valueProposition",
+      prompt: "Why would they choose it over what they do today?",
+    },
     {
       id: "business.pricing",
       pack: "business",
@@ -23,7 +41,8 @@ export const businessPack: Pack = {
       field: "business.pricing",
       prompt: "Pricing model?",
       recommended: "subscription",
-      rationale: "Recurring revenue is the default for B2B software; change it if usage drives cost.",
+      rationale:
+        "Recurring revenue is the default for B2B software; change it if usage drives cost.",
       options: [
         opt("subscription", "Subscription"),
         opt("freemium", "Freemium"),
@@ -33,9 +52,20 @@ export const businessPack: Pack = {
         opt("free", "Free"),
         opt("undecided", "Undecided"),
       ],
-      adr: { topic: "pricing model", context: "Pricing shapes billing, entitlements and analytics events." },
+      adr: {
+        topic: "pricing model",
+        context: "Pricing shapes billing, entitlements and analytics events.",
+      },
     },
-    { id: "business.competitors", pack: "business", kind: "list", field: "business.competitors", prompt: "Main competitors or alternatives (comma-separated)?", recommended: [], toValue: list },
+    {
+      id: "business.competitors",
+      pack: "business",
+      kind: "list",
+      field: "business.competitors",
+      prompt: "Main competitors or alternatives (comma-separated)?",
+      recommended: [],
+      toValue: list,
+    },
     {
       id: "business.distribution",
       pack: "business",
@@ -56,6 +86,14 @@ export const businessPack: Pack = {
         opt("marketplaces", "Marketplaces"),
       ],
     },
-    { id: "business.successMetrics", pack: "business", kind: "list", field: "business.successMetrics", prompt: "Success metrics for the first 3 months (comma-separated)?", recommended: ["activated accounts", "weekly active users", "paying customers"], toValue: list },
+    {
+      id: "business.successMetrics",
+      pack: "business",
+      kind: "list",
+      field: "business.successMetrics",
+      prompt: "Success metrics for the first 3 months (comma-separated)?",
+      recommended: ["activated accounts", "weekly active users", "paying customers"],
+      toValue: list,
+    },
   ],
 };

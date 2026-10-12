@@ -78,6 +78,13 @@
       "name": "@matrix/watch",
       "version": "0.0.0",
     },
+    "packs": {
+      "name": "@matrix/packs",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matrix/config": "workspace:*",
+      },
+    },
   },
   "packages": {
     "@biomejs/biome": ["@biomejs/biome@2.5.15", "", { "optionalDependencies": { "@biomejs/cli-darwin-arm64": "2.5.15", "@biomejs/cli-darwin-x64": "2.5.15", "@biomejs/cli-linux-arm64": "2.5.15", "@biomejs/cli-linux-arm64-musl": "2.5.15", "@biomejs/cli-linux-x64": "2.5.15", "@biomejs/cli-linux-x64-musl": "2.5.15", "@biomejs/cli-win32-arm64": "2.5.15", "@biomejs/cli-win32-x64": "2.5.15" }, "bin": { "biome": "bin/biome" } }, "sha512-WZTW4slm/pdkh92K6t/3aEN++44JD1PQ7squ7RCMLI1flHGl43DVOIGXvCjHiZgBMO1V4uYxoFNtqrIA4qGuIQ=="],
@@ -169,6 +176,8 @@
     "@matrix/graph": ["@matrix/graph@workspace:packages/graph"],
 
     "@matrix/monitor": ["@matrix/monitor@workspace:packages/monitor"],
+
+    "@matrix/packs": ["@matrix/packs@workspace:packs"],
 
     "@matrix/qa": ["@matrix/qa@workspace:packages/qa"],
 

@@ -1,4 +1,4 @@
-import type { AnswerValue, Answers, Option } from "../types";
+import type { Answers, AnswerValue, Option } from "../types";
 
 export const opt = (value: string, label: string, rationale?: string): Option =>
   rationale === undefined ? { value, label } : { value, label, rationale };
