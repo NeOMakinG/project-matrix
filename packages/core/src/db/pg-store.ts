@@ -6,6 +6,7 @@ import postgres from "postgres";
 import type { Phase, Receipt, RunEvent } from "../ports.js";
 import {
   type ApprovalRecord,
+  type Approver,
   type AutonomyChange,
   type Lesson,
   type RunRecord,
@@ -84,6 +85,7 @@ function toApproval(r: typeof s.approvals.$inferSelect): ApprovalRecord {
     requestedAt: r.requestedAt,
     ...opt("decidedAt", r.decidedAt),
     ...opt("decidedBy", r.decidedBy),
+    ...opt("decidedByKind", r.decidedByKind as ApprovalRecord["decidedByKind"] | null),
     ...opt("note", r.note),
   };
 }
@@ -424,10 +426,16 @@ export class PgStore implements Store {
     return row ? toApproval(row) : null;
   }
 
-  async decideApproval(id: string, status: "approved" | "rejected", by: string, note?: string) {
+  async decideApproval(id: string, status: "approved" | "rejected", by: Approver, note?: string) {
     const [row] = await this.db
       .update(s.approvals)
-      .set({ status, decidedAt: new Date(), decidedBy: by, note: note ?? null })
+      .set({
+        status,
+        decidedAt: new Date(),
+        decidedBy: by.id,
+        decidedByKind: by.kind,
+        note: note ?? null,
+      })
       .where(and(eq(s.approvals.id, id), eq(s.approvals.status, "pending")))
       .returning();
     if (!row) throw new Error(`approval ${id} not found or already decided`);

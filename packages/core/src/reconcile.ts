@@ -17,7 +17,13 @@ import {
 } from "./machine.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
-import { type ApprovalRecord, type RunRecord, type Store, VersionConflictError } from "./store.js";
+import {
+  type ApprovalRecord,
+  type Approver,
+  type RunRecord,
+  type Store,
+  VersionConflictError,
+} from "./store.js";
 import type { BackoffPolicy, Limits, PhaseOutcome, ProjectConfig, WorkflowState } from "./types.js";
 
 export interface ReconcilerOptions {
@@ -82,6 +88,18 @@ export function stepKey(w: WorkflowState): string {
 /** Merge and deploy keys ignore the attempt so a retried irreversible action dedupes downstream. */
 export function actionKey(w: WorkflowState, headSha: string): string {
   return hash(w.projectId, w.ticketId, w.phase, w.loops, headSha);
+}
+
+export function toApprover(approver: string | Approver): Approver {
+  if (typeof approver !== "string") return approver;
+  return { id: approver, kind: approver.startsWith("user:") ? "human" : "agent" };
+}
+
+/** An approval only counts if a human decided it and that human isn't the requester or the run owner. */
+function validApprover(a: ApprovalRecord, runOwner: string | undefined): boolean {
+  if (a.decidedByKind !== "human" || !a.decidedBy) return false;
+  if (a.decidedBy === a.requestedBy || a.decidedBy.startsWith("reconciler:")) return false;
+  return a.decidedBy !== runOwner;
 }
 
 export class Reconciler {
@@ -236,10 +254,18 @@ export class Reconciler {
     runId: string,
     headSha: string,
   ): Promise<{ approved?: ApprovalRecord | undefined; pending?: ApprovalRecord | undefined }> {
-    const list = await this.o.store.listApprovals(w.projectId, w.ticketId, phase);
+    // Filter on phase here too: an approval for another phase (e.g. `review`) must never
+    // authorize a merge or deploy, even if a store adapter returns more than asked for.
+    const list = (await this.o.store.listApprovals(w.projectId, w.ticketId, phase)).filter(
+      (a) => a.phase === phase && a.projectId === w.projectId && a.ticketId === w.ticketId,
+    );
     const bound = list.filter((a) => a.runId === runId && a.headSha === headSha);
+    const runOwner = (await this.o.store.getRun(runId))?.ownerId;
     return {
-      approved: bound.filter((a) => a.status === "approved").at(-1),
+      approved: bound
+        .filter((a) => a.status === "approved")
+        .filter((a) => validApprover(a, runOwner))
+        .at(-1),
       pending: list.filter((a) => a.status === "pending").at(-1),
     };
   }
@@ -782,14 +808,26 @@ export class Reconciler {
     }
   }
 
+  /**
+   * `by` is either an `Approver` or an identity string; strings are human only for `user:*`.
+   * Approving a merge or deploy always requires a human identity that is not the requester,
+   * not a reconciler and not the owner of the approved run.
+   */
   async decideApproval(
     approvalId: string,
     decision: "approved" | "rejected",
-    by: string,
+    approver: string | Approver,
     note?: string,
   ): Promise<WorkflowState> {
+    const decider = toApprover(approver);
+    const by = decider.id;
     const approval = await this.o.store.getApproval(approvalId);
     if (!approval) throw new Error(`approval ${approvalId} not found`);
+    if (decision === "approved" && decider.kind !== "human") {
+      throw new Error(
+        `${approval.phase} approvals require a human approver, got ${decider.kind} ${by}`,
+      );
+    }
     if (by === approval.requestedBy || by.startsWith("reconciler:")) {
       throw new Error("an approval cannot be decided by the identity that requested it");
     }
@@ -811,7 +849,7 @@ export class Reconciler {
         throw new Error("HEAD moved since the approval was requested; request a new approval");
       }
     }
-    const decided = await this.o.store.decideApproval(approvalId, decision, by, note);
+    const decided = await this.o.store.decideApproval(approvalId, decision, decider, note);
     this.o.bus.publish({
       type: "approval.decided",
       approvalId,

@@ -122,13 +122,13 @@ describe("reconcile loop", () => {
     expect(merge).not.toBeNull();
     expect(h.events.some((e) => e.type === "approval.requested")).toBe(true);
 
-    await h.reconciler.decideApproval(merge!.id, "approved", "valentin");
+    await h.reconciler.decideApproval(merge!.id, "approved", "user:valentin");
     await h.drain();
     w = await h.store.getWorkflow("pilot", t.id);
     expect(w).toMatchObject({ phase: "deploy", status: "waiting_approval" });
 
     const deploy = await h.store.getPendingApproval("pilot", t.id, "deploy");
-    await h.reconciler.decideApproval(deploy!.id, "approved", "valentin");
+    await h.reconciler.decideApproval(deploy!.id, "approved", "user:valentin");
     await h.drain();
     expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
   });
