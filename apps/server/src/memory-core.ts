@@ -7,6 +7,7 @@ import {
   type Approval,
   type ApprovalDecision,
   type ApprovalStatus,
+  type CheckResult,
   CoreError,
   type CorePort,
   type Incident,
@@ -148,13 +149,15 @@ export class MemoryCore implements CorePort {
 
   async startRun(input: { projectId: string; ticketId: string; phase: Phase }, actor: Actor) {
     this.project(input.projectId);
-    if (!(this.tickets.get(input.projectId) ?? []).some((t) => t.id === input.ticketId)) {
+    const ticket = (this.tickets.get(input.projectId) ?? []).find((t) => t.id === input.ticketId);
+    if (!ticket) {
       throw new CoreError("not_found", `ticket ${input.ticketId} not found in this project`);
     }
     const run: Run = {
       id: randomUUID(),
       ...input,
       ownerId: actor.id,
+      title: ticket.title,
       state: "queued",
       runner: "claude-code",
       model: "claude-fable-5-1",
@@ -338,6 +341,13 @@ export class MemoryCore implements CorePort {
     set.add(listener);
     this.listeners.set(runId, set);
     return () => set.delete(listener);
+  }
+
+  readonly checks = new Map<string, CheckResult>();
+
+  async getChecks(projectId: string) {
+    this.project(projectId);
+    return this.checks.get(projectId) ?? null;
   }
 
   async listAdrs(projectId: string) {

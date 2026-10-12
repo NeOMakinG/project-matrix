@@ -25,6 +25,10 @@ export interface Run {
   id: string;
   projectId: string;
   ticketId: string;
+  /** Ticket title, for display. */
+  title?: string;
+  /** Draft PR opened for the run's branch, once there is one. */
+  prUrl?: string;
   /** Identity that started the run; it may never decide an approval on its own run. */
   ownerId: string;
   /** Commit currently under review. Approvals are bound to it; a new commit voids them. */
@@ -153,6 +157,18 @@ export interface OrcaRuntime {
   lastSeen?: string;
 }
 
+/** Latest `matrix check` result on a project's default branch. */
+export interface CheckResult {
+  ref: string;
+  violations: {
+    level: "error" | "warn";
+    adr: string;
+    location: string;
+    message: string;
+    note: string;
+  }[];
+}
+
 export interface CorePort {
   listProjects(): Promise<Project[]>;
   getProject(id: string): Promise<Project | null>;
@@ -207,6 +223,7 @@ export interface CorePort {
   subscribe(runId: string, listener: (event: RunEvent) => void): () => void;
 
   listAdrs(projectId: string): Promise<Adr[]>;
+  getChecks(projectId: string): Promise<CheckResult | null>;
   getGraph(projectId: string): Promise<ProductGraph>;
 
   startInit(projectId: string): Promise<InitSession>;

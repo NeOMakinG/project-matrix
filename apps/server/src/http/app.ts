@@ -6,6 +6,7 @@ import { SessionStore } from "../auth/sessions.js";
 import type { CorePort } from "../core-port.js";
 import { handleMcp } from "../mcp.js";
 import { Operations } from "../ops.js";
+import { RunEventLog } from "../run-event-log.js";
 import type { WebhookSecrets } from "../webhooks.js";
 import type { AppEnv } from "./route.js";
 import { adminRoutes } from "./routes-admin.js";
@@ -71,9 +72,19 @@ export function createServer(options: ServerOptions) {
   );
 
   projectRoutes(app, ops);
-  runRoutes(app, ops, keys);
+  runRoutes(app, ops, keys, new RunEventLog(options.core));
   adminRoutes(app, ops);
-  dashboardRoutes(app, ops);
+  const secrets = options.secrets ?? {};
+  const configured = (source: "sentry" | "github" | "posthog" | "otel" | "orca") =>
+    Boolean(secrets[source]) ||
+    Object.values(secrets.projects ?? {}).some((project) => Boolean(project[source]));
+  dashboardRoutes(app, ops, {
+    sentry: configured("sentry"),
+    github: configured("github"),
+    posthog: configured("posthog"),
+    otel: configured("otel"),
+    orca: configured("orca"),
+  });
 
   app.openAPIRegistry.registerComponent("securitySchemes", "bearer", {
     type: "http",

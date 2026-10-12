@@ -87,6 +87,15 @@ export const Run = z
     projectId: z.string(),
     ticketId: z.string(),
     ownerId: z.string(),
+    title: z.string().optional(),
+    prUrl: z.string().optional(),
+    approval: z
+      .object({
+        state: z.enum(["none", "pending", "approved", "rejected"]),
+        approvalId: z.string().optional(),
+        phase: Phase.optional(),
+      })
+      .openapi({ description: "Latest approval requested for this run" }),
     headSha: z.string().optional(),
     phase: Phase,
     state: z.string(),
@@ -306,3 +315,62 @@ export const UpdateKey = z
     ratePerMinute: z.number().int().min(1).max(10_000).optional(),
   })
   .openapi("UpdateKey");
+
+export const Tone = z.enum(["green", "blue", "amber", "red", "violet", "neutral"]).openapi("Tone");
+export const Pill = z.object({ label: z.string(), tone: Tone }).openapi("Pill");
+
+export const Integration = z
+  .object({ name: z.string(), detail: z.string(), status: Pill })
+  .openapi("Integration");
+
+export const CheckResult = z
+  .object({
+    ref: z.string(),
+    violations: z.array(
+      z.object({
+        level: z.enum(["error", "warn"]),
+        adr: z.string(),
+        location: z.string(),
+        message: z.string(),
+        note: z.string(),
+      }),
+    ),
+  })
+  .openapi("CheckResult");
+
+export const InitProgress = z
+  .object({
+    packs: z.array(
+      z.object({
+        id: z.string(),
+        label: z.string(),
+        answered: z.number(),
+        total: z.number(),
+        state: z.enum(["done", "active", "todo"]),
+      }),
+    ),
+    answered: z.array(z.object({ questionId: z.string(), label: z.string(), value: z.string() })),
+    question: z
+      .object({
+        id: z.string(),
+        pack: z.string(),
+        index: z.number(),
+        total: z.number(),
+        context: z.string(),
+        prompt: z.string(),
+        rationale: z.string(),
+        facts: z.string(),
+        options: z.array(
+          z.object({
+            id: z.string(),
+            label: z.string(),
+            description: z.string(),
+            recommended: z.boolean(),
+          }),
+        ),
+      })
+      .nullable(),
+    configPreview: z.string(),
+    adrs: z.array(z.object({ id: z.string(), title: z.string(), status: Pill })),
+  })
+  .openapi("InitProgress");

@@ -19,7 +19,18 @@ import {
   type CorePort,
   type IncidentStatus,
   type Project,
+  type Run,
 } from "./core-port.js";
+import { initProgress, validateAnswers } from "./init-progress.js";
+import { settingsEtag } from "./settings-etag.js";
+
+export type RunView = Run & {
+  approval: {
+    state: "none" | "pending" | "approved" | "rejected";
+    approvalId?: string;
+    phase?: Phase;
+  };
+};
 
 async function core<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -35,6 +46,8 @@ async function core<T>(fn: () => Promise<T>): Promise<T> {
 
 /** Every capability exposed over REST and MCP goes through here, so both share one authorization path. */
 export class Operations {
+  private settingsLock: Promise<unknown> = Promise.resolve();
+
   constructor(
     readonly core: CorePort,
     private readonly guard: Guard,
@@ -150,7 +163,22 @@ export class Operations {
       projectId ?? { kind: "list" },
     )(() => this.core.listRuns(projectId));
     const scope = p.key.scope.projects;
-    return scope === "*" ? runs : runs.filter((run) => scope.includes(run.projectId));
+    const visible = scope === "*" ? runs : runs.filter((run) => scope.includes(run.projectId));
+    return Promise.all(visible.map((run) => this.withApproval(run)));
+  }
+
+  /** Adds the run's latest approval state, which the dashboard shows on every run row. */
+  private async withApproval(run: Run): Promise<RunView> {
+    const approvals = (await this.core.listApprovals({ projectId: run.projectId })).filter(
+      (a) => a.runId === run.id,
+    );
+    const latest = approvals.sort((a, b) => a.requestedAt.localeCompare(b.requestedAt)).at(-1);
+    return {
+      ...run,
+      approval: latest
+        ? { state: latest.status, approvalId: latest.id, phase: latest.phase }
+        : { state: "none" },
+    };
   }
 
   async getRun(p: Principal, id: string) {
@@ -163,24 +191,34 @@ export class Operations {
     )(async () => {
       const run = await this.core.getRun(id);
       if (!run) throw new CoreError("not_found", `run ${id} not found`);
-      return run;
+      return this.withApproval(run);
     });
   }
 
   startRun(p: Principal, input: { projectId: string; ticketId: string; phase: Phase }) {
     return this.op(p, "runs:start", "/runs", input.projectId, { budget: "runs" })(() =>
-      this.core.startRun(input, this.actor(p)),
+      this.core.startRun(input, this.actor(p)).then((run) => this.withApproval(run)),
     );
   }
 
   async pauseRun(p: Principal, id: string) {
     const projectId = await this.projectOfRun(id);
-    return this.op(p, "runs:start", `/runs/${id}/pause`, projectId)(() => this.core.pauseRun(id));
+    return this.op(
+      p,
+      "runs:start",
+      `/runs/${id}/pause`,
+      projectId,
+    )(() => this.core.pauseRun(id).then((run) => this.withApproval(run)));
   }
 
   async cancelRun(p: Principal, id: string) {
     const projectId = await this.projectOfRun(id);
-    return this.op(p, "runs:start", `/runs/${id}/cancel`, projectId)(() => this.core.cancelRun(id));
+    return this.op(
+      p,
+      "runs:start",
+      `/runs/${id}/cancel`,
+      projectId,
+    )(() => this.core.cancelRun(id).then((run) => this.withApproval(run)));
   }
 
   async listReceipts(p: Principal, runId: string) {
@@ -232,7 +270,7 @@ export class Operations {
       "merge",
       `/runs/${runId}/merge`,
       projectId,
-    )(() => this.core.merge(runId, this.actor(p)));
+    )(() => this.core.merge(runId, this.actor(p)).then((run) => this.withApproval(run)));
   }
 
   deploy(p: Principal, projectId: string) {
@@ -293,6 +331,69 @@ export class Operations {
       : incidents.filter((i) => i.projectId !== undefined && scope.includes(i.projectId));
   }
 
+  /** Integration status for the dashboard; never includes secret values. */
+  getIntegrations(
+    p: Principal,
+    webhooks: Record<"sentry" | "github" | "posthog" | "otel" | "orca", boolean>,
+  ) {
+    return this.op(p, "read", "/integrations", { kind: "list" })(async () => {
+      const [models, orca] = await Promise.all([
+        this.core.getModelHealth(),
+        this.core.getOrcaRuntime(),
+      ]);
+      const pill = (ok: boolean | "degraded") =>
+        ok === "degraded"
+          ? { label: "degraded", tone: "amber" as const }
+          : ok
+            ? { label: "connected", tone: "green" as const }
+            : { label: "not configured", tone: "neutral" as const };
+      const healthy = models.filter((m) => m.status === "ok").length;
+      return [
+        {
+          name: "Model gateway",
+          detail: models.length
+            ? `${healthy} of ${models.length} model routes healthy`
+            : "no model routes reported",
+          status:
+            models.length === 0
+              ? pill(false)
+              : healthy === models.length
+                ? pill(true)
+                : pill("degraded"),
+        },
+        {
+          name: "Orca",
+          detail: orca.lastSeen
+            ? `${orca.activeWorktrees} active worktrees`
+            : "no agent hook received yet",
+          status:
+            orca.status === "healthy"
+              ? pill(true)
+              : orca.status === "degraded"
+                ? pill("degraded")
+                : pill(false),
+        },
+        { name: "Sentry", detail: "webhook /hooks/sentry (HMAC)", status: pill(webhooks.sentry) },
+        { name: "GitHub", detail: "webhook /hooks/github (HMAC)", status: pill(webhooks.github) },
+        {
+          name: "PostHog",
+          detail: "webhook /hooks/posthog (shared secret)",
+          status: pill(webhooks.posthog),
+        },
+        {
+          name: "OpenTelemetry",
+          detail: "alerts /hooks/otel (shared secret)",
+          status: pill(webhooks.otel),
+        },
+        {
+          name: "Orca agent hooks",
+          detail: "/hooks/orca (shared secret)",
+          status: pill(webhooks.orca),
+        },
+      ];
+    });
+  }
+
   getModelHealth(p: Principal) {
     return this.op(p, "read", "/gateway/health", { kind: "list" })(() =>
       this.core.getModelHealth(),
@@ -330,7 +431,25 @@ export class Operations {
     )(() => this.core.startInit(projectId));
   }
 
+  async getInitProgress(p: Principal, sessionId: string) {
+    const session = await this.getInit(p, sessionId);
+    return initProgress(session.answers);
+  }
+
+  getChecks(p: Principal, projectId: string) {
+    return this.op(
+      p,
+      "read",
+      `/projects/${projectId}/checks`,
+      projectId,
+    )(async () => {
+      const checks = await this.core.getChecks(projectId);
+      return checks ?? { ref: "", violations: [] };
+    });
+  }
+
   async answerInit(p: Principal, sessionId: string, answers: Record<string, unknown>) {
+    validateAnswers(answers);
     const session = await core(() => this.core.getInit(sessionId));
     if (!session) throw new HttpError(404, "not_found", `init session ${sessionId} not found`);
     return this.op(
@@ -353,8 +472,33 @@ export class Operations {
     );
   }
 
-  updateSettings(p: Principal, patch: Record<string, unknown>) {
-    return this.op(p, "admin", "/settings")(() => this.core.updateSettings(patch));
+  /**
+   * Compare-and-set: with `ifMatch`, the write only happens if the settings still have that ETag
+   * (412 otherwise). Writes are serialized so two concurrent PATCHes can't both pass the check.
+   */
+  updateSettings(p: Principal, patch: Record<string, unknown>, ifMatch?: string) {
+    return this.op(
+      p,
+      "admin",
+      "/settings",
+    )(() => {
+      const write = this.settingsLock.then(async () => {
+        if (ifMatch !== undefined) {
+          const current = settingsEtag(await this.core.getSettings());
+          const wanted = ifMatch.replace(/^W\//, "");
+          if (wanted !== "*" && wanted !== current) {
+            throw new HttpError(
+              412,
+              "precondition_failed",
+              "settings changed since you loaded them",
+            );
+          }
+        }
+        return this.core.updateSettings(patch);
+      });
+      this.settingsLock = write.catch(() => undefined);
+      return write;
+    });
   }
 
   listKeys(p: Principal) {

@@ -4,7 +4,44 @@ import { type App, IdParam, route } from "./route.js";
 import * as S from "./schemas.js";
 
 /** Read models the dashboard needs that aren't a single resource. */
-export function dashboardRoutes(app: App, ops: Operations) {
+export type ConfiguredWebhooks = Record<"sentry" | "github" | "posthog" | "otel" | "orca", boolean>;
+
+export function dashboardRoutes(app: App, ops: Operations, webhooks: ConfiguredWebhooks) {
+  app.openapi(
+    route({
+      method: "get",
+      path: "/v1/integrations",
+      tag: "dashboard",
+      summary: "Integration status (gateway, Orca, webhooks); never includes secrets",
+      response: z.array(S.Integration),
+    }),
+    async (c) => c.json(await ops.getIntegrations(c.var.principal, webhooks)),
+  );
+
+  app.openapi(
+    route({
+      method: "get",
+      path: "/v1/init/{id}/progress",
+      tag: "init",
+      summary: "Interview progress: packs, current question, config and ADR previews",
+      params: IdParam,
+      response: S.InitProgress,
+    }),
+    async (c) => c.json(await ops.getInitProgress(c.var.principal, c.req.valid("param").id)),
+  );
+
+  app.openapi(
+    route({
+      method: "get",
+      path: "/v1/projects/{projectId}/checks",
+      tag: "knowledge",
+      summary: "Latest `matrix check` result on the default branch",
+      params: z.object({ projectId: z.string().min(1) }),
+      response: S.CheckResult,
+    }),
+    async (c) => c.json(await ops.getChecks(c.var.principal, c.req.valid("param").projectId)),
+  );
+
   app.openapi(
     route({
       method: "get",
