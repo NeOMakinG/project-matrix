@@ -241,3 +241,21 @@ describe("P2 budget reservation", () => {
     release();
   });
 });
+
+describe("P1-5 read-only runs", () => {
+  test("review lanes, the holdout author, the judge and the spike plan run read-only; implement does not", async () => {
+    const h = createHarness();
+    await h.setup();
+    h.tickets.add("Read-only");
+    await h.drain();
+    const calls = [...h.implementer.calls, ...h.reviewer.calls];
+    const reviews = calls.filter((c) => c.phase === "review");
+    expect(reviews.length).toBeGreaterThan(0);
+    expect(reviews.every((c) => c.readOnly === true)).toBe(true);
+    expect(calls.find((c) => c.phase === "qa")?.readOnly).toBe(true);
+    expect(calls.filter((c) => c.phase === "spike").every((c) => c.readOnly === true)).toBe(true);
+    expect(calls.filter((c) => c.phase === "implement").every((c) => c.readOnly !== true)).toBe(
+      true,
+    );
+  });
+});

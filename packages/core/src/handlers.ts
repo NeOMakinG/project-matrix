@@ -35,8 +35,7 @@ export async function callModel(
   ctx: PhaseContext,
   model: PhaseModel,
   prompt: string,
-  phase: Phase = ctx.workflow.phase,
-  workdir: string = ctx.workdir,
+  options: { phase?: Phase; workdir?: string; readOnly?: boolean } = {},
 ): Promise<RunResult> {
   const runner = deps.runners[model.runner];
   if (!runner) throw new Error(`runner ${model.runner} is not configured`);
@@ -45,12 +44,13 @@ export async function callModel(
       runId: ctx.runId,
       projectId: ctx.project.id,
       ticketId: ctx.ticket.id,
-      phase,
+      phase: options.phase ?? ctx.workflow.phase,
       runner: model.runner,
       model: model.model,
       prompt,
-      workdir,
+      workdir: options.workdir ?? ctx.workdir,
       timeoutMs: ctx.project.runTimeoutMs,
+      ...(options.readOnly ? { readOnly: true } : {}),
     },
     (event) => ctx.emit(event.message, event.kind, event.data),
     ctx.signal,
@@ -88,6 +88,7 @@ const spike =
         ctx.ticket.body,
         "Read CONTEXT.md and docs/adr. List: steps, files to touch, ADRs involved, risks, and the test plan.",
       ].join("\n\n"),
+      { readOnly: true },
     );
     if (plan.status !== "ok") return outcomeFrom(plan, model);
     await ctx.tickets.comment(ctx.ticket.id, `Spike plan\n\n${plan.summary}`);
@@ -107,8 +108,7 @@ const spike =
         ctx.ticket.body,
         'Reply with JSON only: {"scenarios":[{"id":"s1","given":"...","when":"...","then":"..."}]} with 3 to 12 scenarios.',
       ].join("\n\n"),
-      "spike",
-      authorDir,
+      { phase: "spike", workdir: authorDir, readOnly: true },
     );
     if (scen.status !== "ok") return outcomeFrom(scen, author);
     try {
@@ -203,6 +203,7 @@ const review =
         ctx,
         reviewer,
         lanePrompt(lane, ctx.ticket.title, ctx.ticket.body, ctx.project.baseBranch),
+        { readOnly: true },
       );
       costUsd += result.costUsd ?? 0;
       if (result.status !== "ok") return { ...outcomeFrom(result, reviewer, receipts), costUsd };
@@ -264,8 +265,7 @@ const qa =
         `Scenarios:\n${JSON.stringify(scenarios, null, 2)}`,
         'Reply with JSON only: {"verdicts":[{"id":"s1","satisfied":true,"reason":"..."}]}',
       ].join("\n\n"),
-      "qa",
-      judgeDir,
+      { phase: "qa", workdir: judgeDir, readOnly: true },
     );
     if (verdict.status !== "ok") return outcomeFrom(verdict, judge, evidence);
     try {
