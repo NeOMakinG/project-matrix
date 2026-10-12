@@ -8,7 +8,11 @@ export interface ImportRef {
   specifier: string;
   line: number;
   kind: ImportKind;
+  /** `import(expr)` / `require(expr)` with a non-literal argument: cannot be resolved statically. */
+  computed?: true;
 }
+
+export const COMPUTED_SPECIFIER = "<computed>";
 
 /** Returns a function mapping a character offset to its 1-based line. */
 export function lineIndex(text: string): (pos: number) => number {
@@ -67,10 +71,20 @@ export function extractImports(path: string, text: string): ImportRef[] {
       push(node, node.moduleReference.expression.text, "require");
     } else if (ts.isCallExpression(node) && node.arguments.length >= 1) {
       const arg = node.arguments[0];
-      if (arg && ts.isStringLiteralLike(arg)) {
-        if (node.expression.kind === ts.SyntaxKind.ImportKeyword) push(node, arg.text, "dynamic");
-        else if (ts.isIdentifier(node.expression) && node.expression.text === "require")
-          push(node, arg.text, "require");
+      const kind: ImportKind | undefined =
+        node.expression.kind === ts.SyntaxKind.ImportKeyword
+          ? "dynamic"
+          : ts.isIdentifier(node.expression) && node.expression.text === "require"
+            ? "require"
+            : undefined;
+      if (kind && arg && ts.isStringLiteralLike(arg)) push(node, arg.text, kind);
+      else if (kind) {
+        refs.push({
+          specifier: COMPUTED_SPECIFIER,
+          line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
+          kind,
+          computed: true,
+        });
       }
     } else if (
       ts.isImportTypeNode(node) &&

@@ -2,14 +2,8 @@ import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import ts from "typescript";
 import { listSourceFiles } from "./files";
-import {
-  extractImports,
-  type ImportKind,
-  isRelative,
-  packageOf,
-  parseSource,
-  resolveRelative,
-} from "./imports";
+import { extractImports, type ImportKind, isRelative, packageOf, parseSource } from "./imports";
+import { createResolver } from "./resolve";
 
 export const CODE_GRAPH_VERSION = 1;
 
@@ -37,6 +31,7 @@ export interface ModuleImport {
   target?: string;
   /** Package name for bare specifiers. */
   package?: string;
+  computed?: true;
 }
 
 export interface CodeModule {
@@ -146,7 +141,7 @@ export function findCycles(edges: Map<string, Set<string>>): string[][] {
 /** Builds the code graph for every source file under `root`. Output is deterministic. */
 export async function buildCodeGraph(root: string): Promise<CodeGraph> {
   const files = await listSourceFiles(root);
-  const known = new Set(files);
+  const resolver = await createResolver(root, files);
   const modules: CodeModule[] = [];
   const pkgImporters = new Map<string, Set<string>>();
   const runtimeEdges = new Map<string, Set<string>>();
@@ -154,10 +149,10 @@ export async function buildCodeGraph(root: string): Promise<CodeGraph> {
   for (const path of files) {
     const text = await readFile(join(root, path), "utf8");
     const imports: ModuleImport[] = extractImports(path, text).map((ref) => {
-      if (isRelative(ref.specifier)) {
-        const target = resolveRelative(path, ref.specifier, known);
-        return target ? { ...ref, target } : ref;
-      }
+      if (ref.computed) return ref;
+      const target = resolver.resolve(path, ref.specifier);
+      if (target) return { ...ref, target };
+      if (isRelative(ref.specifier)) return ref;
       const pkg = packageOf(ref.specifier);
       if (!pkgImporters.has(pkg)) pkgImporters.set(pkg, new Set());
       pkgImporters.get(pkg)?.add(path);

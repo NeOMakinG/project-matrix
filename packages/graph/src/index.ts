@@ -7,3 +7,4 @@ export * from "./io";
 export * from "./product";
 export * from "./queries";
 export { renderGraphMarkdown } from "./render";
+export * from "./resolve";

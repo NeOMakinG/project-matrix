@@ -55,6 +55,7 @@ describe("buildCodeGraph", () => {
       "src/types.ts": 'import type { C } from "./c";\nexport interface T { c: C }\n',
       "src/c.ts":
         'import type { T } from "./types";\nexport type C = T;\nexport default class K {}\n',
+      ".gitignore": "node_modules/\n/dist\n",
       "node_modules/zod/index.js": "export {}",
       "dist/out.js": 'import "./nope"',
     });
