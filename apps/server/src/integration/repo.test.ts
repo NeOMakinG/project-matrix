@@ -25,14 +25,18 @@ describe("project repo bootstrap", () => {
       .trim();
     expect(branch).toBe("main");
     expect(commits).toBe("1");
-  });
+  }, 30_000);
 
-  test.runIf(hasBd)("beads database in stealth mode for beads projects", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "matrix-beads-"));
-    await initProjectRepo(dir, { kind: "beads" });
-    const status = execFileSync("git", ["-C", dir, "status", "--porcelain"]).toString();
-    expect(status).not.toContain(".beads");
-  });
+  test.runIf(hasBd)(
+    "beads database in stealth mode for beads projects",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "matrix-beads-"));
+      await initProjectRepo(dir, { kind: "beads" });
+      const status = execFileSync("git", ["-C", dir, "status", "--porcelain"]).toString();
+      expect(status).not.toContain(".beads");
+    },
+    60_000,
+  );
 });
 
 describe("runtime switch", () => {

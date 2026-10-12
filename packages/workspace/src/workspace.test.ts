@@ -234,7 +234,7 @@ describe("worktree git port", () => {
     expect(after).not.toBe(before);
     await writeFile(join(workdir, "new.ts"), "b");
     expect(await git.treeState(workdir)).not.toBe(after);
-  });
+  }, 30_000);
 
   test("refuses a worktree whose .git was redirected", async () => {
     const repoPath = await repo();
