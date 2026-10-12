@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { type AutonomyMode, PHASES, type Phase, type Receipt, type RunEvent } from "@matrix/core";
+import {
+  type AutonomyMode,
+  assertActor,
+  PHASES,
+  type Phase,
+  type Receipt,
+  type RunEvent,
+} from "@matrix/core";
 import type { NewTicket, Ticket, TicketPatch, TicketQuery } from "@matrix/tickets";
 import {
   type Actor,
@@ -234,6 +241,7 @@ export class MemoryCore implements CorePort {
   }
 
   async decideApproval(id: string, decision: ApprovalDecision, actor: Actor, note?: string) {
+    assertActor(actor);
     const by = actor.id;
     const index = this.approvals.findIndex((a) => a.id === id);
     const approval = this.approvals[index];

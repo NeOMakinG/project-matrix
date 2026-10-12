@@ -1,4 +1,11 @@
-import type { AutonomyMode, Phase, Receipt, RunEvent, RunStatus } from "@matrix/core";
+import type {
+  AutonomyMode,
+  Actor as CoreActor,
+  Phase,
+  Receipt,
+  RunEvent,
+  RunStatus,
+} from "@matrix/core";
 import type { NewTicket, Ticket, TicketPatch, TicketQuery } from "@matrix/tickets";
 
 export interface Project {
@@ -13,13 +20,11 @@ export interface Project {
 export type RunState = "queued" | "running" | "paused" | "awaiting_approval" | RunStatus;
 
 /**
- * Who performs an action. `id` is the identity recorded by the core (`key:<keyId>` for API keys,
- * `user:<name>` for people); `kind` comes from the API key: humans vs automated agents.
+ * Who performs an action: core's structured Actor `{ id, kind }` (core #12). `id` is the identity the
+ * core records (`key:<keyId>` for API keys); `kind` comes from the authenticated key or session.
+ * The server always builds it from the credential, never from request input.
  */
-export interface Actor {
-  id: string;
-  kind: "human" | "agent";
-}
+export type Actor = CoreActor;
 
 export interface Run {
   id: string;
