@@ -5,10 +5,15 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { makeRouter } from "./router";
 
+/**
+ * Mocks only with an explicit opt-in in dev. `import.meta.env.DEV` is false in
+ * production builds, so this branch and the MSW import are removed entirely.
+ */
 async function enableMocks(): Promise<void> {
-  if (import.meta.env.VITE_API_URL) return;
-  const { worker } = await import("./mocks/browser");
-  await worker.start({ onUnhandledFrame: "bypass", quiet: true });
+  if (import.meta.env.DEV && import.meta.env.VITE_USE_MOCKS === "1") {
+    const { worker } = await import("./mocks/browser");
+    await worker.start({ onUnhandledFrame: "bypass", quiet: true });
+  }
 }
 
 const queryClient = new QueryClient({

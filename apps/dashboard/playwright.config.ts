@@ -17,7 +17,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "bun run dev",
+    command: "bun run dev:mocks",
     url: "http://localhost:5178",
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
