@@ -1,17 +1,24 @@
-import { createHash } from "node:crypto";
+import type { Phase } from "@matrix/core";
+import { candidateHash, canonical, caseSetHash, sha256 } from "./hash.js";
 import type { Candidate, Evaluation, Metrics } from "./types.js";
+
+/** Bump when scoring or execution semantics change: older evaluations then stop counting for promotion. */
+export const HARNESS_VERSION = "replay-v2";
+/** Hard floor on replayed cases; a policy can ask for more, never fewer. */
+export const MIN_CASES = 3;
 
 /** One past ticket phase to replay, e.g. a review prompt with the P1 findings humans later confirmed. */
 export interface ReplayCase {
   id: string;
   ticketId: string;
-  phase: string;
+  phase: Phase;
   input: string;
   expectedP1: string[];
 }
 
-/** Runs a case with or without a candidate applied and measures the outcome. Must be deterministic for a given input. */
+/** Runs a case with or without a candidate applied and measures it. Must be deterministic for a given input. */
 export interface ReplayExecutor {
+  readonly id: string;
   execute(replay: ReplayCase, candidate: Candidate | null): Promise<Metrics>;
 }
 
@@ -23,7 +30,7 @@ export interface EvalPolicy {
 }
 
 export const DEFAULT_POLICY: EvalPolicy = {
-  minSamples: 3,
+  minSamples: MIN_CASES,
   minGain: 0.05,
   maxRegression: 0.02,
   weights: { p1: 0.5, holdout: 0.4, loopback: 0.15, cost: 0.05 },
@@ -37,7 +44,7 @@ const ZERO: Metrics = {
   costUsd: 0,
 };
 
-function sum(list: Metrics[]): Metrics {
+export function sumMetrics(list: Metrics[]): Metrics {
   if (!list.length) return { ...ZERO };
   const total = list.reduce(
     (acc, m) => ({
@@ -64,10 +71,15 @@ export function score(m: Metrics, samples: number, policy: EvalPolicy = DEFAULT_
   );
 }
 
+export interface CaseResult {
+  caseId: string;
+  baseline: Metrics;
+  candidate: Metrics;
+}
+
+/** Aggregate gain is required, and no single case may get worse than `maxRegression`. */
 export function decide(
-  baseline: Metrics,
-  candidate: Metrics,
-  samples: number,
+  cases: CaseResult[],
   policy: EvalPolicy = DEFAULT_POLICY,
 ): {
   decision: Evaluation["decision"];
@@ -75,31 +87,32 @@ export function decide(
   baselineScore: number;
   candidateScore: number;
 } {
-  const baselineScore = score(baseline, samples, policy);
-  const candidateScore = score(candidate, samples, policy);
+  const n = cases.length;
+  const baseline = sumMetrics(cases.map((c) => c.baseline));
+  const candidate = sumMetrics(cases.map((c) => c.candidate));
+  const baselineScore = score(baseline, n, policy);
+  const candidateScore = score(candidate, n, policy);
   const delta = candidateScore - baselineScore;
-  const recall = (m: Metrics) => (m.p1Expected > 0 ? m.p1Caught / m.p1Expected : 1);
   const result = (decision: Evaluation["decision"], reason: string) => ({
     decision,
     reason,
     baselineScore,
     candidateScore,
   });
-  if (samples < policy.minSamples) {
-    return result("shadow", `only ${samples} samples, need ${policy.minSamples}`);
-  }
-  if (recall(candidate) + policy.maxRegression < recall(baseline)) {
-    return result("reject", "P1 recall regressed");
-  }
-  if (candidate.holdoutSatisfaction + policy.maxRegression < baseline.holdoutSatisfaction) {
-    return result("reject", "holdout satisfaction regressed");
-  }
-  if (delta >= policy.minGain) return result("promote", `score +${delta.toFixed(3)}`);
+  const required = Math.max(MIN_CASES, policy.minSamples);
+  if (n < required) return result("shadow", `only ${n} cases, need ${required}`);
+  const regressed = cases.filter(
+    (c) => score(c.candidate, 1, policy) + policy.maxRegression < score(c.baseline, 1, policy),
+  );
+  if (regressed.length)
+    return result("reject", `regressed on ${regressed.map((c) => c.caseId).join(", ")}`);
+  if (delta >= policy.minGain)
+    return result("promote", `score +${delta.toFixed(3)} across ${n} cases`);
   if (delta <= -policy.minGain) return result("reject", `score ${delta.toFixed(3)}`);
   return result("shadow", `inconclusive (${delta >= 0 ? "+" : ""}${delta.toFixed(3)})`);
 }
 
-/** Replays every case with and without the candidate, sequentially in case-id order for determinism. */
+/** Replays every case with and without the candidate, sequentially in case-id order. Duplicate case ids are refused. */
 export async function evaluateCandidate(
   candidate: Candidate,
   cases: ReplayCase[],
@@ -108,27 +121,39 @@ export async function evaluateCandidate(
 ): Promise<Evaluation> {
   const policy = opts.policy ?? DEFAULT_POLICY;
   const ordered = [...cases].sort((a, b) => a.id.localeCompare(b.id));
+  if (new Set(ordered.map((c) => c.id)).size !== ordered.length)
+    throw new Error("duplicate replay case ids");
   const results: Evaluation["cases"] = [];
   for (const replay of ordered) {
     const baseline = await executor.execute(replay, null);
     const withCandidate = await executor.execute(replay, candidate);
-    results.push({ caseId: replay.id, baseline, candidate: withCandidate });
+    const baselineScore = score(baseline, 1, policy);
+    const candidateScore = score(withCandidate, 1, policy);
+    results.push({
+      caseId: replay.id,
+      phase: replay.phase,
+      baseline,
+      candidate: withCandidate,
+      baselineScore,
+      candidateScore,
+      delta: candidateScore - baselineScore,
+    });
   }
-  const baseline = sum(results.map((r) => r.baseline));
-  const withCandidate = sum(results.map((r) => r.candidate));
-  const verdict = decide(baseline, withCandidate, results.length, policy);
+  const verdict = decide(results, policy);
   const at = (opts.now ?? (() => new Date()))().toISOString();
-  const id = `eval-${createHash("sha256")
-    .update(JSON.stringify([candidate.id, candidate.version, ordered.map((c) => c.id), at]))
-    .digest("hex")
-    .slice(0, 10)}`;
+  const cHash = candidateHash(candidate);
+  const sHash = caseSetHash(ordered);
   return {
-    id,
+    id: `eval-${sha256(canonical([cHash, sHash, HARNESS_VERSION, executor.id, at])).slice(0, 16)}`,
     at,
-    candidateVersion: candidate.version,
+    candidateId: candidate.id,
+    candidateHash: cHash,
+    caseSetHash: sHash,
+    harnessVersion: HARNESS_VERSION,
+    executorId: executor.id,
     samples: results.length,
-    baseline,
-    candidate: withCandidate,
+    baseline: sumMetrics(results.map((r) => r.baseline)),
+    candidate: sumMetrics(results.map((r) => r.candidate)),
     baselineScore: verdict.baselineScore,
     candidateScore: verdict.candidateScore,
     delta: verdict.candidateScore - verdict.baselineScore,

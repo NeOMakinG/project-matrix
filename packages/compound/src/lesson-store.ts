@@ -1,35 +1,33 @@
-import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Store } from "@matrix/core";
+import { patchHash } from "./hash.js";
+import { assertNoSymlink, safeJoin } from "./paths.js";
 import type { Proposal } from "./propose.js";
 import {
+  CANDIDATE_ID,
   type Candidate,
+  CandidatePayloadSchema,
   CandidateSchema,
   type CandidateStatus,
-  type Evaluation,
   type RawLesson,
 } from "./types.js";
 
-export class PromotionError extends Error {}
-
 export function candidateId(projectId: string, proposal: Pick<Proposal, "payload">): string {
-  const digest = createHash("sha256")
-    .update(JSON.stringify([projectId, proposal.payload]))
-    .digest("hex");
-  return `${proposal.payload.kind}-${digest.slice(0, 12)}`;
+  const payload = CandidatePayloadSchema.parse(proposal.payload);
+  return `${payload.kind}-${patchHash(projectId, payload.kind, payload).slice(0, 12)}`;
 }
 
 const lessonKey = (l: RawLesson) => `${l.ticketId}\u0000${l.source}\u0000${l.text}`;
 
 /**
- * Versioned candidate store. Files under `<root>/.matrix/lessons/` are the source of truth; the core
- * Store gets an index row per change so the dashboard can query without reading the repo.
+ * Candidate proposals under `<root>/.matrix/lessons/`. These files are editable by anyone with repo
+ * access, so they carry no authority: promotion and approval live in the host-owned EvalLedger.
  */
 export class LessonStore {
   readonly dir: string;
   constructor(
-    root: string,
+    private readonly root: string,
     private readonly index?: Store,
     private readonly now: () => Date = () => new Date(),
   ) {
@@ -37,20 +35,22 @@ export class LessonStore {
   }
 
   private path(id: string) {
-    return join(this.dir, `${id}.json`);
+    if (!CANDIDATE_ID.test(id)) throw new Error(`invalid candidate id ${JSON.stringify(id)}`);
+    return safeJoin(this.dir, `${id}.json`);
   }
 
   private async write(candidate: Candidate): Promise<Candidate> {
     const valid = CandidateSchema.parse(candidate);
+    const path = this.path(valid.id);
     await mkdir(this.dir, { recursive: true });
-    const tmp = `${this.path(valid.id)}.tmp`;
+    await assertNoSymlink(this.root, path);
+    const tmp = `${path}.tmp`;
     await writeFile(tmp, `${JSON.stringify(valid, null, 2)}\n`);
-    await rename(tmp, this.path(valid.id));
+    await rename(tmp, path);
     if (this.index) {
-      const first = valid.evidence[0];
       await this.index.addLesson({
         projectId: valid.projectId,
-        ticketId: first?.ticketId ?? "",
+        ticketId: valid.evidence[0]?.ticketId ?? "",
         source: `candidate:${valid.id}:v${valid.version}:${valid.status}`,
         lesson: valid.title,
       });
@@ -59,8 +59,10 @@ export class LessonStore {
   }
 
   async get(id: string): Promise<Candidate | null> {
+    const path = this.path(id);
+    await assertNoSymlink(this.root, path);
     try {
-      return CandidateSchema.parse(JSON.parse(await readFile(this.path(id), "utf8")));
+      return CandidateSchema.parse(JSON.parse(await readFile(path, "utf8")));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw error;
@@ -70,7 +72,9 @@ export class LessonStore {
   async list(filter: { status?: CandidateStatus[] } = {}): Promise<Candidate[]> {
     let names: string[] = [];
     try {
-      names = (await readdir(this.dir)).filter((n) => n.endsWith(".json")).sort();
+      names = (await readdir(this.dir))
+        .filter((n) => CANDIDATE_ID.test(n.replace(/\.json$/, "")) && n.endsWith(".json"))
+        .sort();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -80,7 +84,7 @@ export class LessonStore {
     );
   }
 
-  /** Creates the candidate, or merges new evidence into it (a version bump invalidates earlier evaluations for promotion). */
+  /** Creates the candidate, or merges new evidence into it. */
   async upsert(projectId: string, proposal: Proposal): Promise<Candidate> {
     const id = candidateId(projectId, proposal);
     const at = this.now().toISOString();
@@ -94,7 +98,6 @@ export class LessonStore {
         title: proposal.title,
         payload: proposal.payload,
         evidence: proposal.evidence,
-        evaluations: [],
         history: [{ at, version: 1, status: "proposed", note: "proposed" }],
         createdAt: at,
         updatedAt: at,
@@ -116,26 +119,10 @@ export class LessonStore {
     });
   }
 
-  async recordEvaluation(id: string, evaluation: Evaluation): Promise<Candidate> {
-    const c = await this.require(id);
-    if (evaluation.candidateVersion !== c.version) {
-      throw new PromotionError(
-        `evaluation is for v${evaluation.candidateVersion}, candidate is v${c.version}`,
-      );
-    }
-    return this.write({
-      ...c,
-      evaluations: [...c.evaluations, evaluation],
-      updatedAt: evaluation.at,
-    });
-  }
-
-  async setStatus(
-    id: string,
-    status: Exclude<CandidateStatus, "promoted">,
-    note: string,
-  ): Promise<Candidate> {
-    const c = await this.require(id);
+  /** Mirrors a ledger decision into the file for readers. Never consulted for authorisation. */
+  async mirrorStatus(id: string, status: CandidateStatus, note: string): Promise<Candidate> {
+    const c = await this.get(id);
+    if (!c) throw new Error(`unknown candidate ${id}`);
     const at = this.now().toISOString();
     return this.write({
       ...c,
@@ -143,33 +130,5 @@ export class LessonStore {
       history: [...c.history, { at, version: c.version, status, note }],
       updatedAt: at,
     });
-  }
-
-  /** Promotion is only possible with a recorded `promote` evaluation of the current version. */
-  async promote(id: string): Promise<Candidate> {
-    const c = await this.require(id);
-    const latest = c.evaluations.filter((e) => e.candidateVersion === c.version).at(-1);
-    if (!latest) throw new PromotionError(`${id} v${c.version} has no recorded evaluation`);
-    if (latest.decision !== "promote") {
-      throw new PromotionError(
-        `${id} latest evaluation decided ${latest.decision}: ${latest.reason}`,
-      );
-    }
-    const at = this.now().toISOString();
-    return this.write({
-      ...c,
-      status: "promoted",
-      history: [
-        ...c.history,
-        { at, version: c.version, status: "promoted", note: `evaluation ${latest.id}` },
-      ],
-      updatedAt: at,
-    });
-  }
-
-  private async require(id: string): Promise<Candidate> {
-    const c = await this.get(id);
-    if (!c) throw new Error(`unknown candidate ${id}`);
-    return c;
   }
 }

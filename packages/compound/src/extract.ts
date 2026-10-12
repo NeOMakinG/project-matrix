@@ -1,9 +1,10 @@
-import { findingsOf, type Receipt, type RunRecord, type Store } from "@matrix/core";
+import { findingsOf, type Phase, type Receipt, type RunRecord, type Store } from "@matrix/core";
 import type { RawLesson } from "./types.js";
+import { PhaseSchema } from "./types.js";
 
 export interface HumanComment {
   ticketId: string;
-  phase?: string;
+  phase?: Phase;
   text: string;
   file?: string;
 }
@@ -85,7 +86,7 @@ export async function extractLessons(
       projectId,
       ticketId,
       source: "human-comment",
-      phase: c.phase ?? "review",
+      phase: PhaseSchema.catch("review").parse(c.phase ?? "review"),
       text: c.text,
       ...(c.file ? { file: c.file } : {}),
     });

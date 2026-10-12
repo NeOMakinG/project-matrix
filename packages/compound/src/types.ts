@@ -1,3 +1,4 @@
+import { PHASES } from "@matrix/core";
 import { z } from "zod";
 
 export const LESSON_SOURCES = [
@@ -8,11 +9,13 @@ export const LESSON_SOURCES = [
 ] as const;
 export type LessonSource = (typeof LESSON_SOURCES)[number];
 
+export const PhaseSchema = z.enum(PHASES);
+
 export const RawLessonSchema = z.object({
   projectId: z.string(),
   ticketId: z.string(),
   source: z.enum(LESSON_SOURCES),
-  phase: z.string(),
+  phase: PhaseSchema,
   text: z.string().min(1),
   severity: z.enum(["P1", "P2", "P3"]).optional(),
   file: z.string().optional(),
@@ -23,15 +26,22 @@ export type RawLesson = z.infer<typeof RawLessonSchema>;
 export const CANDIDATE_KINDS = ["adr-rule", "prompt-patch", "checklist-item"] as const;
 export type CandidateKind = (typeof CANDIDATE_KINDS)[number];
 
+/** Candidate ids are `<kind>-<12 hex>`: safe as file names, never contain separators. */
+export const CANDIDATE_ID = /^(adr-rule|prompt-patch|checklist-item)-[0-9a-f]{12}$/;
+export const CandidateIdSchema = z.string().regex(CANDIDATE_ID);
+
 export const CANDIDATE_STATUSES = ["proposed", "promoted", "rejected", "shadow"] as const;
 export type CandidateStatus = (typeof CANDIDATE_STATUSES)[number];
 
 export const AdrRuleSchema = z.object({
-  adr: z.string().optional(),
+  adr: z
+    .string()
+    .regex(/^ADR-\d{4}$/)
+    .optional(),
   type: z.enum(["forbidden-import", "ast-grep", "required-header", "boundary"]),
-  pattern: z.string().min(1),
-  paths: z.array(z.string()).default([]),
-  message: z.string().min(1),
+  pattern: z.string().min(1).max(500),
+  paths: z.array(z.string().max(200)).default([]),
+  message: z.string().min(1).max(500),
 });
 export type AdrRule = z.infer<typeof AdrRuleSchema>;
 
@@ -39,13 +49,13 @@ export const CandidatePayloadSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("adr-rule"), rule: AdrRuleSchema }),
   z.object({
     kind: z.literal("prompt-patch"),
-    phase: z.string(),
-    text: z.string().min(1),
+    phase: PhaseSchema,
+    text: z.string().min(1).max(2000),
   }),
   z.object({
     kind: z.literal("checklist-item"),
-    phase: z.string(),
-    item: z.string().min(1),
+    phase: PhaseSchema,
+    item: z.string().min(1).max(500),
   }),
 ]);
 export type CandidatePayload = z.infer<typeof CandidatePayloadSchema>;
@@ -60,9 +70,15 @@ export const MetricsSchema = z.object({
 export type Metrics = z.infer<typeof MetricsSchema>;
 
 export const EvaluationSchema = z.object({
-  id: z.string(),
+  id: z.string().regex(/^eval-[0-9a-f]{16}$/),
   at: z.string(),
-  candidateVersion: z.number().int().positive(),
+  candidateId: CandidateIdSchema,
+  /** sha256 of the exact candidate patch (project, id, payload). */
+  candidateHash: z.string().regex(/^[0-9a-f]{64}$/),
+  /** sha256 of the replay case set (ids, inputs, expectations). */
+  caseSetHash: z.string().regex(/^[0-9a-f]{64}$/),
+  harnessVersion: z.string(),
+  executorId: z.string(),
   samples: z.number().int().nonnegative(),
   baseline: MetricsSchema,
   candidate: MetricsSchema,
@@ -74,22 +90,29 @@ export const EvaluationSchema = z.object({
   cases: z.array(
     z.object({
       caseId: z.string(),
+      phase: PhaseSchema,
       baseline: MetricsSchema,
       candidate: MetricsSchema,
+      baselineScore: z.number(),
+      candidateScore: z.number(),
+      delta: z.number(),
     }),
   ),
 });
 export type Evaluation = z.infer<typeof EvaluationSchema>;
 
+/**
+ * The candidate file in the repo. It is a proposal and a readable mirror only: whether a candidate is
+ * promoted, approved and applicable is decided by the host-owned ledger, never by this file.
+ */
 export const CandidateSchema = z.object({
-  id: z.string(),
+  id: CandidateIdSchema,
   projectId: z.string(),
   version: z.number().int().positive(),
   status: z.enum(CANDIDATE_STATUSES),
   title: z.string(),
   payload: CandidatePayloadSchema,
   evidence: z.array(RawLessonSchema),
-  evaluations: z.array(EvaluationSchema),
   history: z.array(
     z.object({
       at: z.string(),
