@@ -1,4 +1,5 @@
 import type { RawSignal, Signal } from "../signal.js";
+import type { NormalizeOptions } from "./options.js";
 import { normalizeSentry } from "./sentry.js";
 import { arr, obj, shortHash, str, withOptional } from "./util.js";
 
@@ -6,10 +7,14 @@ import { arr, obj, shortHash, str, withOptional } from "./util.js";
  * GlitchTip alert webhooks are Slack-compatible (`attachments[].fields`).
  * Events pulled from the GlitchTip API use the Sentry event format.
  */
-export function normalizeGlitchtip(raw: RawSignal, projectId: string): Signal[] {
+export function normalizeGlitchtip(
+  raw: RawSignal,
+  projectId: string,
+  options: NormalizeOptions,
+): Signal[] {
   const payload = obj(raw.payload);
   const attachments = arr(payload.attachments);
-  if (attachments.length === 0) return normalizeSentry(raw, projectId, "glitchtip");
+  if (attachments.length === 0) return normalizeSentry(raw, projectId, options, "glitchtip");
 
   return attachments.map((a) => {
     const att = obj(a);
@@ -34,7 +39,10 @@ export function normalizeGlitchtip(raw: RawSignal, projectId: string): Signal[] 
         level: "error",
         occurredAt: new Date(raw.receivedAt).toISOString(),
         frames: [],
-        users: 0,
+        // Alert text is derived from client-reported events.
+        trust: "client",
+        userHashes: [],
+        reportedUsers: 0,
         count: 1,
       },
       {

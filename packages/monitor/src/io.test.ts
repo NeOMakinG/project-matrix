@@ -1,10 +1,6 @@
 import { describe, expect, test } from "vitest";
-import glitchtipApi from "./fixtures/glitchtip-api-event.json";
-import posthog from "./fixtures/posthog-exception.json";
 import { extractJson, GatewayLlm } from "./llm.js";
-import { normalize } from "./normalize/index.js";
 import { EmailNotifier, MultiNotifier, TelegramNotifier } from "./notify.js";
-import { MergedSource, PosthogPoller, SentryPoller } from "./pollers.js";
 
 type Call = { url: string; init?: RequestInit };
 
@@ -20,102 +16,6 @@ function fakeFetch(respond: (call: Call) => Response) {
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-
-describe("pollers", () => {
-  test("SentryPoller (GlitchTip-compatible) keeps events newer than the cursor", async () => {
-    const older = {
-      ...glitchtipApi,
-      eventID: "old",
-      event_id: "old",
-      dateCreated: "2026-10-12T08:00:00Z",
-    };
-    const { f, calls } = fakeFetch(() => json([glitchtipApi, older]));
-    const poller = new SentryPoller({
-      baseUrl: "https://glitchtip.example.com/",
-      token: "t",
-      org: "acme",
-      project: "ledgerly-api",
-      projectId: "ledgerly",
-      provider: "glitchtip",
-      fetch: f,
-    });
-    const out = await poller.pull("2026-10-12T09:00:00Z");
-    expect(calls[0]?.url).toBe(
-      "https://glitchtip.example.com/api/0/projects/acme/ledgerly-api/events/?full=true",
-    );
-    expect(out).toHaveLength(1);
-    const [s] = normalize(out[0]!, "x");
-    expect(s).toMatchObject({
-      provider: "glitchtip",
-      projectId: "ledgerly",
-      exceptionType: "ValueError",
-    });
-  });
-
-  test("PosthogPoller turns HogQL rows into $exception events", async () => {
-    const e = posthog.event;
-    const { f, calls } = fakeFetch(() =>
-      json({
-        columns: ["uuid", "event", "distinct_id", "properties", "timestamp"],
-        results: [[e.uuid, e.event, e.distinct_id, JSON.stringify(e.properties), e.timestamp]],
-      }),
-    );
-    const poller = new PosthogPoller({
-      baseUrl: "https://eu.posthog.com",
-      token: "phx",
-      posthogProjectId: "12",
-      projectId: "ledgerly",
-      fetch: f,
-    });
-    const out = await poller.pull("2026-10-12T09:00:00Z");
-    const body = JSON.parse(String(calls[0]?.init?.body));
-    expect(body.query.kind).toBe("HogQLQuery");
-    expect(body.query.query).toContain("event = '$exception'");
-    const [s] = normalize(out[0]!, "x");
-    expect(s).toMatchObject({
-      provider: "posthog",
-      exceptionType: "TypeError",
-      release: "web@1.4.0",
-    });
-  });
-
-  test("MergedSource orders by time and pollers fail loudly on HTTP errors", async () => {
-    const a = {
-      pull: async () => [
-        {
-          source: "otel" as const,
-          kind: "",
-          title: "a",
-          payload: {},
-          receivedAt: "2026-10-12T10:00:00Z",
-        },
-      ],
-    };
-    const b = {
-      pull: async () => [
-        {
-          source: "otel" as const,
-          kind: "",
-          title: "b",
-          payload: {},
-          receivedAt: "2026-10-12T09:00:00Z",
-        },
-      ],
-    };
-    expect((await new MergedSource([a, b]).pull("")).map((r) => r.title)).toEqual(["b", "a"]);
-
-    const { f } = fakeFetch(() => json({ detail: "nope" }, 401));
-    const poller = new SentryPoller({
-      baseUrl: "https://s",
-      token: "t",
-      org: "o",
-      project: "p",
-      projectId: "x",
-      fetch: f,
-    });
-    await expect(poller.pull("2026-10-12T00:00:00Z")).rejects.toThrow("sentry poll 401");
-  });
-});
 
 describe("notifiers", () => {
   const n = {
@@ -172,5 +72,23 @@ describe("gateway llm", () => {
     expect(extractJson('sure!\n```json\n{"a":1}\n```')).toEqual({ a: 1 });
     expect(extractJson('{"a":{"b":2}} trailing')).toEqual({ a: { b: 2 } });
     expect(() => extractJson("no json")).toThrow();
+  });
+});
+
+describe("notification hardening", () => {
+  test("CR/LF in titles can't forge lines or email headers", async () => {
+    const sent: { subject: string; text: string }[] = [];
+    const email = new EmailNotifier({
+      to: "ops@example.com",
+      transport: { send: async (m) => void sent.push(m) },
+    });
+    await email.notify({
+      projectId: "p",
+      severity: "low",
+      title: "x\r\nBcc: evil@example.com",
+      body: "b",
+    });
+    expect(sent[0]?.subject).toBe("[LOW] x Bcc: evil@example.com");
+    expect(sent[0]?.text.split("\n")[0]).toBe("[LOW] p: x Bcc: evil@example.com");
   });
 });

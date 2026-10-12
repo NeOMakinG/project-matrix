@@ -7,6 +7,8 @@ export interface GraphHint {
   reason: string;
   adrs: string[];
   features: string[];
+  /** True when the code graph confirms the path exists in the repository. */
+  inRepo: boolean;
 }
 
 export interface GraphPort {
@@ -31,6 +33,8 @@ export const framesOnlyGraph: GraphPort = {
         reason: `stack frame${f.line !== undefined ? ` at line ${f.line}` : ""}`,
         adrs: [],
         features: [],
+        // Unverified: without a code graph we can't tell a real path from a forged frame.
+        inRepo: false,
       };
       if (f.function) hint.symbol = f.function;
       hints.push(hint);

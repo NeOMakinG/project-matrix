@@ -1,3 +1,4 @@
+import { hashUser } from "../redact.js";
 import type { RawSignal, Signal } from "../signal.js";
 import { arr, frames, isoTime, level, obj, shortHash, str, withOptional } from "./util.js";
 
@@ -15,6 +16,7 @@ export function normalizePosthog(raw: RawSignal, projectId: string): Signal[] {
   const message = str(exc.value) ?? str(props.$exception_message) ?? "";
   const title = exceptionType ? `${exceptionType}: ${message}`.trim() : raw.title;
   const uuid = str(event.uuid);
+  const distinctId = str(event.distinct_id);
 
   return [
     withOptional<Signal>(
@@ -28,11 +30,14 @@ export function normalizePosthog(raw: RawSignal, projectId: string): Signal[] {
         level: level(props.$exception_level),
         occurredAt: isoTime(event.timestamp, raw.receivedAt),
         frames: frames(obj(exc.stacktrace).frames),
-        users: str(event.distinct_id) ? 1 : 0,
+        // Anyone holding the public capture key can send these events.
+        trust: "client",
+        userHashes: distinctId ? [hashUser(projectId, distinctId)] : [],
+        reportedUsers: 0,
         count: 1,
       },
       {
-        release: str(props.$app_version) ?? str(props.release) ?? str(props.$lib_version),
+        release: str(props.$app_version) ?? str(props.release),
         environment: str(props.environment) ?? str(props.$environment),
         exceptionType,
         providerFingerprint: str(props.$exception_fingerprint) ?? str(props.$exception_issue_id),

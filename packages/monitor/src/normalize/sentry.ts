@@ -1,5 +1,10 @@
+import { hashUser } from "../redact.js";
 import type { RawSignal, Signal } from "../signal.js";
+import type { NormalizeOptions } from "./options.js";
 import { arr, frames, isoTime, level, num, obj, shortHash, str, withOptional } from "./util.js";
+
+const SERVER_SDK =
+  /^sentry\.(javascript\.(node|bun|deno|aws-serverless|google-cloud-serverless|nestjs)|python|go|ruby|php|java(?:$|\.(?!android))|dotnet|rust|elixir|native)/;
 
 /**
  * Sentry (and GlitchTip API events, which use the same event format).
@@ -8,6 +13,7 @@ import { arr, frames, isoTime, level, num, obj, shortHash, str, withOptional } f
 export function normalizeSentry(
   raw: RawSignal,
   projectId: string,
+  options: NormalizeOptions,
   provider: "sentry" | "glitchtip" = "sentry",
 ): Signal[] {
   const payload = obj(raw.payload);
@@ -33,6 +39,16 @@ export function normalizeSentry(
     return undefined;
   };
 
+  // SDK name is part of the (forgeable) event, so a server claim only counts for projects
+  // configured as server-only, whose DSN never ships to clients.
+  const sdk = str(obj(event.sdk).name) ?? "";
+  const sourceProject = str(event.project) ?? str(obj(issue.project).slug) ?? str(issue.project);
+  const trusted =
+    SERVER_SDK.test(sdk) &&
+    sourceProject !== undefined &&
+    (options.trustedServerProjects ?? []).includes(`${provider}:${sourceProject}`);
+  const userId = str(obj(event.user).id) ?? str(obj(event.user).email);
+
   return [
     withOptional<Signal>(
       {
@@ -45,7 +61,9 @@ export function normalizeSentry(
         level: level(event.level ?? issue.level),
         occurredAt: isoTime(event.timestamp ?? event.datetime ?? issue.lastSeen, raw.receivedAt),
         frames: frames(obj(last.stacktrace).frames),
-        users: num(issue.userCount) ?? (obj(event.user).id ? 1 : 0),
+        trust: trusted ? "server" : "client",
+        userHashes: userId ? [hashUser(projectId, userId)] : [],
+        reportedUsers: Math.max(0, Math.trunc(num(issue.userCount) ?? 0)),
         count: Math.max(1, Math.trunc(num(issue.count) ?? 1)),
       },
       {

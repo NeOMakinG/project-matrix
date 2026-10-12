@@ -29,7 +29,9 @@ export function normalizeOtel(raw: RawSignal, projectId: string): Signal[] {
           level: level(labels.severity, "warning"),
           occurredAt: isoTime(alert.startsAt, raw.receivedAt),
           frames: [],
-          users: 0,
+          trust: "infra",
+          userHashes: [],
+          reportedUsers: 0,
           count: 1,
         },
         {

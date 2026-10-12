@@ -1,4 +1,5 @@
 import type { Notification, Notifier } from "./ports.js";
+import { singleLine } from "./redact.js";
 
 const ICON: Record<Notification["severity"], string> = {
   critical: "[CRITICAL]",
@@ -8,7 +9,12 @@ const ICON: Record<Notification["severity"], string> = {
 };
 
 export function formatNotification(n: Notification): string {
-  return [`${ICON[n.severity]} ${n.projectId}: ${n.title}`, n.body, n.url ?? ""]
+  // Title and URL are single-line so content can't forge extra lines; the body is plain text.
+  return [
+    `${ICON[n.severity]} ${singleLine(n.projectId, 60)}: ${singleLine(n.title, 200)}`,
+    n.body.replace(/\r/g, "").slice(0, 2000),
+    n.url ? singleLine(n.url, 500) : "",
+  ]
     .filter(Boolean)
     .join("\n");
 }
@@ -49,7 +55,8 @@ export class EmailNotifier implements Notifier {
   async notify(n: Notification): Promise<void> {
     await this.opts.transport.send({
       to: this.opts.to,
-      subject: `${ICON[n.severity]} ${n.title}`.slice(0, 180),
+      // No CR/LF in the subject: header injection with permissive transports.
+      subject: singleLine(`${ICON[n.severity]} ${n.title}`, 180),
       text: formatNotification(n),
     });
   }

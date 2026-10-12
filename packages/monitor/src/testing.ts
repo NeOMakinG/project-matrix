@@ -84,6 +84,8 @@ export class ScriptedLlm implements LlmClient {
   }
 }
 
+const REPO_FILES = ["src/", "api/"];
+
 export const fakeGraph: GraphPort = {
   async hintsFor({ frames }) {
     return frames
@@ -94,6 +96,8 @@ export const fakeGraph: GraphPort = {
         reason: "stack frame",
         adrs: f.file.startsWith("src/billing") ? ["ADR-0007"] : [],
         features: f.file.startsWith("src/billing") ? ["invoicing"] : [],
+        // The fake repo: everything under src/ and api/ exists in the code graph.
+        inRepo: REPO_FILES.some((prefix) => f.file.startsWith(prefix)),
       }));
   },
 };
