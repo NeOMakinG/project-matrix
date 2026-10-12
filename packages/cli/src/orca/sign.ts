@@ -1,11 +1,11 @@
 import { createHmac, randomBytes } from "node:crypto";
 
-export interface OrcaHookHeaders {
+export type OrcaHookHeaders = {
   "content-type": "application/json";
   "x-orca-timestamp": string;
   "x-orca-nonce": string;
   "x-orca-signature": string;
-}
+};
 
 /** Signs an Orca agent-hook body the way the Matrix server verifies it (`POST /hooks/orca`). */
 export function signOrcaHook(
