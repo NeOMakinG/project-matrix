@@ -92,10 +92,10 @@ export function resolveRulesCommit(root: string, ref: string): string {
 /** Rules as they were at a git commit (paths relative to `root`). */
 export function loadRulesAt(root: string, ref: string, adrDir = DEFAULT_ADR_DIR): LoadedRules {
   const commit = resolveRulesCommit(root, ref);
-  const ls = git(root, ["ls-tree", "--name-only", commit, "--", `${adrDir}/`]);
+  const ls = git(root, ["ls-tree", "-z", "--name-only", commit, "--", `${adrDir}/`]);
   if (ls.status !== 0) throw new Error(`git ls-tree failed: ${ls.stderr.trim()}`);
   const files = new Map<string, string>();
-  for (const line of ls.stdout.split("\n").filter(Boolean)) {
+  for (const line of ls.stdout.split("\0").filter(Boolean)) {
     const name = posix.basename(line);
     if (!ADR_FILE.test(name)) continue;
     const path = posix.join(adrDir, name);

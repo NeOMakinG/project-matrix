@@ -269,3 +269,23 @@ describe("round 2: submodules", () => {
     expect(r.failures).toEqual([expect.stringMatching(/submodule vendor\/inner hides code/)]);
   });
 });
+
+describe("round 3", () => {
+  test("P1: gitlinks with newline, space and unicode paths (no .gitmodules) are detected", async () => {
+    const root = await fixtureProject({
+      "docs/adr/0023-orm.md": ormAdr,
+      "src/a.ts": "export {};\n",
+    });
+    git(root, "init", "-q", "-b", "main");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "base");
+    const sha = git(root, "rev-parse", "HEAD").trim();
+    const weird = ["vendor/new\nline", "vendor/with space", "vendor/ünïcode"];
+    for (const p of weird) git(root, "update-index", "--add", "--cacheinfo", `160000,${sha},${p}`);
+    git(root, "commit", "-q", "-m", "gitlinks");
+    const r = await checkProject(root);
+    expect(r.ok).toBe(false);
+    for (const p of weird)
+      expect(r.failures).toContainEqual(expect.stringContaining(`submodule ${p} hides code`));
+  });
+});

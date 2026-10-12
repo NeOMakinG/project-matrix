@@ -71,6 +71,9 @@ const gitOut = (root: string, args: string[]) => {
   return r.status === 0 && !r.error ? r.stdout : undefined;
 };
 
+/** Splits `git ... -z` output into records. */
+export const nulEntries = (out: string | undefined) => (out ?? "").split("\0").filter(Boolean);
+
 interface GitListing {
   paths: string[];
   /** Gitlinks (mode 160000), `.gitmodules` paths and untracked nested repositories. */
@@ -81,17 +84,21 @@ function gitListing(root: string): GitListing | undefined {
   const out = gitOut(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
   if (out === undefined) return undefined;
   const nested = new Set<string>();
-  for (const entry of (gitOut(root, ["ls-files", "-z", "--stage"]) ?? "").split("\0")) {
-    const m = /^160000 [0-9a-f]+ \d\t(.+)$/.exec(entry);
-    if (m?.[1]) nested.add(m[1]);
+  for (const entry of nulEntries(gitOut(root, ["ls-files", "-z", "--stage"]))) {
+    // "<mode> <object> <stage>\t<path>": split at the first tab; the path may hold any byte.
+    const tab = entry.indexOf("\t");
+    if (tab !== -1 && entry.startsWith("160000 ")) nested.add(entry.slice(tab + 1));
   }
-  const modules = gitOut(root, ["config", "-f", ".gitmodules", "--get-regexp", "path$"]) ?? "";
-  for (const line of modules.split("\n")) {
-    const path = line.split(" ").slice(1).join(" ").trim();
+  // `-z`: each record is "<key>\n<value>\0", so paths with newlines survive.
+  for (const record of nulEntries(
+    gitOut(root, ["config", "-z", "-f", ".gitmodules", "--get-regexp", "path$"]),
+  )) {
+    const nl = record.indexOf("\n");
+    const path = nl === -1 ? "" : record.slice(nl + 1);
     if (path) nested.add(path.replace(/\/+$/, ""));
   }
   const paths: string[] = [];
-  for (const p of out.split("\0").filter(Boolean)) {
+  for (const p of nulEntries(out)) {
     // `--others` reports an untracked nested repository as a single `dir/` entry.
     if (p.endsWith("/")) nested.add(p.replace(/\/+$/, ""));
     else if (!nested.has(p)) paths.push(p);
