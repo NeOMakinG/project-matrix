@@ -7,6 +7,7 @@ import { CHECK_USAGE, checkCommand } from "./check";
 import { GRAPH_USAGE, graphCommand } from "./graph";
 import { runInit } from "./init";
 import { interview } from "./interactive";
+import { ORCA_USAGE, orcaCommand } from "./orca/command";
 
 const USAGE = `matrix init [dir] [options]   run the init interview and generate the project
 matrix init next --answers <file>   print the next interview round as JSON (for agents)
@@ -26,6 +27,7 @@ async function readAnswers(path: string | undefined): Promise<Answers> {
 async function main(argv: string[]): Promise<number> {
   if (argv[0] === "check") return checkCommand(argv.slice(1));
   if (argv[0] === "graph") return graphCommand(argv.slice(1));
+  if (argv[0] === "orca") return orcaCommand(argv.slice(1));
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -41,7 +43,7 @@ async function main(argv: string[]): Promise<number> {
   });
   const [command, sub, maybeDir] = positionals;
   if (values.help || command !== "init") {
-    console.log(`${USAGE}\n\n${CHECK_USAGE}\n\n${GRAPH_USAGE}`);
+    console.log(`${USAGE}\n\n${CHECK_USAGE}\n\n${GRAPH_USAGE}\n\n${ORCA_USAGE}`);
     return command === "init" || values.help ? 0 : 1;
   }
 
