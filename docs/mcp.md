@@ -29,11 +29,20 @@ bun --env-file="$HOME/.config/matrix/client.env" packages/cli/src/bin.ts orca re
 
 This calls `POST /v1/keys`, creates an **agent** key per selected agent, and writes
 `~/.codex/config.toml` with a `matrix` MCP table pointing to `/mcp` and a Bearer
-header. Existing Matrix entries are refused; unrelated configuration is preserved,
-existing files backed up and outputs written 0600. These files/backups contain
-credentials: exclude them from version control, logs and shared archives. Dry run
-creates no key and writes nothing. If apply fails, the helper attempts to revoke
-the newly created keys; inspect `/v1/keys` and revoke leftovers if cleanup fails.
+header. Existing Matrix entries are **replaced**, with new credentials; unrelated
+configuration is preserved, existing files backed up and outputs written 0600.
+Preview the dry-run replacement plan and review a token-redacted diff of intended
+configuration changes before `--apply`. Dry run creates no key and writes nothing.
+
+Replacement **does not revoke the old key**. Through a reviewed, authorized server
+client, use `GET /v1/keys` to identify the exact prior key ID, not just its shared
+agent name. After verifying the new configuration works, deliberately revoke that
+old key with `DELETE /v1/keys/{id}`. There is no CLI revoke command documented here.
+The 0600 backup may still contain the old token. Protect configs/backups and exclude
+them from version control, logs and shared archives; never print or copy tokens
+into terminal output, shell arguments or history. If apply fails, the helper
+attempts to revoke only newly created keys; inspect `GET /v1/keys` and revoke
+leftovers through the reviewed API if cleanup fails.
 
 Other supported configuration targets are `~/.claude.json` and
 `~/.config/opencode/opencode.json`; default helper selection includes all three.
