@@ -188,4 +188,10 @@ describe("run event stream", () => {
     const [message] = t.events();
     expect(message).toMatch(/^event 9 dropped: \d+ characters is over the limit$/);
   });
+
+  it("ignores events that carry no data", () => {
+    const t = setup("r1");
+    expect(() => t.sources[0]?.emit("log", undefined as never)).not.toThrow();
+    expect(t.events()).toEqual([]);
+  });
 });
