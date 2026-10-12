@@ -63,7 +63,7 @@ ${alternatives}
 
 ## Decision outcome
 
-Chosen option: **${d.decision}**${d.rationale ? `, because ${d.rationale.charAt(0).toLowerCase()}${d.rationale.slice(1)}` : "."}
+Chosen option: **${d.decision}**.${d.rationale ? ` ${d.rationale}` : ""}
 ${d.consequences ? `\n## Consequences\n\n${d.consequences}\n` : ""}${rules}`;
   });
   return files;
