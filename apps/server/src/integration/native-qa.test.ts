@@ -127,6 +127,7 @@ test("step failures use only diagnostic fields; absent or unreadable events/step
 });
 
 test("diagnostics bound counts/bytes and redact patterns, execution context and secret encodings", async () => {
+  const started = performance.now();
   const key = "fixture-secret-value-for-redaction";
   const redact = nativeQaRedactor([key]);
   for (const encoded of [
@@ -164,4 +165,5 @@ test("diagnostics bound counts/bytes and redact patterns, execution context and 
   expect(evidence[0]?.events.omittedCount).toBe(87);
   expect(Buffer.byteLength(JSON.stringify(evidence))).toBeLessThan(160 * 1024);
   expect(JSON.stringify(evidence)).not.toContain(key);
+  expect(performance.now() - started).toBeLessThan(1000);
 });
