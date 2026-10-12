@@ -37,7 +37,24 @@ export function projectRoutes(app: App, ops: Operations) {
       body: S.CreateProject,
       response: S.Project,
     }),
-    async (c) => c.json(await ops.createProject(c.var.principal, c.req.valid("json"))),
+    async (c) => {
+      const body = c.req.valid("json");
+      return c.json(
+        await ops.createProject(c.var.principal, {
+          name: body.name,
+          description: body.description,
+          workspace: body.workspace,
+          ...(body.tickets
+            ? {
+                tickets: {
+                  kind: body.tickets.kind,
+                  ...(body.tickets.repo ? { repo: body.tickets.repo } : {}),
+                },
+              }
+            : {}),
+        }),
+      );
+    },
   );
 
   app.openapi(

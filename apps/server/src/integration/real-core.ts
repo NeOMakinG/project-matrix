@@ -33,7 +33,12 @@ import {
   type Adr as ServerAdr,
 } from "../core-port.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
-import { DEFAULT_TICKETS, type TicketSettings, ticketStoreFor } from "./tickets.js";
+import {
+  DEFAULT_TICKETS,
+  type TicketBinaries,
+  type TicketSettings,
+  ticketStoreFor,
+} from "./tickets.js";
 
 export interface KnowledgePort {
   adrs(repoPath: string): Promise<ServerAdr[]>;
@@ -54,6 +59,10 @@ export interface RealCoreOptions {
   host: string;
   knowledge: KnowledgePort;
   monitor: MonitorPort;
+  /** Prepares a new project's repo (git, ticket tracker). */
+  initRepo?: (repoPath: string, tickets: TicketSettings) => Promise<void>;
+  /** CLI binaries for ticket adapters. */
+  binaries?: TicketBinaries;
   /** Overrides the ticket store per project (tests). */
   ticketsFor?: (project: StoredProject) => TicketStore;
 }
@@ -87,7 +96,11 @@ export class RealCore implements CorePort {
     const project = await this.config(projectId);
     const store = this.o.ticketsFor
       ? this.o.ticketsFor(project)
-      : ticketStoreFor(project.repoPath, project.matrix?.tickets ?? DEFAULT_TICKETS);
+      : ticketStoreFor(
+          project.repoPath,
+          project.matrix?.tickets ?? DEFAULT_TICKETS,
+          this.o.binaries,
+        );
     this.ticketStores.set(projectId, store);
     return store;
   }
@@ -118,6 +131,7 @@ export class RealCore implements CorePort {
     const id = randomUUID();
     const repoPath = join(this.o.projectsRoot, id);
     await mkdir(repoPath, { recursive: true });
+    await this.o.initRepo?.(repoPath, input.tickets ?? DEFAULT_TICKETS);
     const config = newProjectConfig({
       id,
       name: input.name,

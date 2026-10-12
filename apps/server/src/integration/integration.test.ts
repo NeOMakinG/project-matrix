@@ -54,7 +54,12 @@ describe("server on the real core (fake runtime)", () => {
   test("project → init → ticket → run → phases → human approval → merge, with SSE events", async () => {
     const { factory: f, call, json } = await boot();
     const project = await json<{ id: string; autonomy: Record<string, string> }>(
-      call("POST", "/v1/projects", { name: "pilot", description: "e2e", workspace: "native" }),
+      call("POST", "/v1/projects", {
+        name: "pilot",
+        description: "e2e",
+        workspace: "native",
+        tickets: { kind: "markdown" },
+      }),
     );
     expect(project.autonomy.merge).toBe("human");
 
@@ -116,7 +121,12 @@ describe("server on the real core (fake runtime)", () => {
   test("a signed monitor webhook becomes a ticket in the project's tracker", async () => {
     const { factory: f, server, call, json } = await boot();
     const project = await json<{ id: string }>(
-      call("POST", "/v1/projects", { name: "prod", description: "", workspace: "native" }),
+      call("POST", "/v1/projects", {
+        name: "prod",
+        description: "",
+        workspace: "native",
+        tickets: { kind: "markdown" },
+      }),
     );
     const secrets = { ...SECRETS, projects: { [project.id]: { sentry: "project-sentry-secret" } } };
     const app = createServer({ core: f.core, secrets }).app;

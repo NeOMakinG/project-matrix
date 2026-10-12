@@ -1,6 +1,8 @@
 import type { GitPort, HandlerDeps, Workspace } from "@matrix/core";
 import { FakeGit, FakeRunner, FakeSandbox, FakeWorkspace, qaEvidence } from "@matrix/core/testing";
 
+import { type NativeRuntimeOptions, nativeRuntime } from "./native-runtime.js";
+
 export type RuntimeKind = "fake" | "native" | "orca";
 
 /** Everything the reconciler and its phase handlers need to actually run work. */
@@ -14,7 +16,7 @@ export interface Runtime {
 export class RuntimeUnavailableError extends Error {}
 
 export function parseRuntimeKind(value: string | undefined): RuntimeKind {
-  const kind = (value ?? "fake").toLowerCase();
+  const kind = (value ?? "native").toLowerCase();
   if (kind === "fake" || kind === "native" || kind === "orca") return kind;
   throw new RuntimeUnavailableError(`MATRIX_RUNTIME must be fake, native or orca (got ${value})`);
 }
@@ -65,13 +67,16 @@ export function fakeRuntime(): Runtime {
   };
 }
 
-/**
- * `native` and `orca` come from the runtime packages (PR #4). Until they're on main the switch exists
- * but refuses to start, so a misconfigured server never silently runs the fake runtime.
- */
-export function createRuntime(kind: RuntimeKind): Runtime {
+/** `native` (default) and `orca` run agents in rootless Podman through the credential broker. */
+export function createRuntime(
+  kind: RuntimeKind,
+  native?: Omit<NativeRuntimeOptions, "workspace">,
+): Runtime {
   if (kind === "fake") return fakeRuntime();
-  throw new RuntimeUnavailableError(
-    `MATRIX_RUNTIME=${kind} needs the runtime packages (PR #4); use MATRIX_RUNTIME=fake until it merges`,
-  );
+  if (!native) {
+    throw new RuntimeUnavailableError(
+      `MATRIX_RUNTIME=${kind} needs MATRIX_GATEWAY_URL, a gateway key source and MATRIX_RUNNER_IMAGE`,
+    );
+  }
+  return nativeRuntime({ ...native, workspace: kind });
 }

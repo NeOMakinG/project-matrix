@@ -114,7 +114,12 @@ export class Operations {
 
   createProject(
     p: Principal,
-    input: { name: string; description: string; workspace: Project["workspace"] },
+    input: {
+      name: string;
+      description: string;
+      workspace: Project["workspace"];
+      tickets?: { kind: "beads" | "markdown" | "github"; repo?: string };
+    },
   ) {
     return this.op(p, "admin", "/projects")(() => this.core.createProject(input));
   }

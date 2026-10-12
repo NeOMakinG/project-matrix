@@ -181,6 +181,7 @@ export interface CorePort {
     name: string;
     description: string;
     workspace: Project["workspace"];
+    tickets?: { kind: "beads" | "markdown" | "github"; repo?: string };
   }): Promise<Project>;
   setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode): Promise<Project>;
 

@@ -23,7 +23,11 @@
     "@matrix/graph": "workspace:*",
     "@matrix/monitor": "workspace:*",
     "@matrix/compound": "workspace:*",
-    "@matrix/watch": "workspace:*"
+    "@matrix/watch": "workspace:*",
+    "@matrix/runners": "workspace:*",
+    "@matrix/sandbox": "workspace:*",
+    "@matrix/workspace": "workspace:*",
+    "@matrix/qa": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

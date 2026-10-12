@@ -1,5 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { createCompoundHandler } from "@matrix/compound";
 import {
   createDefaultHandlers,
@@ -15,11 +18,15 @@ import type { TicketStore } from "@matrix/tickets";
 import { runWatch } from "@matrix/watch";
 import { repoKnowledge } from "./knowledge.js";
 import { fakeTriageLlm, ServerMonitor } from "./monitor.js";
+import type { NativeRuntimeOptions } from "./native-runtime.js";
 import { RealCore } from "./real-core.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
+import type { TicketBinaries, TicketSettings } from "./tickets.js";
 
 export interface FactoryOptions {
   runtime: RuntimeKind;
+  /** Required for the native and orca runtimes. */
+  native?: Omit<NativeRuntimeOptions, "workspace" | "dataDir">;
   /** Postgres URL; without it the factory runs on the in-memory store (dev and tests only). */
   databaseUrl?: string;
   dataDir: string;
@@ -32,6 +39,38 @@ export interface FactoryOptions {
   /** Weekly tech watch over every project (network access). */
   watch?: boolean;
   log?: (message: string) => void;
+  binaries?: TicketBinaries;
+}
+
+const run = promisify(execFile);
+
+/**
+ * New project repo: `git init` on `main` with one commit (worktrees need a base), and the beads
+ * database when beads is the tracker (stealth: kept out of commits).
+ */
+export async function initProjectRepo(
+  repoPath: string,
+  tickets: TicketSettings,
+  binaries: TicketBinaries = {},
+): Promise<void> {
+  const git = (...args: string[]) => run("git", ["-C", repoPath, ...args]);
+  await git("init", "-q", "-b", "main");
+  await git("config", "user.name", "Project Matrix");
+  await git("config", "user.email", "matrix@localhost");
+  await writeFile(join(repoPath, "README.md"), "# New project\n\nCreated by Project Matrix.\n", {
+    flag: "wx",
+  }).catch(() => undefined);
+  await git("add", "README.md");
+  await git("commit", "-q", "-m", "chore: initial commit");
+  if (tickets.kind === "beads") {
+    await run(
+      binaries.bd ?? "bd",
+      ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
+      {
+        cwd: repoPath,
+      },
+    );
+  }
 }
 
 /** A TicketStore whose backing adapter is resolved per call (the reconciler needs it synchronously). */
@@ -56,7 +95,10 @@ function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
 
 export async function createFactory(options: FactoryOptions) {
   const log = options.log ?? ((m: string) => console.log(m));
-  const runtime = createRuntime(options.runtime);
+  const runtime = createRuntime(
+    options.runtime,
+    options.native ? { ...options.native, dataDir: options.dataDir } : undefined,
+  );
   mkdirSync(join(options.dataDir, "projects"), { recursive: true, mode: 0o700 });
   mkdirSync(join(options.dataDir, "holdout"), { recursive: true, mode: 0o700 });
 
@@ -117,6 +159,8 @@ export async function createFactory(options: FactoryOptions) {
     host: options.host,
     knowledge: repoKnowledge,
     monitor,
+    initRepo: (repoPath, tickets) => initProjectRepo(repoPath, tickets, options.binaries),
+    ...(options.binaries ? { binaries: options.binaries } : {}),
   });
 
   const timers: ReturnType<typeof setInterval>[] = [];
