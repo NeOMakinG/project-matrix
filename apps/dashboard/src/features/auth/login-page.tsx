@@ -28,6 +28,8 @@ export function LoginPage() {
     mutationFn: () => endpoints.signIn(apiKey.trim()),
     onSuccess: (session) => {
       setApiKey("");
+      // Nothing cached under a previous identity may leak into this session.
+      client.clear();
       client.setQueryData(queries.session().queryKey, session);
       void navigate({ to: safeRedirect(redirect) });
     },
@@ -41,9 +43,8 @@ export function LoginPage() {
           <h1 className="text-title font-semibold">Sign in to matrix</h1>
         </div>
         <p className="mt-2 text-body text-fg-secondary">
-          Paste an API key with the <span className="font-mono text-fg">admin</span> or{" "}
-          <span className="font-mono text-fg">read</span> action. It is exchanged once for a session
-          cookie and never stored in the browser.
+          Paste a <span className="font-mono text-fg">human</span> API key. It is exchanged once for
+          a session cookie and never stored in the browser.
         </p>
         <form
           className="mt-4 space-y-3"

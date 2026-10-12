@@ -141,7 +141,7 @@ export function makeRouter(queryClient: QueryClient, history?: RouterHistory) {
   onUnauthorized(() => {
     const { pathname, href } = router.state.location;
     if (pathname === "/login") return;
-    queryClient.removeQueries({ queryKey: queries.session().queryKey });
+    queryClient.clear();
     void router.navigate({ to: "/login", search: { redirect: href } });
   });
   return router;
