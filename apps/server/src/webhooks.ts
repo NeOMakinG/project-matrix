@@ -1,11 +1,16 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export interface WebhookSecrets {
+export interface SourceSecrets {
   sentry?: string;
   github?: string;
   posthog?: string;
   otel?: string;
   orca?: string;
+}
+
+/** Global secrets (unattributed signals) plus optional per-project secrets for `?project=` hooks. */
+export interface WebhookSecrets extends SourceSecrets {
+  projects?: Record<string, SourceSecrets>;
 }
 
 export const hmacHex = (secret: string, body: string) =>
