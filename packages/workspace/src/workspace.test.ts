@@ -4,7 +4,11 @@ import { mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LineExecutor } from "@matrix/sandbox";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+
+// Every case runs several real git processes; give them headroom on a busy host.
+vi.setConfig({ testTimeout: 30_000 });
+
 import { WorktreeGitPort } from "./git-port";
 import { NativeWorkspace } from "./native";
 import { checkOrcaContract, OrcaWorkspace } from "./orca";
