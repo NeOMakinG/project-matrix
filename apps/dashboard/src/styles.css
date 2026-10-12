@@ -1,0 +1,80 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@xyflow/react/dist/style.css";
+
+@theme {
+  --color-canvas: #0a0b0d;
+  --color-surface: #111316;
+  --color-raised: #16191d;
+  --color-hover: #1c2026;
+  --color-border-subtle: #22262c;
+  --color-border-strong: #2e333a;
+  --color-fg: #e8eaed;
+  --color-fg-secondary: #9aa1ab;
+  --color-fg-muted: #878e98;
+  --color-accent: #2bd67b;
+  --color-accent-dim: #0f2a1c;
+  --color-info: #5b9dff;
+  --color-info-dim: #14223a;
+  --color-warn: #f5a524;
+  --color-warn-dim: #2e2410;
+  --color-danger: #f25f5c;
+  --color-danger-dim: #301617;
+  --color-violet: #a78bfa;
+  --color-violet-dim: #221b38;
+
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, monospace;
+
+  --text-caption: 11px;
+  --text-caption--line-height: 16px;
+  --text-body: 13px;
+  --text-body--line-height: 20px;
+  --text-label: 12px;
+  --text-label--line-height: 16px;
+  --text-heading: 14px;
+  --text-heading--line-height: 20px;
+  --text-title: 16px;
+  --text-title--line-height: 24px;
+  --text-title--letter-spacing: -0.2px;
+  --text-stat: 22px;
+  --text-stat--line-height: 28px;
+  --text-stat--letter-spacing: -0.4px;
+  --text-display: 24px;
+  --text-display--line-height: 32px;
+  --text-display--letter-spacing: -0.4px;
+
+  --radius-card: 10px;
+  --radius-control: 6px;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--color-canvas);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: var(--color-accent-dim);
+    color: var(--color-accent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
+
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: var(--color-border-strong);
+  --xy-node-background-color: var(--color-raised);
+}
