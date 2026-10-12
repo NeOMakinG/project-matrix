@@ -1,1 +1,15 @@
 export const name = "@matrix/compound";
+export * from "./evaluate.js";
+export * from "./extract.js";
+export * from "./handler.js";
+export * from "./hash.js";
+export * from "./ledger.js";
+export * from "./lesson-store.js";
+export * from "./materialize.js";
+export * from "./paths.js";
+export * from "./promote.js";
+export * from "./propose.js";
+export * from "./runner-executor.js";
+export * from "./sample.js";
+export * from "./select.js";
+export * from "./types.js";

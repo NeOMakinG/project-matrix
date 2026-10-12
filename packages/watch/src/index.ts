@@ -1,1 +1,16 @@
 export const name = "@matrix/watch";
+export * from "./cli.js";
+export * from "./collectors/feeds.js";
+export * from "./collectors/github.js";
+export * from "./collectors/hn.js";
+export * from "./collectors/osv.js";
+export * from "./collectors/registries.js";
+export * from "./dedupe.js";
+export * from "./deps.js";
+export * from "./digest.js";
+export * from "./feed.js";
+export * from "./http.js";
+export * from "./llm.js";
+export * from "./run.js";
+export * from "./score.js";
+export * from "./types.js";
