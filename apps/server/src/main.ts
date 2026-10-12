@@ -30,6 +30,12 @@ const { app } = createServer({
   core: new MemoryCore(),
   keys,
   ...(env.MATRIX_AUDIT_FILE ? { auditFile: env.MATRIX_AUDIT_FILE } : {}),
+  sessions: {
+    ...(env.MATRIX_DASHBOARD_ORIGINS
+      ? { allowedOrigins: env.MATRIX_DASHBOARD_ORIGINS.split(",") }
+      : {}),
+    secureCookies: env.MATRIX_INSECURE_COOKIES !== "1",
+  },
   secrets: {
     ...(env.MATRIX_SENTRY_SECRET ? { sentry: env.MATRIX_SENTRY_SECRET } : {}),
     ...(env.MATRIX_GITHUB_SECRET ? { github: env.MATRIX_GITHUB_SECRET } : {}),

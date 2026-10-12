@@ -2,15 +2,18 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Guard, HttpError } from "../auth/guard.js";
 import { KeyStore } from "../auth/keys.js";
 import { AuditLog, BudgetTracker, type Clock, RateLimiter } from "../auth/limits.js";
+import { SessionStore } from "../auth/sessions.js";
 import type { CorePort } from "../core-port.js";
 import { handleMcp } from "../mcp.js";
 import { Operations } from "../ops.js";
 import type { WebhookSecrets } from "../webhooks.js";
 import type { AppEnv } from "./route.js";
 import { adminRoutes } from "./routes-admin.js";
+import { dashboardRoutes } from "./routes-dashboard.js";
 import { hookRoutes } from "./routes-hooks.js";
 import { projectRoutes } from "./routes-projects.js";
 import { runRoutes } from "./routes-runs.js";
+import { authMiddleware, type SessionOptions, sessionRoutes } from "./routes-session.js";
 
 export interface ServerOptions {
   core: CorePort;
@@ -18,6 +21,7 @@ export interface ServerOptions {
   secrets?: WebhookSecrets;
   auditFile?: string;
   clock?: Clock;
+  sessions?: SessionOptions;
 }
 
 export function createServer(options: ServerOptions) {
@@ -57,13 +61,10 @@ export function createServer(options: ServerOptions) {
 
   hookRoutes(app, options.core, options.secrets ?? {}, options.clock);
 
-  app.use("/v1/*", async (c, next) => {
-    c.set(
-      "principal",
-      guard.authenticate(c.req.header("authorization"), c.req.header("idempotency-key")),
-    );
-    await next();
-  });
+  const sessions = new SessionStore(options.clock);
+  const sessionOptions = options.sessions ?? {};
+  sessionRoutes(app, keys, sessions, sessionOptions);
+  app.use("/v1/*", authMiddleware(guard, keys, sessions, sessionOptions));
 
   app.all("/mcp", async (c) =>
     handleMcp(ops, guard.authenticate(c.req.header("authorization")), c.req.raw),
@@ -72,6 +73,7 @@ export function createServer(options: ServerOptions) {
   projectRoutes(app, ops);
   runRoutes(app, ops, keys);
   adminRoutes(app, ops);
+  dashboardRoutes(app, ops);
 
   app.openAPIRegistry.registerComponent("securitySchemes", "bearer", {
     type: "http",
@@ -83,5 +85,5 @@ export function createServer(options: ServerOptions) {
     info: { title: "Project Matrix API", version: "0.1.0" },
   });
 
-  return { app, ops, keys, audit };
+  return { app, ops, keys, audit, sessions };
 }

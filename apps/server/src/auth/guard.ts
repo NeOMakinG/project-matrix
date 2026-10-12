@@ -54,6 +54,12 @@ export class Guard {
     const token = authorization?.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
     const key = token ? this.keys.verify(token) : null;
     if (!key) throw new HttpError(401, "unauthorized", "missing or invalid API key");
+    return this.principalFor(key, idempotencyKey);
+  }
+
+  /** Builds a principal for an already-verified key (bearer or dashboard session). */
+  principalFor(key: ApiKeyRecord, idempotencyKey?: string | null): Principal {
+    if (key.revokedAt) throw new HttpError(401, "unauthorized", "API key revoked");
     const rate = this.limiter.take(key.id, key.ratePerMinute);
     if (!rate.ok) {
       throw new HttpError(429, "rate_limited", "rate limit exceeded", rate.retryAfterSec);
