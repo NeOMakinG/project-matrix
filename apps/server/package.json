@@ -17,7 +17,8 @@
     "hono": "^4.13.13",
     "zod": "^4.6.6",
     "@matrix/core": "workspace:*",
-    "@matrix/tickets": "workspace:*"
+    "@matrix/tickets": "workspace:*",
+    "@matrix/packs": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"
