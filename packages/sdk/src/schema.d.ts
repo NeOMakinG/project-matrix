@@ -3145,6 +3145,8 @@ export interface components {
       requestedAt: string;
       decidedAt?: string;
       decidedBy?: string;
+      /** @enum {string} */
+      decidedByKind?: "human" | "agent";
       note?: string;
     };
     /** @enum {string} */

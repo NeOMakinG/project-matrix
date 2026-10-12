@@ -524,6 +524,10 @@
           "decidedBy": {
             "type": "string"
           },
+          "decidedByKind": {
+            "type": "string",
+            "enum": ["human", "agent"]
+          },
           "note": {
             "type": "string"
           }
