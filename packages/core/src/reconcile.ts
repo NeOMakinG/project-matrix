@@ -17,7 +17,13 @@ import {
 } from "./machine.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
-import { type ApprovalRecord, type RunRecord, type Store, VersionConflictError } from "./store.js";
+import {
+  type ApprovalRecord,
+  type Approver,
+  type RunRecord,
+  type Store,
+  VersionConflictError,
+} from "./store.js";
 import type { BackoffPolicy, Limits, PhaseOutcome, ProjectConfig, WorkflowState } from "./types.js";
 
 export interface ReconcilerOptions {
@@ -82,6 +88,18 @@ export function stepKey(w: WorkflowState): string {
 /** Merge and deploy keys ignore the attempt so a retried irreversible action dedupes downstream. */
 export function actionKey(w: WorkflowState, headSha: string): string {
   return hash(w.projectId, w.ticketId, w.phase, w.loops, headSha);
+}
+
+export function toApprover(approver: string | Approver): Approver {
+  if (typeof approver !== "string") return approver;
+  return { id: approver, kind: approver.startsWith("user:") ? "human" : "agent" };
+}
+
+/** An approval only counts if a human decided it and that human isn't the requester or the run owner. */
+function validApprover(a: ApprovalRecord, runOwner: string | undefined): boolean {
+  if (a.decidedByKind !== "human" || !a.decidedBy) return false;
+  if (a.decidedBy === a.requestedBy || a.decidedBy.startsWith("reconciler:")) return false;
+  return a.decidedBy !== runOwner;
 }
 
 export class Reconciler {
@@ -236,10 +254,18 @@ export class Reconciler {
     runId: string,
     headSha: string,
   ): Promise<{ approved?: ApprovalRecord | undefined; pending?: ApprovalRecord | undefined }> {
-    const list = await this.o.store.listApprovals(w.projectId, w.ticketId, phase);
+    // Filter on phase here too: an approval for another phase (e.g. `review`) must never
+    // authorize a merge or deploy, even if a store adapter returns more than asked for.
+    const list = (await this.o.store.listApprovals(w.projectId, w.ticketId, phase)).filter(
+      (a) => a.phase === phase && a.projectId === w.projectId && a.ticketId === w.ticketId,
+    );
     const bound = list.filter((a) => a.runId === runId && a.headSha === headSha);
+    const runOwner = (await this.o.store.getRun(runId))?.ownerId;
     return {
-      approved: bound.filter((a) => a.status === "approved").at(-1),
+      approved: bound
+        .filter((a) => a.status === "approved")
+        .filter((a) => validApprover(a, runOwner))
+        .at(-1),
       pending: list.filter((a) => a.status === "pending").at(-1),
     };
   }
@@ -332,6 +358,13 @@ export class Reconciler {
       const result = gate(p, { ok: true, summary: "", receipts }, project);
       if (!result.pass) return `${p} gate no longer passes: ${result.reason}`;
     }
+    const checks = await this.latestRun(w, "checks");
+    for (const p of ["review", "qa"] as const) {
+      const run = await this.latestRun(w, p);
+      if (run && checks && run.headSha !== checks.headSha) {
+        return `${p} ran on a different commit than checks`;
+      }
+    }
     if (w.reviewedTree && w.workdir && (await this.o.git.treeState(w.workdir)) !== w.reviewedTree) {
       return "worktree changed after review";
     }
@@ -348,6 +381,23 @@ export class Reconciler {
       // Idempotency: this exact step already finished (crash before the transition was saved).
       await this.transition(project, w, done.output as PhaseOutcome);
       return "replayed";
+    }
+
+    // Checks start from a host-cleaned tree when the git port supports it: build artifacts and
+    // untracked files are removed, modified tracked files send the ticket back to implement.
+    let checkedSha: string | undefined;
+    if (w.phase === "checks" && w.workdir && this.o.git.cleanForChecks) {
+      try {
+        checkedSha = await this.o.git.cleanForChecks(w.workdir);
+      } catch (error) {
+        await this.loopTo(
+          project,
+          w,
+          "implement",
+          `cannot clean for checks: ${(error as Error).message}`,
+        );
+        return "looped";
+      }
     }
 
     // Validation and irreversible phases only ever see a committed, clean tree.
@@ -408,8 +458,10 @@ export class Reconciler {
     }
 
     const model = this.modelFor(project, w.phase);
+    // Checks bind to the SHA returned by cleanForChecks; review, QA, merge and deploy must match it.
     const headSha =
-      CLEAN_TREE.has(w.phase) && w.workdir ? await this.o.git.headSha(w.workdir) : undefined;
+      checkedSha ??
+      (CLEAN_TREE.has(w.phase) && w.workdir ? await this.o.git.headSha(w.workdir) : undefined);
     await this.o.store.createRun({
       id: runId,
       projectId: project.id,
@@ -782,14 +834,26 @@ export class Reconciler {
     }
   }
 
+  /**
+   * `by` is either an `Approver` or an identity string; strings are human only for `user:*`.
+   * Approving a merge or deploy always requires a human identity that is not the requester,
+   * not a reconciler and not the owner of the approved run.
+   */
   async decideApproval(
     approvalId: string,
     decision: "approved" | "rejected",
-    by: string,
+    approver: string | Approver,
     note?: string,
   ): Promise<WorkflowState> {
+    const decider = toApprover(approver);
+    const by = decider.id;
     const approval = await this.o.store.getApproval(approvalId);
     if (!approval) throw new Error(`approval ${approvalId} not found`);
+    if (decision === "approved" && decider.kind !== "human") {
+      throw new Error(
+        `${approval.phase} approvals require a human approver, got ${decider.kind} ${by}`,
+      );
+    }
     if (by === approval.requestedBy || by.startsWith("reconciler:")) {
       throw new Error("an approval cannot be decided by the identity that requested it");
     }
@@ -811,7 +875,7 @@ export class Reconciler {
         throw new Error("HEAD moved since the approval was requested; request a new approval");
       }
     }
-    const decided = await this.o.store.decideApproval(approvalId, decision, by, note);
+    const decided = await this.o.store.decideApproval(approvalId, decision, decider, note);
     this.o.bus.publish({
       type: "approval.decided",
       approvalId,
@@ -848,6 +912,19 @@ export class Reconciler {
     this.o.bus.publish({ type: "autonomy.changed", projectId, phase, mode });
   }
 
+  /** Untracked build output is fine when the git port can clean it; uncommitted tracked changes never are. */
+  private async handedOverClean(workdir: string): Promise<boolean> {
+    if (this.o.git.cleanForChecks) {
+      try {
+        await this.o.git.cleanForChecks(workdir);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return this.o.git.isClean(workdir);
+  }
+
   /**
    * Implement must hand over a committed tree. A validation run must leave HEAD and the tree
    * exactly as it found them, so its verdict applies to the commit it recorded.
@@ -859,7 +936,7 @@ export class Reconciler {
     validatedSha?: string,
   ): Promise<PhaseOutcome> {
     if (outcome.runStatus && outcome.runStatus !== "ok") return outcome;
-    if (phase === "implement" && outcome.ok && !(await this.o.git.isClean(workdir))) {
+    if (phase === "implement" && outcome.ok && !(await this.handedOverClean(workdir))) {
       return {
         ...outcome,
         ok: false,

@@ -83,8 +83,10 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
       status: "pending",
       requestedAt: new Date(),
     });
-    await store.decideApproval(id, "approved", "valentin");
-    await expect(store.decideApproval(id, "rejected", "someone")).rejects.toThrow();
+    await store.decideApproval(id, "approved", { id: "user:valentin", kind: "human" });
+    await expect(
+      store.decideApproval(id, "rejected", { id: "user:someone", kind: "human" }),
+    ).rejects.toThrow();
   });
 
   test("lease takeover fences the late result (P1-4)", async () => {
@@ -135,6 +137,43 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     await h.drain();
     expect(await store.getWorkflow(projectId, t.id)).toMatchObject({
       phase: "deploy",
+      status: "waiting_approval",
+    });
+  }, 120_000);
+
+  test("approver kind persists and agent-approved or other-phase approvals never merge (PR #2)", async () => {
+    const projectId = `phase-${Date.now()}`;
+    const h = createHarness({ store, project: { id: projectId, autonomy: { default: "human" } } });
+    await h.setup();
+    const t = h.tickets.add("Phase-bound on Postgres");
+    await h.drain();
+    const qaRun = (await store.listRuns({ projectId, ticketId: t.id }))
+      .filter((r) => r.phase === "qa")
+      .at(-1)!;
+    await store.createApproval({
+      id: `forged-${projectId}`,
+      projectId,
+      ticketId: t.id,
+      phase: "review",
+      runId: qaRun.id,
+      headSha: "a".repeat(40),
+      requestedBy: "key:agent-1",
+      status: "pending",
+      requestedAt: new Date(),
+    });
+    await store.decideApproval(`forged-${projectId}`, "approved", {
+      id: "user:valentin",
+      kind: "human",
+    });
+    const merge = (await store.getPendingApproval(projectId, t.id, "merge"))!;
+    await store.decideApproval(merge.id, "approved", { id: "key:agent-1", kind: "agent" });
+    expect((await store.getApproval(merge.id))?.decidedByKind).toBe("agent");
+    const w = (await store.getWorkflow(projectId, t.id))!;
+    await store.saveWorkflow({ ...w, status: "pending" });
+    await h.drain();
+    expect(h.merges).toHaveLength(0);
+    expect(await store.getWorkflow(projectId, t.id)).toMatchObject({
+      phase: "merge",
       status: "waiting_approval",
     });
   }, 120_000);

@@ -40,6 +40,12 @@ export interface StepRecord {
   completedAt?: Date;
 }
 
+/** Who decided an approval. `human` identities come from people or human API keys. */
+export interface Approver {
+  id: string;
+  kind: "human" | "agent";
+}
+
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export interface ApprovalRecord {
@@ -57,6 +63,7 @@ export interface ApprovalRecord {
   requestedAt: Date;
   decidedAt?: Date;
   decidedBy?: string;
+  decidedByKind?: Approver["kind"];
   note?: string;
 }
 
@@ -134,7 +141,7 @@ export interface Store {
   decideApproval(
     id: string,
     status: Exclude<ApprovalStatus, "pending">,
-    by: string,
+    by: Approver,
     note?: string,
   ): Promise<ApprovalRecord>;
 
@@ -268,7 +275,7 @@ export class MemoryStore implements Store {
     );
     return a ? clone(a) : null;
   }
-  async decideApproval(id: string, status: "approved" | "rejected", by: string, note?: string) {
+  async decideApproval(id: string, status: "approved" | "rejected", by: Approver, note?: string) {
     const a = this.approvals.get(id);
     if (!a) throw new Error(`approval ${id} not found`);
     if (a.status !== "pending") throw new Error(`approval ${id} already ${a.status}`);
@@ -276,12 +283,14 @@ export class MemoryStore implements Store {
       ...a,
       status,
       decidedAt: new Date(),
-      decidedBy: by,
+      decidedBy: by.id,
+      decidedByKind: by.kind,
       ...(note ? { note } : {}),
     };
     this.approvals.set(id, next);
     return clone(next);
   }
+
   async setAutonomy(change: AutonomyChange) {
     this.history.push(clone(change));
     const p = this.projects.get(change.projectId);

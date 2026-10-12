@@ -36,6 +36,11 @@ export interface GitPort {
   treeState(workdir: string): Promise<string>;
   /** True when there are no uncommitted or untracked changes. */
   isClean(workdir: string): Promise<boolean>;
+  /**
+   * Optional (feature-detected): removes untracked and ignored files host-side, refuses modified
+   * tracked files, and returns the exact HEAD SHA the checks will run against.
+   */
+  cleanForChecks?(workdir: string): Promise<string>;
 }
 
 export interface QaDriver {

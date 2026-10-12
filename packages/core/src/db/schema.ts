@@ -158,6 +158,7 @@ export const approvals = pgTable(
     requestedAt: timestamp("requested_at", { withTimezone: true }).notNull(),
     decidedAt: timestamp("decided_at", { withTimezone: true }),
     decidedBy: text("decided_by"),
+    decidedByKind: text("decided_by_kind"),
     note: text("note"),
   },
   (t) => [index("approvals_ticket_idx").on(t.projectId, t.ticketId, t.phase)],
