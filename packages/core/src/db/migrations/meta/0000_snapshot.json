@@ -1,5 +1,5 @@
 {
-  "id": "6ddff624-e927-4418-b56f-076fe7d5e050",
+  "id": "93b0bca1-ab6e-4152-a1b6-8fb45e7e8a82",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -645,6 +645,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "head_sha": {
+          "name": "head_sha",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "status": {
           "name": "status",

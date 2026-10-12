@@ -97,6 +97,7 @@ CREATE TABLE "runs" (
 	"model" text,
 	"host" text NOT NULL,
 	"owner_id" text NOT NULL,
+	"head_sha" text,
 	"status" text NOT NULL,
 	"summary" text,
 	"input_tokens" integer,

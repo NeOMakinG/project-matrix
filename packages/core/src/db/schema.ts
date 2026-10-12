@@ -83,6 +83,8 @@ export const runs = pgTable(
     model: text("model"),
     host: text("host").notNull(),
     ownerId: text("owner_id").notNull(),
+    /** Clean commit the run validated (checks/review/qa) or acted on (merge/deploy). */
+    headSha: text("head_sha"),
     status: text("status").notNull(),
     summary: text("summary"),
     inputTokens: integer("input_tokens"),

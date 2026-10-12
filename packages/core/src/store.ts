@@ -14,6 +14,7 @@ export interface RunRecord {
   model?: string;
   host: string;
   ownerId: string;
+  headSha?: string;
   status: RunRecordStatus;
   summary?: string;
   inputTokens?: number;

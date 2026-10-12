@@ -68,6 +68,9 @@ const TICKET_STATUS: Partial<Record<Phase, TicketStatus>> = {
 
 const IRREVERSIBLE = new Set<Phase>(["merge", "deploy"]);
 const AFTER_REVIEW = new Set<Phase>(["qa", "merge", "deploy"]);
+/** Phases that validate or act on the code: they run only on a clean tree and record its commit. */
+const CLEAN_TREE = new Set<Phase>(["checks", "review", "qa", "merge", "deploy"]);
+const VALIDATING = new Set<Phase>(["checks", "review", "qa"]);
 
 const hash = (...parts: (string | number)[]) =>
   createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 32);
@@ -312,10 +315,16 @@ export class Reconciler {
   ): Promise<string | null> {
     const needed: Phase[] =
       phase === "merge" ? ["checks", "review", "qa"] : ["checks", "review", "qa", "merge"];
+    if (!w.workdir) return "no workspace";
+    if (!(await this.o.git.isClean(w.workdir))) return "worktree has uncommitted changes";
+    const head = await this.o.git.headSha(w.workdir);
     for (const p of needed) {
       const run = await this.latestRun(w, p);
       if (!run) return `missing ${p} run`;
       if (run.status !== "ok") return `latest ${p} run is ${run.status}`;
+      if (run.headSha !== head) {
+        return `${p} validated ${run.headSha?.slice(0, 12) ?? "no commit"}, HEAD is ${head.slice(0, 12)}`;
+      }
       if (p === "merge") continue;
       const receipts = await this.o.store.listReceipts(run.id);
       if (p === "qa" && !receipts.some(isTrustedHoldout))
@@ -339,6 +348,12 @@ export class Reconciler {
       // Idempotency: this exact step already finished (crash before the transition was saved).
       await this.transition(project, w, done.output as PhaseOutcome);
       return "replayed";
+    }
+
+    // Validation and irreversible phases only ever see a committed, clean tree.
+    if (CLEAN_TREE.has(w.phase) && w.workdir && !(await this.o.git.isClean(w.workdir))) {
+      await this.loopTo(project, w, "implement", "uncommitted changes in the worktree");
+      return "looped";
     }
 
     // Any change to the tree after review invalidates checks and review.
@@ -393,6 +408,8 @@ export class Reconciler {
     }
 
     const model = this.modelFor(project, w.phase);
+    const headSha =
+      CLEAN_TREE.has(w.phase) && w.workdir ? await this.o.git.headSha(w.workdir) : undefined;
     await this.o.store.createRun({
       id: runId,
       projectId: project.id,
@@ -403,6 +420,7 @@ export class Reconciler {
       model,
       host: project.host,
       ownerId: this.ownerId,
+      ...(headSha ? { headSha } : {}),
       status: "running",
       startedAt: now,
       lastEventAt: now,
@@ -427,8 +445,8 @@ export class Reconciler {
     this.o.bus.publish({ type: "workflow.changed", workflow: state });
 
     const controller = new AbortController();
-    const promise = this.execute(project, state, runId, key, controller, reserved).finally(() =>
-      this.active.delete(runId),
+    const promise = this.execute(project, state, runId, key, controller, reserved, headSha).finally(
+      () => this.active.delete(runId),
     );
     this.active.set(runId, {
       runId,
@@ -496,6 +514,7 @@ export class Reconciler {
     key: string,
     controller: AbortController,
     reserved: number,
+    validatedSha?: string,
   ): Promise<void> {
     const timer = setInterval(() => {
       void this.heartbeat(project.id, w.ticketId, runId, controller).catch(() => undefined);
@@ -547,6 +566,8 @@ export class Reconciler {
           scratch.push(dir);
           return dir;
         },
+        stillOwner: async () =>
+          this.owns(await this.o.store.getWorkflow(project.id, current.ticketId), runId),
         authorize: async (phase) => {
           const latest = await this.o.store.getWorkflow(project.id, current.ticketId);
           if (!this.owns(latest, runId)) return { ok: false, reason: "lease lost", kind: "gates" };
@@ -554,6 +575,7 @@ export class Reconciler {
         },
       };
       outcome = await this.o.handlers[w.phase](ctx);
+      outcome = await this.enforceTree(w.phase, workdir, outcome, validatedSha);
       if (signal.aborted) {
         outcome = {
           ok: false,
@@ -578,7 +600,14 @@ export class Reconciler {
 
     // Fencing: only the lease holder of this exact run may record a step result or move the workflow.
     const latest = await this.o.store.getWorkflow(project.id, w.ticketId);
+    const latestWorkdir = latest?.workdir;
     const fenced = !this.owns(latest, runId);
+    if (fenced && w.workdir && w.workspaceRef && latestWorkdir !== w.workdir) {
+      // Another reconciler took over on a fresh worktree; this one is ours to dispose of.
+      await this.o.workspace
+        .cleanup({ workdir: w.workdir, ref: w.workspaceRef })
+        .catch(() => undefined);
+    }
     await this.finish(project, runId, key, outcome, reserved, fenced);
     if (!fenced) await this.transition(project, latest as WorkflowState, outcome);
   }
@@ -735,8 +764,12 @@ export class Reconciler {
           summary: "lease expired",
         });
       }
+      // Never reuse a worktree a possibly-alive old runner may still write to.
+      const fresh: WorkflowState = { ...w };
+      delete fresh.workdir;
+      delete fresh.workspaceRef;
       try {
-        await this.transition(project, w, {
+        await this.transition(project, fresh, {
           ok: false,
           summary: "run lease expired",
           receipts: [],
@@ -813,5 +846,38 @@ export class Reconciler {
       ...(reason ? { reason } : {}),
     });
     this.o.bus.publish({ type: "autonomy.changed", projectId, phase, mode });
+  }
+
+  /**
+   * Implement must hand over a committed tree. A validation run must leave HEAD and the tree
+   * exactly as it found them, so its verdict applies to the commit it recorded.
+   */
+  private async enforceTree(
+    phase: Phase,
+    workdir: string,
+    outcome: PhaseOutcome,
+    validatedSha?: string,
+  ): Promise<PhaseOutcome> {
+    if (outcome.runStatus && outcome.runStatus !== "ok") return outcome;
+    if (phase === "implement" && outcome.ok && !(await this.o.git.isClean(workdir))) {
+      return {
+        ...outcome,
+        ok: false,
+        summary: "implement left uncommitted changes; commit all work before handing over",
+      };
+    }
+    if (VALIDATING.has(phase) && validatedSha) {
+      const head = await this.o.git.headSha(workdir);
+      const clean = await this.o.git.isClean(workdir);
+      if (head !== validatedSha || !clean) {
+        return {
+          ...outcome,
+          ok: false,
+          runStatus: "failed",
+          summary: `${phase} changed the tree (validated ${validatedSha.slice(0, 12)}, now ${head.slice(0, 12)}${clean ? "" : " + uncommitted"})`,
+        };
+      }
+    }
+    return outcome;
   }
 }

@@ -26,12 +26,16 @@ export interface PhaseContext {
    * irreversible action. Merge and deploy handlers must call it right before acting.
    */
   authorize(phase: Extract<Phase, "merge" | "deploy">): Promise<Authorization>;
+  /** True while this run still holds the workflow lease; checked right before irreversible calls. */
+  stillOwner(): Promise<boolean>;
 }
 
 export interface GitPort {
   headSha(workdir: string): Promise<string>;
   /** Hash of HEAD plus uncommitted changes; differs whenever the tree changed. */
   treeState(workdir: string): Promise<string>;
+  /** True when there are no uncommitted or untracked changes. */
+  isClean(workdir: string): Promise<boolean>;
 }
 
 export interface QaDriver {
