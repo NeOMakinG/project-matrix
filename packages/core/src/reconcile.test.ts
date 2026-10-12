@@ -15,7 +15,7 @@ describe("reconcile loop", () => {
     const w = await h.store.getWorkflow("pilot", t.id);
     expect(w?.status).toBe("done");
     expect(h.tickets.tickets.get(t.id)?.status).toBe("done");
-    expect(h.workspace.cleaned).toEqual([`wt-${t.id}`]);
+    expect(h.workspace.cleaned).toEqual([`wt-${t.id}-0`]);
 
     const phases = (await h.store.listRuns({ ticketId: t.id })).map((r) => r.phase);
     expect(phases).toEqual([

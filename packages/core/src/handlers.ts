@@ -301,6 +301,15 @@ const merge =
         requiresApproval: auth.kind === "approval",
       };
     }
+    // Ownership can change between authorize() and the call; never act without the lease.
+    if (!(await ctx.stillOwner())) {
+      return {
+        ok: false,
+        summary: "lease lost before merge",
+        receipts: [],
+        runStatus: "cancelled",
+      };
+    }
     const res = await deps.merge.merge(ctx, {
       headSha: auth.headSha,
       idempotencyKey: ctx.idempotencyKey,
@@ -326,6 +335,15 @@ const deploy =
         summary: auth.reason,
         receipts: [],
         requiresApproval: auth.kind === "approval",
+      };
+    }
+    // Ownership can change between authorize() and the call; never act without the lease.
+    if (!(await ctx.stillOwner())) {
+      return {
+        ok: false,
+        summary: "lease lost before deploy",
+        receipts: [],
+        runStatus: "cancelled",
       };
     }
     const res = await deps.deploy.deploy(ctx, {

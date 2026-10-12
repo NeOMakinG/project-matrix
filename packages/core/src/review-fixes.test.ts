@@ -146,7 +146,7 @@ describe("P1-2 approvals are bound to run, commit and a different identity", () 
 
   test("approval is refused once HEAD moved", async () => {
     const { h, t, approval } = await waitingForMerge();
-    h.git.commit(`/tmp/wt/${t.id}`, "b".repeat(40));
+    h.git.commit(`/tmp/wt/${t.id}-0`, "b".repeat(40));
     await expect(h.reconciler.decideApproval(approval.id, "approved", APPROVER)).rejects.toThrow(
       "HEAD moved",
     );
@@ -155,7 +155,7 @@ describe("P1-2 approvals are bound to run, commit and a different identity", () 
   test("a commit after approval sends the ticket back to checks instead of merging (P1-5)", async () => {
     const { h, t, approval } = await waitingForMerge();
     await h.reconciler.decideApproval(approval.id, "approved", APPROVER);
-    h.git.commit(`/tmp/wt/${t.id}`, "c".repeat(40));
+    h.git.commit(`/tmp/wt/${t.id}-0`, "c".repeat(40));
     await h.reconciler.tick();
     await h.reconciler.idle();
     expect(h.merges).toHaveLength(0);
@@ -257,5 +257,143 @@ describe("P1-5 read-only runs", () => {
     expect(calls.filter((c) => c.phase === "implement").every((c) => c.readOnly !== true)).toBe(
       true,
     );
+  });
+});
+
+describe("round 2 P1: only the exact validated commit is merged", () => {
+  test("implement must leave a clean tree; checks never run on uncommitted changes", async () => {
+    const h = createHarness({
+      implement: (req, call) => {
+        if (call === 0) h.git.dirty.set(req.workdir, "M src/app.ts");
+        else h.git.dirty.delete(req.workdir);
+        return { summary: call === 0 ? "forgot to commit" : "committed" };
+      },
+    });
+    await h.setup();
+    const t = h.tickets.add("Dirty implement");
+    await h.drain();
+    const runs = await h.store.listRuns({ ticketId: t.id });
+    expect(runs.filter((r) => r.phase === "implement").map((r) => r.status)).toEqual([
+      "failed",
+      "ok",
+    ]);
+    const checks = runs.filter((r) => r.phase === "checks");
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.headSha).toBe("a".repeat(40));
+    expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
+  });
+
+  test("validation runs record the commit they validated", async () => {
+    const h = createHarness();
+    await h.setup();
+    const t = h.tickets.add("Recorded SHA");
+    await h.drain();
+    const runs = await h.store.listRuns({ ticketId: t.id });
+    for (const phase of ["checks", "review", "qa", "merge", "deploy"]) {
+      expect(runs.find((r) => r.phase === phase)?.headSha).toBe("a".repeat(40));
+    }
+    expect(h.merges[0]?.headSha).toBe("a".repeat(40));
+  });
+
+  test("uncommitted changes before merge send the ticket back to implement", async () => {
+    const h = createHarness({ project: { autonomy: { default: "human" } } });
+    await h.setup();
+    const t = h.tickets.add("Dirty before merge");
+    await h.drain();
+    const approval = (await h.store.getPendingApproval("pilot", t.id, "merge"))!;
+    await h.reconciler.decideApproval(approval.id, "approved", APPROVER);
+    h.git.dirty.set(`/tmp/wt/${t.id}-0`, "M src/app.ts");
+    await h.reconciler.tick();
+    await h.reconciler.idle();
+    expect(h.merges).toHaveLength(0);
+    expect(await h.store.getWorkflow("pilot", t.id)).toMatchObject({
+      phase: "implement",
+      loops: 1,
+    });
+  });
+
+  test("merge refuses when a gate run validated a different commit", async () => {
+    const h = createHarness({ project: { autonomy: { default: "human" } } });
+    await h.setup();
+    const t = h.tickets.add("SHA mismatch");
+    await h.drain();
+    const approval = (await h.store.getPendingApproval("pilot", t.id, "merge"))!;
+    await h.reconciler.decideApproval(approval.id, "approved", APPROVER);
+    const review = (await h.store.listRuns({ ticketId: t.id }))
+      .filter((r) => r.phase === "review")
+      .at(-1);
+    await h.store.updateRun(review!.id, { headSha: "f".repeat(40) });
+    await h.drain();
+    expect(h.merges).toHaveLength(0);
+    const w = await h.store.getWorkflow("pilot", t.id);
+    expect(w?.status).toBe("blocked");
+    expect(w?.lastError).toContain("review validated ffffffffffff");
+  });
+
+  test("a validation run that moves HEAD is retried on the new commit", async () => {
+    let moved = false;
+    const h = createHarness();
+    h.deps.sandbox = {
+      kind: "bwrap",
+      exec: async (spec) => {
+        if (!moved) {
+          moved = true;
+          h.git.commit(spec.workdir, "d".repeat(40));
+        }
+        return { code: 0, stdout: "ok", stderr: "" };
+      },
+    };
+    await h.setup();
+    const t = h.tickets.add("HEAD moves during checks");
+    await h.drain();
+    const checks = (await h.store.listRuns({ ticketId: t.id })).filter((r) => r.phase === "checks");
+    expect(checks.map((r) => r.status)).toEqual(["failed", "ok"]);
+    expect(checks[1]?.headSha).toBe("d".repeat(40));
+    expect(h.merges[0]?.headSha).toBe("d".repeat(40));
+  });
+});
+
+describe("round 2 P2: lease re-checked before acting, fresh worktree on takeover", () => {
+  test("losing the lease between authorize and the port call prevents the merge", async () => {
+    const h = createHarness();
+    const r = h.reconciler;
+    const original = r.authorize.bind(r);
+    r.authorize = async (...args: Parameters<typeof r.authorize>) => {
+      const result = await original(...args);
+      const w = (await h.store.getWorkflow("pilot", args[1].ticketId))!;
+      await h.store.saveWorkflow({ ...w, leaseOwner: "reconciler:thief" });
+      return result;
+    };
+    await h.setup();
+    const t = h.tickets.add("Stolen before merge");
+    await h.drain();
+    expect(h.merges).toHaveLength(0);
+    const merge = (await h.store.listRuns({ ticketId: t.id })).find((x) => x.phase === "merge");
+    expect(merge?.status).toBe("cancelled");
+  });
+
+  test("a takeover prepares a fresh worktree and the fenced owner disposes of its old one", async () => {
+    let release: () => void = () => undefined;
+    const h = createHarness({
+      leaseMs: 10_000,
+      implement: (_req, call, signal) =>
+        call === 0 ? hang(signal, (fn) => (release = fn)) : { summary: "implemented" },
+    });
+    await h.setup();
+    const t = h.tickets.add("Fresh worktree");
+    await h.reconciler.tick();
+    await h.reconciler.idle();
+    await h.reconciler.tick();
+    await new Promise((r) => setTimeout(r, 5));
+    h.advanceClock(11_000);
+    const b = h.makeReconciler("reconciler:b2");
+    await b.tick(); // takeover
+    await h.drain(50, b);
+    expect(h.workspace.prepared.map((p) => p.ticketId)).toEqual([t.id, t.id]);
+    const implementCalls = h.implementer.calls.filter((c) => c.phase === "implement");
+    expect(implementCalls[1]?.workdir).toBe(`/tmp/wt/${t.id}-1`);
+    release();
+    await h.reconciler.idle();
+    expect(h.workspace.cleaned).toContain(`wt-${t.id}-0`);
   });
 });

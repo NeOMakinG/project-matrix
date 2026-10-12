@@ -108,8 +108,10 @@ export class FakeWorkspace implements Workspace {
   readonly prepared: WorkspaceTarget[] = [];
   readonly cleaned: string[] = [];
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {
+    // Every prepare yields a fresh worktree path, like a new git worktree on the same branch.
+    const n = this.prepared.filter((p) => p.ticketId === target.ticketId).length;
     this.prepared.push(target);
-    return { workdir: `/tmp/wt/${target.ticketId}`, ref: `wt-${target.ticketId}` };
+    return { workdir: `/tmp/wt/${target.ticketId}-${n}`, ref: `wt-${target.ticketId}-${n}` };
   }
   async cleanup(prepared: PreparedWorkspace) {
     this.cleaned.push(prepared.ref);
@@ -156,6 +158,9 @@ export class FakeGit {
   }
   async treeState(workdir: string): Promise<string> {
     return `${await this.headSha(workdir)}:${this.dirty.get(workdir) ?? ""}`;
+  }
+  async isClean(workdir: string): Promise<boolean> {
+    return !this.dirty.get(workdir);
   }
   commit(workdir: string, sha: string): void {
     this.sha.set(workdir, sha);
