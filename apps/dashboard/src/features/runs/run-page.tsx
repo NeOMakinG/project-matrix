@@ -22,8 +22,8 @@ function RunDetail({ run }: { run: RunView }) {
   const refresh = () => client.invalidateQueries({ queryKey: queries.run(run.id).queryKey });
   const pause = useMutation({ mutationFn: () => endpoints.pauseRun(run.id), onSuccess: refresh });
   const decide = useMutation({
-    mutationFn: ({ decision, sha }: { decision: "approve" | "request_changes"; sha: string }) =>
-      endpoints.decide(run.id, decision, sha),
+    mutationFn: ({ id, decision }: { id: string; decision: "approved" | "rejected" }) =>
+      endpoints.decide(id, decision),
     onSuccess: refresh,
   });
 
@@ -38,6 +38,13 @@ function RunDetail({ run }: { run: RunView }) {
               <Button asChild>
                 <a href={run.workspaceUrl} rel="noopener noreferrer">
                   Open in Orca
+                </a>
+              </Button>
+            ) : null}
+            {run.pullRequestUrl ? (
+              <Button asChild>
+                <a href={run.pullRequestUrl} target="_blank" rel="noopener noreferrer">
+                  Open draft PR
                 </a>
               </Button>
             ) : null}
@@ -79,42 +86,42 @@ function RunDetail({ run }: { run: RunView }) {
             />
             <div className="px-4 pb-4">
               {decide.isSuccess ? (
-                <Pill tone={decide.data.decision === "approve" ? "green" : "amber"}>
-                  {decide.data.decision === "approve"
-                    ? `approved at ${decide.data.commitSha.slice(0, 7)}`
-                    : "changes requested"}
+                <Pill tone={decide.data.status === "approved" ? "green" : "amber"}>
+                  {decide.data.status === "approved"
+                    ? `approved at ${decide.data.headSha.slice(0, 7)}`
+                    : "rejected"}
                 </Pill>
-              ) : run.headSha ? (
+              ) : run.approval ? (
                 <>
                   <p className="text-body text-fg-secondary">
-                    Your decision applies to commit{" "}
-                    <span className="font-mono text-fg">{run.headSha.slice(0, 7)}</span>. A newer
-                    push needs a new approval.
+                    Approval requested for commit{" "}
+                    <span className="font-mono text-fg">{run.approval.headSha.slice(0, 7)}</span>. A
+                    newer push opens a new approval.
                   </p>
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <Button
                       size="lg"
                       disabled={decide.isPending}
                       onClick={() =>
-                        decide.mutate({ decision: "request_changes", sha: run.headSha ?? "" })
+                        decide.mutate({ id: run.approval?.id ?? "", decision: "rejected" })
                       }
                     >
-                      Request changes
+                      Reject
                     </Button>
                     <Button
                       size="lg"
                       variant="primary"
                       disabled={decide.isPending}
-                      onClick={() => decide.mutate({ decision: "approve", sha: run.headSha ?? "" })}
+                      onClick={() =>
+                        decide.mutate({ id: run.approval?.id ?? "", decision: "approved" })
+                      }
                     >
                       Approve
                     </Button>
                   </div>
                 </>
               ) : (
-                <p className="text-body text-fg-secondary">
-                  Nothing to approve yet: the run has no commit.
-                </p>
+                <p className="text-body text-fg-secondary">No approval is waiting for this run.</p>
               )}
               {decide.isError ? (
                 <p role="alert" className="mt-2 text-caption text-danger">

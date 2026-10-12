@@ -1,9 +1,21 @@
 import { delay, HttpResponse, http } from "msw";
 import type { ApiKey, ServerPhase, ServerProject } from "@/api/view";
 import { makeProgress } from "./data/init";
-import { integrations, makeSettings, monitor } from "./data/monitor-settings";
-import { gateway, overview } from "./data/overview";
-import { adrs, apiKeys, graph, projects, receiptsByRun, runs, tickets } from "./data/server";
+import { integrations, makeSettings, verification } from "./data/monitor-settings";
+import {
+  adrs,
+  apiKeys,
+  approvals,
+  graph,
+  incidents,
+  models,
+  orca,
+  overviewModel,
+  projects,
+  receiptsByRun,
+  runs,
+  tickets,
+} from "./data/server";
 
 export const CSRF = "csrf-test-token";
 
@@ -16,7 +28,9 @@ function freshDb() {
     settings: makeSettings() as Record<string, unknown>,
     settingsVersion: 1,
     initSessions: new Map<string, { projectId: string; answers: Record<string, string> }>(),
-    approvals: [] as { runId: string; decision: string; commitSha: string }[],
+    approvals: structuredClone(approvals),
+    decisions: [] as { id: string; decision: string }[],
+    logouts: 0,
     keySeq: 10,
   };
 }
@@ -44,36 +58,85 @@ function project(id: string | readonly string[] | undefined): ServerProject | un
   return db.projects.find((p) => p.id === id);
 }
 
+const sessionBody = () => ({
+  csrfToken: CSRF,
+  expiresAt: "2026-10-13T00:00:00Z",
+  key: { id: "k-human", name: "valentin laptop", kind: "human" },
+});
+
 export const sessionHandlers = [
-  http.get(`${V1}/session`, () =>
-    db.signedIn
-      ? HttpResponse.json({ user: "valentin", csrfToken: CSRF, expiresAt: "2026-10-13T00:00:00Z" })
-      : err(401, "unauthorized", "No session"),
+  http.get("*/auth/session", () =>
+    db.signedIn ? HttpResponse.json(sessionBody()) : err(401, "unauthorized", "no session"),
   ),
-  http.post(`${V1}/session`, async ({ request }) => {
-    const body = (await request.json()) as { apiKey?: string };
-    if (!body.apiKey?.startsWith("mx_")) return err(401, "invalid_key", "Unknown API key");
+  http.post("*/auth/login", async ({ request }) => {
+    const body = (await request.json()) as { token?: string };
+    if (!body.token?.startsWith("mx_")) return err(401, "unauthorized", "invalid API key");
     db.signedIn = true;
-    return HttpResponse.json(
-      { user: "valentin", csrfToken: CSRF, expiresAt: "2026-10-13T00:00:00Z" },
-      { headers: { "set-cookie": "matrix_session=demo; HttpOnly; SameSite=Strict; Path=/" } },
-    );
+    return HttpResponse.json(sessionBody(), {
+      headers: { "set-cookie": "matrix_session=demo; HttpOnly; SameSite=Strict; Path=/" },
+    });
+  }),
+  http.post("*/auth/logout", ({ request }) => {
+    if (request.headers.get("x-csrf-token") !== CSRF) {
+      return err(403, "csrf", "missing or invalid CSRF token");
+    }
+    db.signedIn = false;
+    db.logouts += 1;
+    return HttpResponse.json({ ok: true });
   }),
 ];
 
+const byQuery = <T extends { projectId?: string; status: string }>(request: Request, rows: T[]) => {
+  const url = new URL(request.url);
+  const projectId = url.searchParams.get("projectId");
+  const status = url.searchParams.get("status");
+  return rows.filter(
+    (r) => (!projectId || r.projectId === projectId) && (!status || r.status === status),
+  );
+};
+
 export const contractHandlers = [
+  http.get(`${V1}/overview`, async ({ request }) => {
+    await latency();
+    return guard(request) ?? HttpResponse.json(overviewModel);
+  }),
+  http.get(`${V1}/gateway/health`, ({ request }) => guard(request) ?? HttpResponse.json(models)),
+  http.get(`${V1}/orca/runtime`, ({ request }) => guard(request) ?? HttpResponse.json(orca)),
   http.get(
-    `${V1}/overview`,
-    async ({ request }) => guard(request) ?? (await latency(), HttpResponse.json(overview)),
+    `${V1}/incidents`,
+    ({ request }) => guard(request) ?? HttpResponse.json(byQuery(request, incidents)),
   ),
-  http.get(`${V1}/gateway`, ({ request }) => guard(request) ?? HttpResponse.json(gateway)),
+  http.get(
+    `${V1}/approvals`,
+    ({ request }) => guard(request) ?? HttpResponse.json(byQuery(request, db.approvals)),
+  ),
+  http.post(`${V1}/approvals/:id/decision`, async ({ request, params }) => {
+    const denied = guard(request, true);
+    if (denied) return denied;
+    const approval = db.approvals.find((a) => a.id === params.id);
+    if (!approval) return err(404, "not_found", "No such approval");
+    if (approval.status !== "pending")
+      return err(409, "already_decided", "Approval already decided");
+    const body = (await request.json()) as { decision: "approved" | "rejected" };
+    approval.status = body.decision;
+    approval.decidedAt = "2026-10-12T11:05:00Z";
+    approval.decidedBy = "k-human";
+    db.decisions.push({ id: approval.id, decision: body.decision });
+    const run = db.runs.find((r) => r.id === approval.runId);
+    if (run)
+      run.approval = { state: body.decision, approvalId: approval.id, phase: approval.phase };
+    return HttpResponse.json(approval);
+  }),
+  http.get(`${V1}/projects/:projectId/verification`, ({ request, params }) => {
+    const denied = guard(request);
+    if (denied) return denied;
+    return params.projectId === "ledgerly"
+      ? HttpResponse.json(verification)
+      : err(404, "not_found", "No deploy yet");
+  }),
   http.get(
     `${V1}/integrations`,
     ({ request }) => guard(request) ?? HttpResponse.json(integrations),
-  ),
-  http.get(
-    `${V1}/projects/:projectId/monitor`,
-    ({ request }) => guard(request) ?? HttpResponse.json(monitor),
   ),
   http.get(
     `${V1}/projects/:projectId/checks`,
@@ -208,24 +271,6 @@ export const runHandlers = [
     if (!r) return err(404, "not_found", "No such run");
     r.state = "paused";
     return HttpResponse.json(r);
-  }),
-  http.post(`${V1}/runs/:id/approval`, async ({ request, params }) => {
-    const denied = guard(request, true);
-    if (denied) return denied;
-    const r = db.runs.find((x) => x.id === params.id);
-    if (!r) return err(404, "not_found", "No such run");
-    const body = (await request.json()) as { decision: string; commitSha: string };
-    if (body.commitSha !== r.headSha)
-      return err(409, "stale_commit", "Approval is for an older commit");
-    db.approvals.push({ runId: r.id, decision: body.decision, commitSha: body.commitSha });
-    return HttpResponse.json({
-      runId: r.id,
-      decision: body.decision,
-      commitSha: body.commitSha,
-      by: "valentin",
-      byKind: "human",
-      at: "2026-10-12T11:05:00Z",
-    });
   }),
 ];
 

@@ -3,13 +3,18 @@ import { safeHttpsUrl, safeOrcaUrl } from "@/lib/safe-url";
 import {
   type AdrView,
   ALL_PHASES,
+  type Approval,
   AUTONOMY_LABEL,
   type AutonomyMode,
   type FindingView,
   type GraphEdgeView,
   type GraphNodeView,
   type HoldoutView,
+  type Incident,
   LOOP_PHASES,
+  type ModelHealth,
+  type OrcaRuntime,
+  type OverviewView,
   type Phase,
   type PhaseState,
   type ProjectView,
@@ -19,6 +24,7 @@ import {
   type RunView,
   type ServerAdr,
   type ServerGraph,
+  type ServerOverview,
   type ServerPhase,
   type ServerProject,
   type ServerReceipt,
@@ -223,7 +229,7 @@ export function adaptReceipts(receipts: readonly ServerReceipt[]): {
 export function adaptRun(
   run: ServerRun,
   receipts: readonly ServerReceipt[],
-  context: { ticketTitle?: string; mergeMode?: AutonomyMode },
+  context: { mergeMode?: AutonomyMode },
 ): RunView {
   const status = runStatus(run.state);
   const { findings, qa, holdout } = adaptReceipts(receipts);
@@ -231,7 +237,8 @@ export function adaptRun(
     id: run.id,
     projectId: run.projectId,
     ticketId: run.ticketId,
-    title: context.ticketTitle ?? run.ticketId,
+    title: run.title ?? run.ticketId,
+    pullRequestUrl: safeHttpsUrl(run.prUrl),
     startedAt: run.startedAt,
     state: run.state,
     status,
@@ -246,6 +253,10 @@ export function adaptRun(
     receipts: qa,
     holdout,
     mergeMode: context.mergeMode ?? "human",
+    approval:
+      run.approval.state === "pending" && run.approval.approvalId && run.headSha
+        ? { id: run.approval.approvalId, headSha: run.headSha }
+        : null,
   };
 }
 
@@ -283,3 +294,103 @@ export function adaptAdrs(
 }
 
 export { AUTONOMY_LABEL };
+
+const MODEL_TONE: Record<ModelHealth["status"], Tone> = {
+  ok: "green",
+  cooldown: "amber",
+  throttled: "red",
+  down: "red",
+};
+const RUN_TONE: Record<RunStatus, Tone> = {
+  running: "blue",
+  paused: "amber",
+  done: "green",
+  failed: "red",
+};
+
+export function adaptOverview(input: {
+  overview: ServerOverview;
+  runs: readonly ServerRun[];
+  models: readonly ModelHealth[];
+  orca: OrcaRuntime;
+  approvals: readonly Approval[];
+  incidents: readonly Incident[];
+}): OverviewView {
+  const { overview, orca } = input;
+  const active = input.runs.filter(
+    (r) => runStatus(r.state) === "running" || runStatus(r.state) === "paused",
+  );
+  return {
+    stats: {
+      activeRuns: overview.activeRuns,
+      queuedRuns: overview.queuedRuns,
+      costTodayUsd: overview.costTodayUsd,
+      pendingApprovals: overview.pendingApprovals,
+      openIncidents: overview.openIncidents,
+    },
+    activeRuns: active
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .slice(0, 8)
+      .map((r) => {
+        const status = runStatus(r.state);
+        return {
+          id: r.id,
+          projectId: r.projectId,
+          ticketId: r.ticketId,
+          phase: r.phase,
+          model: r.model,
+          costUsd: r.costUsd,
+          status: { label: status === "running" ? r.phase : status, tone: RUN_TONE[status] },
+        };
+      }),
+    projects: overview.projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      workspace: p.workspace,
+      summary: `${p.activeRuns} active · ${p.openIncidents} incidents`,
+      status:
+        p.openIncidents > 0
+          ? {
+              label: `${p.openIncidents} incident${p.openIncidents > 1 ? "s" : ""}`,
+              tone: "red" as Tone,
+            }
+          : { label: "healthy", tone: "green" as Tone },
+    })),
+    models: input.models.map((m) => ({
+      id: m.model,
+      note: [
+        m.provider,
+        m.detail,
+        m.resetsAt ? `resets ${m.resetsAt.slice(5, 16).replace("T", " ")}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      usage: typeof m.utilization === "number" ? Math.min(1, Math.max(0, m.utilization)) : null,
+      status: { label: m.status, tone: MODEL_TONE[m.status] },
+    })),
+    orca: {
+      status: {
+        label: orca.status,
+        tone:
+          orca.status === "healthy" ? "green" : orca.status === "degraded" ? "amber" : "neutral",
+      },
+      host:
+        [orca.host, orca.version ? `orca serve v${orca.version}` : null]
+          .filter(Boolean)
+          .join(" · ") || "—",
+      version: orca.version ?? "—",
+      worktrees: `${orca.activeWorktrees} active`,
+      lastSeen: orca.lastSeen ?? "never",
+    },
+    alerts: [
+      ...input.incidents.slice(0, 3).map((i) => ({
+        kind: { label: "incident", tone: "red" as Tone },
+        message: `${i.title} · ${i.count} events${i.ticketId ? ` · fix ticket ${i.ticketId}` : ""}`,
+      })),
+      ...input.approvals.slice(0, 3).map((a) => ({
+        kind: { label: "approval", tone: "blue" as Tone },
+        message: `${a.ticketId} ${a.phase} waiting for your approval`,
+      })),
+    ],
+  };
+}

@@ -1,8 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { adrs, graph, receiptsByRun, runs, tickets } from "@/mocks/data/server";
+import {
+  adrs,
+  approvals,
+  graph,
+  incidents,
+  models,
+  orca,
+  overviewModel,
+  receiptsByRun,
+  runs,
+  tickets,
+} from "@/mocks/data/server";
 import {
   adaptAdrs,
   adaptGraph,
+  adaptOverview,
   adaptReceipts,
   adaptRun,
   adaptTickets,
@@ -73,5 +85,46 @@ describe("adapters", () => {
     });
     expect(view.find((a) => a.id === "0007")?.status.label).toBe("passing");
     expect(view.find((a) => a.id === "0014")?.status.label).toBe("proposed");
+  });
+
+  it("builds the overview from server read models", () => {
+    const view = adaptOverview({
+      overview: overviewModel,
+      runs,
+      models,
+      orca,
+      approvals,
+      incidents,
+    });
+    expect(view.stats).toEqual({
+      activeRuns: 5,
+      queuedRuns: 12,
+      costTodayUsd: 38.4,
+      pendingApprovals: 2,
+      openIncidents: 2,
+    });
+    expect(view.activeRuns.some((r) => r.id === "r_1a9b77")).toBe(false);
+    expect(view.models.find((m) => m.id === "claude-opus-5-5")?.status).toEqual({
+      label: "cooldown",
+      tone: "amber",
+    });
+    expect(view.models.find((m) => m.id === "qwen3.6-35b")?.usage).toBeNull();
+    expect(view.orca.host).toBe("bosgame · orca serve v1.4.2");
+    expect(view.alerts.filter((a) => a.kind.label === "approval")).toHaveLength(2);
+    expect(view.projects.find((p) => p.id === "ledgerly")?.status.tone).toBe("red");
+  });
+
+  it("uses the run's title, safe PR link and pending approval", () => {
+    const run = runs.find((r) => r.id === "r_8f3a2c");
+    const bad = runs.find((r) => r.id === "r_bad");
+    if (!run || !bad) throw new Error("fixture");
+    const view = adaptRun(run, [], {});
+    expect(view.title).toBe("Stripe checkout for annual plans");
+    expect(view.pullRequestUrl).toBe("https://github.com/NeOMakinG/ledgerly/pull/58");
+    expect(view.approval).toEqual({ id: "ap_1", headSha: "3c1e9a2f6b" });
+    const badView = adaptRun(bad, [], {});
+    expect(badView.pullRequestUrl).toBeNull();
+    expect(badView.approval).toBeNull();
+    expect(adaptRun({ ...run, headSha: undefined as never }, [], {}).approval).toBeNull();
   });
 });
