@@ -115,6 +115,7 @@ export const opencodeDefinition: CliRunnerDefinition = {
         "json",
         "-m",
         `matrix/${req.model}`,
+        "--",
         req.prompt,
       ],
       env: {

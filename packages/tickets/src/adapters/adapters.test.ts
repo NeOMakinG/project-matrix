@@ -29,7 +29,8 @@ function fakeGh(): LineExecutor {
       a === flag && args[i + 1] !== undefined ? [args[i + 1] as string] : [],
     );
   return async (spec, onLine) => {
-    const args = spec.cmd.slice(1, spec.cmd.indexOf("-R"));
+    const r = spec.cmd.indexOf("-R");
+    const args = [...spec.cmd.slice(1, r), ...spec.cmd.slice(r + 2)].filter((a) => a !== "--");
     const [group, action, id] = args;
     const now = new Date().toISOString();
     const ok = (out = "") => {

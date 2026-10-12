@@ -113,6 +113,7 @@ export class BeadsStore implements TicketStore {
 
   async #show(id: string): Promise<BeadsIssue | null> {
     try {
+      if (!/^[A-Za-z0-9][\w.-]*$/.test(id)) return null;
       const out = await this.#json<BeadsIssue[] | BeadsIssue>(["show", id]);
       return Array.isArray(out) ? (out[0] ?? null) : out;
     } catch (error) {
@@ -137,9 +138,11 @@ export class BeadsStore implements TicketStore {
   }
 
   async create(input: NewTicket): Promise<Ticket> {
-    const args = ["create", input.title, "--body-file", "-"];
+    const args = ["create", "--body-file", "-"];
     if (input.priority !== undefined) args.push("-p", String(input.priority));
     if (input.labels?.length) args.push("-l", input.labels.join(","));
+    // `--title=` keeps the title a flag value: a leading "-" can never be parsed as an option.
+    args.push(`--title=${input.title}`);
     const created = await this.#json<BeadsIssue>(args, input.body);
     for (const dep of input.deps ?? []) await this.link(dep, created.id, "blocks");
     if (input.parent) await this.link(input.parent, created.id, "parent");
@@ -149,9 +152,9 @@ export class BeadsStore implements TicketStore {
   async update(id: string, patch: TicketPatch): Promise<Ticket> {
     const current = await this.#show(id);
     if (!current) throw new Error(`ticket ${id} not found`);
-    const args = ["update", id];
+    const args = ["update", assertBeadsId(id)];
     let stdin: string | undefined;
-    if (patch.title !== undefined) args.push("--title", patch.title);
+    if (patch.title !== undefined) args.push(`--title=${patch.title}`);
     if (patch.body !== undefined) {
       args.push("--body-file", "-", "--allow-empty-description");
       stdin = patch.body;
@@ -190,10 +193,12 @@ export class BeadsStore implements TicketStore {
   }
 
   async comment(id: string, body: string): Promise<void> {
-    await this.#bd(["comment", id, "--stdin"], body);
+    await this.#bd(["comment", assertBeadsId(id), "--stdin"], body);
   }
 
   async link(from: string, to: string, type: LinkType): Promise<void> {
+    assertBeadsId(from);
+    assertBeadsId(to);
     if (type === "blocks") await this.#bd(["dep", "add", to, from, "-t", "blocks"]);
     else if (type === "parent") await this.#bd(["dep", "add", to, from, "-t", "parent-child"]);
     else await this.#bd(["dep", "add", from, to, "-t", "relates-to"]);
@@ -205,6 +210,12 @@ export class BeadsStore implements TicketStore {
       .map((i) => this.#toTicket(i))
       .map((t) => (t.status === "open" ? { ...t, status: "ready" as const } : t));
   }
+}
+
+/** Ticket ids we pass to bd as positionals; anything else could be read as a flag. */
+export function assertBeadsId(id: string): string {
+  if (!/^[A-Za-z0-9][\w.-]*$/.test(id)) throw new Error(`invalid ticket id ${JSON.stringify(id)}`);
+  return id;
 }
 
 export function matches(ticket: Ticket, query: TicketQuery): boolean {

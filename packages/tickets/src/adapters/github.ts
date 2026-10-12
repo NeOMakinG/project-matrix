@@ -77,7 +77,8 @@ export class GitHubStore implements TicketStore {
 
   async #gh(args: string[], stdin?: string): Promise<string> {
     const result = await runToCompletion(this.#o.executor ?? hostExecutor, {
-      cmd: [this.#o.ghBinary ?? "gh", ...args, "-R", this.#o.repo],
+      // `-R` sits right after the subcommand so a later `--` still ends flag parsing.
+      cmd: [this.#o.ghBinary ?? "gh", ...args.slice(0, 2), "-R", this.#o.repo, ...args.slice(2)],
       cwd: this.#o.cwd ?? process.cwd(),
       env: {
         PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -142,7 +143,7 @@ export class GitHubStore implements TicketStore {
   }
 
   async #ensureLabels(labels: string[]): Promise<void> {
-    for (const label of labels) await this.#gh(["label", "create", label, "--force"]);
+    for (const label of labels) await this.#gh(["label", "create", "--force", "--", label]);
   }
 
   async create(input: NewTicket): Promise<Ticket> {
@@ -205,10 +206,12 @@ export class GitHubStore implements TicketStore {
   }
 
   async comment(id: string, body: string): Promise<void> {
+    if (!/^\d+$/.test(id)) throw new Error(`invalid issue id ${JSON.stringify(id)}`);
     await this.#gh(["issue", "comment", id, "--body-file", "-"], body);
   }
 
   async link(from: string, to: string, type: LinkType): Promise<void> {
+    if (!/^\d+$/.test(from)) throw new Error(`invalid issue id ${JSON.stringify(from)}`);
     const target = await this.#issue(to);
     if (!target) throw new Error(`ticket ${to} not found`);
     const { text, meta } = splitBody(target.body ?? "");
