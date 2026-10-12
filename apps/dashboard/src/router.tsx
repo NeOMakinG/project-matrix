@@ -68,6 +68,12 @@ const overviewRoute = createRoute({
   component: lazyRouteComponent(() => import("./features/overview/overview-page"), "OverviewPage"),
 });
 
+const newProjectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/new",
+  component: lazyRouteComponent(() => import("./features/init/new-project-page"), "NewProjectPage"),
+});
+
 const projectRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/p/$projectId",
@@ -122,6 +128,7 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   loginRoute,
   overviewRoute,
+  newProjectRoute,
   projectRoute.addChildren([
     boardRoute,
     runsRoute,
@@ -137,6 +144,8 @@ export function makeRouter(queryClient: QueryClient, history?: RouterHistory) {
   const router = createRouter({
     routeTree,
     context: { queryClient },
+    // Same-origin hosting under any prefix: the router follows Vite's base.
+    basepath: import.meta.env.BASE_URL,
     defaultPreload: "intent",
     ...(history ? { history } : {}),
   });

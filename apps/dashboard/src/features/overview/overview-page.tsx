@@ -22,7 +22,11 @@ function Overview({ data }: { data: OverviewView }) {
       <PageHeader
         title="Factory overview"
         subtitle={`${data.projects.length} projects · ${stats.activeRuns} active runs`}
-        actions={<Button variant="primary">New project</Button>}
+        actions={
+          <Button asChild variant="primary">
+            <Link to="/new">New project</Link>
+          </Button>
+        }
       />
       <div className="grid grid-cols-4 gap-4">
         <StatTile

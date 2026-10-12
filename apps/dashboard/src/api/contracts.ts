@@ -20,6 +20,15 @@ export const verificationSchema = z.object({
 });
 export type Verification = z.infer<typeof verificationSchema>;
 
+/** POST /v1/init/{id}/finalize — proposed; not implemented by the server yet. */
+export const finalizeSchema = z.object({
+  projectId: z.string(),
+  configPath: z.string(),
+  adrs: z.array(z.object({ id: z.string(), title: z.string(), path: z.string() })),
+  tickets: z.array(z.string()),
+});
+export type FinalizeResult = z.infer<typeof finalizeSchema>;
+
 /** POST /auth/login and GET /auth/session (server PR #2): cookie session + CSRF token. */
 export const sessionSchema = z.object({
   csrfToken: z.string().min(1),
