@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@matrix/config": "workspace:*"
+    "@matrix/config": "workspace:*",
+    "@matrix/rules": "workspace:*"
   }
 }

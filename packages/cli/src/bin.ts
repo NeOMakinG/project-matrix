@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { resolve as resolvePath } from "node:path";
 import { parseArgs } from "node:util";
 import { type Answers, defaultPacks, nextRound, recommendedFor } from "@matrix/packs";
+import { CHECK_USAGE, checkCommand } from "./check";
+import { GRAPH_USAGE, graphCommand } from "./graph";
 import { runInit } from "./init";
 import { interview } from "./interactive";
 
@@ -22,6 +24,8 @@ async function readAnswers(path: string | undefined): Promise<Answers> {
 }
 
 async function main(argv: string[]): Promise<number> {
+  if (argv[0] === "check") return checkCommand(argv.slice(1));
+  if (argv[0] === "graph") return graphCommand(argv.slice(1));
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -37,7 +41,7 @@ async function main(argv: string[]): Promise<number> {
   });
   const [command, sub, maybeDir] = positionals;
   if (values.help || command !== "init") {
-    console.log(USAGE);
+    console.log(`${USAGE}\n\n${CHECK_USAGE}\n\n${GRAPH_USAGE}`);
     return command === "init" || values.help ? 0 : 1;
   }
 

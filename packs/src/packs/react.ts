@@ -100,6 +100,20 @@ export const reactPack: Pack = {
       detect: { "tanstack-router": "@tanstack/react-router", "react-router": "react-router" },
       topic: "routing",
       context: "Routing defines URL structure, data loading and code splitting.",
+      rules: (v) =>
+        v === "tanstack-router"
+          ? [
+              {
+                engine: "dependency-cruiser",
+                description: "Routes use TanStack Router; react-router must not come back in.",
+                check: {
+                  type: "forbidden-import",
+                  files: ["apps/web/src/**"],
+                  import: "^react-router(-dom)?(/|$)",
+                },
+              },
+            ]
+          : [],
     }),
     lib({
       key: "data",
@@ -121,6 +135,21 @@ export const reactPack: Pack = {
                 engine: "ast-grep",
                 description: "No fetch() inside components; use query hooks from src/api.",
                 pattern: "fetch($$$)",
+                check: {
+                  type: "call-pattern",
+                  files: ["apps/web/src/**"],
+                  except: ["apps/web/src/api/**"],
+                  pattern: "fetch($$$)",
+                },
+              },
+              {
+                engine: "dependency-cruiser",
+                description: "Server state goes through TanStack Query, not SWR or axios.",
+                check: {
+                  type: "forbidden-import",
+                  files: ["apps/web/src/**"],
+                  import: "^(swr|axios)(/|$)",
+                },
               },
             ]
           : [],
@@ -138,6 +167,20 @@ export const reactPack: Pack = {
       detect: { "tanstack-form": "@tanstack/react-form", "react-hook-form": "react-hook-form" },
       topic: "forms",
       context: "Forms need validation shared with the API contract.",
+      rules: (v) =>
+        v === "tanstack-form"
+          ? [
+              {
+                engine: "dependency-cruiser",
+                description: "Forms use TanStack Form with Zod validators; no second form library.",
+                check: {
+                  type: "forbidden-import",
+                  files: ["apps/web/src/**"],
+                  import: "^(react-hook-form|formik)(/|$)",
+                },
+              },
+            ]
+          : [],
     }),
     lib({
       key: "tables",
@@ -167,6 +210,21 @@ export const reactPack: Pack = {
       },
       topic: "API contract",
       context: "The contract decides how types flow between client and server.",
+      rules: (v) =>
+        v === "trpc"
+          ? [
+              {
+                engine: "dependency-cruiser",
+                description:
+                  "The web app reaches the API only through the tRPC client; it may import the router type, never server code.",
+                check: {
+                  type: "boundary",
+                  files: ["apps/web/src/**"],
+                  disallow: ["apps/api/**"],
+                },
+              },
+            ]
+          : [],
     }),
     lib({
       key: "effects",
