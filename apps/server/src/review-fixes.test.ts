@@ -193,6 +193,31 @@ describe("P2: approval, merge and deploy gates", () => {
     expect((await deploy(agent)).status).toBe(200);
   });
 
+  test("the approver identity comes from the credential, never from the request body", async () => {
+    const ctx = await setup();
+    const runId = await readyRun(ctx);
+    const approval = ctx.core.requestApproval(runId, "merge"); // merge autonomy is human
+    const agent = ctx.key(["runs:approve"]);
+    const spoofed = await ctx.call(agent, "POST", `/v1/approvals/${approval.id}/decision`, {
+      decision: "approved",
+      kind: "human",
+      by: "user:valentin",
+      actor: { id: "user:valentin", kind: "human" },
+    });
+    expect(spoofed.status).toBe(403);
+    expect(ctx.core.approvals.find((a) => a.id === approval.id)?.status).toBe("pending");
+
+    const person = human(ctx, ["runs:approve"]);
+    const decided = await ctx.json<{ decidedBy: string; decidedByKind: string }>(
+      await ctx.call(person, "POST", `/v1/approvals/${approval.id}/decision`, {
+        decision: "approved",
+        by: "user:someone-else",
+      }),
+    );
+    expect(decided.decidedBy).toBe(`key:${person.split("_")[1]}`);
+    expect(decided.decidedByKind).toBe("human");
+  });
+
   test("merge only counts a human-decided approval of the merge phase (P1 round 2)", async () => {
     const ctx = await setup();
     // merge = human (default); the review phase is gated so an agent may decide it
