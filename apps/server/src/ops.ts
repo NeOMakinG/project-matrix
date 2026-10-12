@@ -473,8 +473,8 @@ export class Operations {
   }
 
   /**
-   * Compare-and-set: with `ifMatch`, the write only happens if the settings still have that ETag
-   * (412 otherwise). Writes are serialized so two concurrent PATCHes can't both pass the check.
+   * Compare-and-set: the write requires `If-Match` (428 without it) and only happens if the settings
+   * still have that ETag (412 otherwise). Writes are serialized so two concurrent PATCHes can't both pass the check.
    */
   updateSettings(p: Principal, patch: Record<string, unknown>, ifMatch?: string) {
     return this.op(
@@ -483,7 +483,10 @@ export class Operations {
       "/settings",
     )(() => {
       const write = this.settingsLock.then(async () => {
-        if (ifMatch !== undefined) {
+        if (ifMatch === undefined) {
+          throw new HttpError(428, "precondition_required", "send If-Match with the settings ETag");
+        }
+        {
           const current = settingsEtag(await this.core.getSettings());
           const wanted = ifMatch.replace(/^W\//, "");
           if (wanted !== "*" && wanted !== current) {
