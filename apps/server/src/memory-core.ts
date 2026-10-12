@@ -107,6 +107,17 @@ export class MemoryCore implements CorePort {
     return updated;
   }
 
+  async setAutonomyPolicy(
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    _actor: Actor,
+  ) {
+    const project = this.project(projectId);
+    const updated = { ...project, autonomy: { ...project.autonomy, ...policy } };
+    this.projects.set(projectId, updated);
+    return updated;
+  }
+
   async listTickets(projectId: string, query?: TicketQuery) {
     this.project(projectId);
     return (this.tickets.get(projectId) ?? []).filter(
@@ -387,6 +398,26 @@ export class MemoryCore implements CorePort {
     const updated = { ...session, answers: { ...session.answers, ...answers } };
     this.inits.set(sessionId, updated);
     return updated;
+  }
+
+  async replaceInitAnswers(sessionId: string, answers: Record<string, unknown>) {
+    const session = this.inits.get(sessionId);
+    if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+    if (session.state === "completed")
+      throw new CoreError("conflict", "the interview is already finalized");
+    const updated = { ...session, answers };
+    this.inits.set(sessionId, updated);
+    return updated;
+  }
+
+  async finalizeInit(
+    _sessionId: string,
+    _options?: { acceptRecommended?: boolean },
+  ): Promise<InitSession> {
+    throw new CoreError(
+      "invalid_state",
+      "finalizing an interview needs the real core (project repo)",
+    );
   }
 
   async getInit(sessionId: string) {

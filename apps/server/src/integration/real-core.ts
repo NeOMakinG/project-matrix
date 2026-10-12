@@ -32,6 +32,7 @@ import {
   type Run,
   type Adr as ServerAdr,
 } from "../core-port.js";
+import { finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
 import {
   DEFAULT_TICKETS,
@@ -153,6 +154,20 @@ export class RealCore implements CorePort {
   async setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode): Promise<Project> {
     await this.config(projectId);
     await this.o.reconciler.setAutonomy(projectId, phase, mode, "server");
+    return toProject(await this.config(projectId));
+  }
+
+  async setAutonomyPolicy(
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    actor: Actor,
+  ): Promise<Project> {
+    const config = await this.config(projectId);
+    // One config write applies every phase; history entries follow.
+    await this.o.store.upsertProject({ ...config, autonomy: { ...config.autonomy, ...policy } });
+    for (const [phase, mode] of Object.entries(policy) as [Phase, AutonomyMode][]) {
+      await this.o.reconciler.setAutonomy(projectId, phase, mode, actor.id);
+    }
     return toProject(await this.config(projectId));
   }
 
@@ -384,6 +399,43 @@ export class RealCore implements CorePort {
     const session = this.inits.get(sessionId);
     if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
     const updated = { ...session, answers: { ...session.answers, ...answers } };
+    this.inits.set(sessionId, updated);
+    return updated;
+  }
+
+  async replaceInitAnswers(
+    sessionId: string,
+    answers: Record<string, unknown>,
+  ): Promise<InitSession> {
+    const session = this.inits.get(sessionId);
+    if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+    if (session.state === "completed")
+      throw new CoreError("conflict", "the interview is already finalized");
+    const updated = { ...session, answers };
+    this.inits.set(sessionId, updated);
+    return updated;
+  }
+
+  async finalizeInit(
+    sessionId: string,
+    options: { acceptRecommended?: boolean } = {},
+  ): Promise<InitSession> {
+    const session = this.inits.get(sessionId);
+    if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+    if (session.state === "completed" && session.result) return session;
+    const project = await this.config(session.projectId);
+    const { result } = await finalizeProject({
+      project,
+      answers: session.answers,
+      acceptRecommended: options.acceptRecommended === true,
+      store: this.o.store,
+      tickets: await this.ticketStore(session.projectId),
+    });
+    const updated: InitSession = {
+      ...session,
+      result,
+      state: result.status === "ok" ? "completed" : "in_progress",
+    };
     this.inits.set(sessionId, updated);
     return updated;
   }

@@ -87,6 +87,22 @@ export function makeProgress(answers: Record<string, string>): InitProgress {
     ],
     answered,
     question,
+    // Mock server: the full round mirrors the single current question; no contradictions.
+    round: question
+      ? [
+          {
+            id: question.id,
+            pack: question.pack,
+            kind: "select" as const,
+            prompt: question.prompt,
+            rationale: question.rationale,
+            recommended: question.options.find((o) => o.recommended)?.id ?? null,
+            options: question.options,
+            dependsOn: [],
+          },
+        ]
+      : [],
+    contradictions: [],
     configPreview:
       'web: {\n  framework: "react-vite",\n  router: "tanstack-router",\n  ui: "shadcn", css: "tailwind-4",\n},\nautonomy: { merge: "human" },',
     adrs: [

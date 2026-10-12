@@ -56,7 +56,8 @@
               },
               "message": {
                 "type": "string"
-              }
+              },
+              "details": {}
             },
             "required": ["code", "message"]
           }
@@ -149,6 +150,402 @@
           "verify",
           "compound"
         ]
+      },
+      "InitSession": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "answers": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "state": {
+            "type": "string",
+            "enum": ["in_progress", "completed"]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "result": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["missing"]
+                  },
+                  "missing": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": ["status", "missing"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["contradictions"]
+                  },
+                  "contradictions": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "questions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": ["id", "message", "questions"]
+                    }
+                  }
+                },
+                "required": ["status", "contradictions"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["invalid"]
+                  },
+                  "issues": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        }
+                      },
+                      "required": ["path", "message"]
+                    }
+                  }
+                },
+                "required": ["status", "issues"]
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": ["ok"]
+                  },
+                  "files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "tickets": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "warnings": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "commit": {
+                    "type": "string"
+                  }
+                },
+                "required": ["status", "files", "tickets", "warnings"]
+              }
+            ]
+          }
+        },
+        "required": ["id", "projectId", "answers", "state", "createdAt"]
+      },
+      "InitProgress": {
+        "type": "object",
+        "properties": {
+          "packs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "answered": {
+                  "type": "number"
+                },
+                "total": {
+                  "type": "number"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": ["done", "active", "todo"]
+                }
+              },
+              "required": ["id", "label", "answered", "total", "state"]
+            }
+          },
+          "answered": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "questionId": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": ["questionId", "label", "value"]
+            }
+          },
+          "question": {
+            "type": ["object", "null"],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "pack": {
+                "type": "string"
+              },
+              "index": {
+                "type": "number"
+              },
+              "total": {
+                "type": "number"
+              },
+              "context": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "facts": {
+                "type": "string"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "recommended": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["id", "label", "description", "recommended"]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "pack",
+              "index",
+              "total",
+              "context",
+              "prompt",
+              "rationale",
+              "facts",
+              "options"
+            ]
+          },
+          "configPreview": {
+            "type": "string"
+          },
+          "adrs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "status": {
+                  "$ref": "#/components/schemas/Pill"
+                }
+              },
+              "required": ["id", "title", "status"]
+            }
+          },
+          "round": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "pack": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["select", "multiselect", "text", "list", "confirm", "number"]
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "rationale": {
+                  "type": "string"
+                },
+                "recommended": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "recommended": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": ["id", "label", "description", "recommended"]
+                  }
+                },
+                "dependsOn": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "id",
+                "pack",
+                "kind",
+                "prompt",
+                "rationale",
+                "recommended",
+                "options",
+                "dependsOn"
+              ]
+            }
+          },
+          "contradictions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Contradiction"
+            }
+          }
+        },
+        "required": [
+          "packs",
+          "answered",
+          "question",
+          "configPreview",
+          "adrs",
+          "round",
+          "contradictions"
+        ]
+      },
+      "Pill": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "tone": {
+            "$ref": "#/components/schemas/Tone"
+          }
+        },
+        "required": ["label", "tone"]
+      },
+      "Tone": {
+        "type": "string",
+        "enum": ["green", "blue", "amber", "red", "violet", "neutral"]
+      },
+      "Contradiction": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["error", "warning"]
+          },
+          "message": {
+            "type": "string"
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["id", "severity", "message", "questions"]
       },
       "Deployment": {
         "type": "object",
@@ -397,29 +794,6 @@
           }
         },
         "required": ["nodes", "edges"]
-      },
-      "InitSession": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "projectId": {
-            "type": "string"
-          },
-          "answers": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "state": {
-            "type": "string",
-            "enum": ["in_progress", "completed"]
-          },
-          "createdAt": {
-            "type": "string"
-          }
-        },
-        "required": ["id", "projectId", "answers", "state", "createdAt"]
       },
       "InitAnswers": {
         "type": "object",
@@ -795,153 +1169,6 @@
           }
         },
         "required": ["name", "detail", "status"]
-      },
-      "Pill": {
-        "type": "object",
-        "properties": {
-          "label": {
-            "type": "string"
-          },
-          "tone": {
-            "$ref": "#/components/schemas/Tone"
-          }
-        },
-        "required": ["label", "tone"]
-      },
-      "Tone": {
-        "type": "string",
-        "enum": ["green", "blue", "amber", "red", "violet", "neutral"]
-      },
-      "InitProgress": {
-        "type": "object",
-        "properties": {
-          "packs": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "answered": {
-                  "type": "number"
-                },
-                "total": {
-                  "type": "number"
-                },
-                "state": {
-                  "type": "string",
-                  "enum": ["done", "active", "todo"]
-                }
-              },
-              "required": ["id", "label", "answered", "total", "state"]
-            }
-          },
-          "answered": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "questionId": {
-                  "type": "string"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "value": {
-                  "type": "string"
-                }
-              },
-              "required": ["questionId", "label", "value"]
-            }
-          },
-          "question": {
-            "type": ["object", "null"],
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "pack": {
-                "type": "string"
-              },
-              "index": {
-                "type": "number"
-              },
-              "total": {
-                "type": "number"
-              },
-              "context": {
-                "type": "string"
-              },
-              "prompt": {
-                "type": "string"
-              },
-              "rationale": {
-                "type": "string"
-              },
-              "facts": {
-                "type": "string"
-              },
-              "options": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "label": {
-                      "type": "string"
-                    },
-                    "description": {
-                      "type": "string"
-                    },
-                    "recommended": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": ["id", "label", "description", "recommended"]
-                }
-              }
-            },
-            "required": [
-              "id",
-              "pack",
-              "index",
-              "total",
-              "context",
-              "prompt",
-              "rationale",
-              "facts",
-              "options"
-            ]
-          },
-          "configPreview": {
-            "type": "string"
-          },
-          "adrs": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string"
-                },
-                "title": {
-                  "type": "string"
-                },
-                "status": {
-                  "$ref": "#/components/schemas/Pill"
-                }
-              },
-              "required": ["id", "title", "status"]
-            }
-          }
-        },
-        "required": ["packs", "answered", "question", "configPreview", "adrs"]
       },
       "CheckResult": {
         "type": "object",
@@ -1464,6 +1691,296 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/autonomy-policy": {
+      "put": {
+        "tags": ["projects"],
+        "summary": "Set the autonomy of several phases in one atomic write (If-Match: project ETag)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "autonomy": {
+                    "type": "object",
+                    "properties": {
+                      "spike": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "implement": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "checks": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "review": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "qa": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "merge": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "deploy": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "verify": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "compound": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      }
+                    }
+                  }
+                },
+                "required": ["autonomy"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/init/{id}/answers/{questionId}": {
+      "patch": {
+        "tags": ["init"],
+        "summary": "Revise one answer; dependent answers that no longer apply are dropped",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "required": true,
+            "name": "questionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "boolean"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  }
+                },
+                "required": ["value"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "session": {
+                      "$ref": "#/components/schemas/InitSession"
+                    },
+                    "dropped": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "progress": {
+                      "$ref": "#/components/schemas/InitProgress"
+                    }
+                  },
+                  "required": ["session", "dropped", "progress"]
                 }
               }
             }
@@ -4194,6 +4711,213 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/InitProgress"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/init/{id}/contradictions": {
+      "get": {
+        "tags": ["init"],
+        "summary": "Contradictions between the current answers (errors block finalize)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Contradiction"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/init/{id}/finalize": {
+      "post": {
+        "tags": ["init"],
+        "summary": "Generate the project from the answers (config, ADRs, scaffold, backlog); idempotent",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "acceptRecommended": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitSession"
                 }
               }
             }

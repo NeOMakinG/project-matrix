@@ -7,6 +7,8 @@ export class HttpError extends Error {
     readonly code: string,
     message: string,
     readonly retryAfterSec?: number,
+    /** Machine-readable details returned with the error (e.g. contradiction list). */
+    readonly details?: unknown,
   ) {
     super(message);
   }

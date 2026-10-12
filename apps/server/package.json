@@ -27,7 +27,9 @@
     "@matrix/runners": "workspace:*",
     "@matrix/sandbox": "workspace:*",
     "@matrix/workspace": "workspace:*",
-    "@matrix/qa": "workspace:*"
+    "@matrix/qa": "workspace:*",
+    "@matrix/cli": "workspace:*",
+    "@matrix/config": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

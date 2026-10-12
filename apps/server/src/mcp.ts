@@ -246,6 +246,29 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     ({ sessionId, answers }) => result(() => ops.answerInit(p, sessionId, answers)),
   );
 
+  server.registerTool(
+    "init_progress",
+    {
+      description:
+        "Current interview round: every answerable question with kind, options, recommendation and rationale, plus contradictions.",
+      inputSchema: { sessionId: id },
+      annotations: { readOnlyHint: true },
+    },
+    ({ sessionId }) => result(() => ops.getInitProgress(p, sessionId)),
+  );
+  server.registerTool(
+    "finalize_init",
+    {
+      description:
+        "Generate the project from the interview answers (config, ADRs, CONTEXT.md, product graph, scaffold, backlog). Idempotent.",
+      inputSchema: { sessionId: id, acceptRecommended: z.boolean().optional() },
+    },
+    ({ sessionId, acceptRecommended }) =>
+      result(() =>
+        ops.finalizeInit(p, sessionId, { acceptRecommended: acceptRecommended === true }),
+      ),
+  );
+
   server.registerResource(
     "project-adrs",
     new ResourceTemplate("matrix://projects/{projectId}/adrs", { list: undefined }),

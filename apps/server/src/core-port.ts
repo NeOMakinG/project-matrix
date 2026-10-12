@@ -102,7 +102,25 @@ export interface InitSession {
   answers: Record<string, unknown>;
   state: "in_progress" | "completed";
   createdAt: string;
+  /** Set once the interview was finalized (artifacts generated). */
+  result?: InitFinalizeResult;
 }
+
+/** Outcome of turning interview answers into a project (config, ADRs, scaffold, backlog). */
+export type InitFinalizeResult =
+  | { status: "missing"; missing: string[] }
+  | {
+      status: "contradictions";
+      contradictions: { id: string; message: string; questions: string[] }[];
+    }
+  | { status: "invalid"; issues: { path: string; message: string }[] }
+  | {
+      status: "ok";
+      files: string[];
+      tickets: string[];
+      warnings: string[];
+      commit?: string;
+    };
 
 export interface MonitorSignal {
   source: "sentry" | "posthog" | "github" | "otel";
@@ -186,6 +204,12 @@ export interface CorePort {
     checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
   }): Promise<Project>;
   setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode): Promise<Project>;
+  /** Sets several phases in one write (all or nothing). */
+  setAutonomyPolicy(
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    actor: Actor,
+  ): Promise<Project>;
 
   listTickets(projectId: string, query?: TicketQuery): Promise<Ticket[]>;
   createTicket(projectId: string, input: NewTicket): Promise<Ticket>;
@@ -236,6 +260,13 @@ export interface CorePort {
 
   startInit(projectId: string): Promise<InitSession>;
   answerInit(sessionId: string, answers: Record<string, unknown>): Promise<InitSession>;
+  /** Replaces the whole answer set (used when an earlier answer is revised). */
+  replaceInitAnswers(sessionId: string, answers: Record<string, unknown>): Promise<InitSession>;
+  /**
+   * Runs the init generator for the session's answers into the project repo and applies the chosen
+   * process settings to the project. Idempotent: a finalized session returns its stored result.
+   */
+  finalizeInit(sessionId: string, options?: { acceptRecommended?: boolean }): Promise<InitSession>;
   getInit(sessionId: string): Promise<InitSession | null>;
 
   getSettings(): Promise<Record<string, unknown>>;

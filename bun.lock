@@ -60,7 +60,9 @@
       "dependencies": {
         "@hono/node-server": "^2.1.4",
         "@hono/zod-openapi": "^1.6.3",
+        "@matrix/cli": "workspace:*",
         "@matrix/compound": "workspace:*",
+        "@matrix/config": "workspace:*",
         "@matrix/core": "workspace:*",
         "@matrix/graph": "workspace:*",
         "@matrix/monitor": "workspace:*",

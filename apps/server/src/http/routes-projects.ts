@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import { HttpError } from "../auth/guard.js";
 import type { Operations } from "../ops.js";
+import { autonomyEtag } from "../settings-etag.js";
 import { type App, ProjectParam, route } from "./route.js";
 import * as S from "./schemas.js";
 
@@ -67,7 +68,11 @@ export function projectRoutes(app: App, ops: Operations) {
       params: ProjectParam,
       response: S.Project,
     }),
-    async (c) => c.json(await ops.getProject(c.var.principal, c.req.valid("param").projectId)),
+    async (c) => {
+      const project = await ops.getProject(c.var.principal, c.req.valid("param").projectId);
+      c.header("etag", autonomyEtag(project));
+      return c.json(project);
+    },
   );
 
   app.openapi(
@@ -84,6 +89,52 @@ export function projectRoutes(app: App, ops: Operations) {
       const { phase, mode } = c.req.valid("json");
       return c.json(
         await ops.setAutonomy(c.var.principal, c.req.valid("param").projectId, phase, mode),
+      );
+    },
+  );
+
+  app.openapi(
+    route({
+      method: "put",
+      path: "/v1/projects/{projectId}/autonomy-policy",
+      tag: "projects",
+      summary: "Set the autonomy of several phases in one atomic write (If-Match: project ETag)",
+      params: ProjectParam,
+      body: z.object({ autonomy: z.partialRecord(S.Phase, S.Autonomy) }),
+      response: S.Project,
+    }),
+    async (c) => {
+      const project = await ops.setAutonomyPolicy(
+        c.var.principal,
+        c.req.valid("param").projectId,
+        c.req.valid("json").autonomy,
+        c.req.header("if-match"),
+      );
+      c.header("etag", autonomyEtag(project));
+      return c.json(project);
+    },
+  );
+
+  app.openapi(
+    route({
+      method: "patch",
+      path: "/v1/init/{id}/answers/{questionId}",
+      tag: "init",
+      summary: "Revise one answer; dependent answers that no longer apply are dropped",
+      params: z.object({ id: z.string().min(1), questionId: z.string().min(1).max(200) }),
+      body: z.object({
+        value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]),
+      }),
+      response: z.object({
+        session: S.InitSession,
+        dropped: z.array(z.string()),
+        progress: S.InitProgress,
+      }),
+    }),
+    async (c) => {
+      const { id, questionId } = c.req.valid("param");
+      return c.json(
+        await ops.reviseInitAnswer(c.var.principal, id, questionId, c.req.valid("json").value),
       );
     },
   );

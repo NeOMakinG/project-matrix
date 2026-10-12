@@ -63,7 +63,16 @@ export function createServer(options: ServerOptions) {
   app.onError((error, c) => {
     if (error instanceof HttpError) {
       if (error.retryAfterSec) c.header("retry-after", String(error.retryAfterSec));
-      return c.json({ error: { code: error.code, message: error.message } }, error.status);
+      return c.json(
+        {
+          error: {
+            code: error.code,
+            message: error.message,
+            ...(error.details === undefined ? {} : { details: error.details }),
+          },
+        },
+        error.status,
+      );
     }
     console.error(error);
     return c.json({ error: { code: "internal", message: "internal error" } }, 500);

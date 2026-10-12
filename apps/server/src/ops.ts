@@ -21,8 +21,8 @@ import {
   type Project,
   type Run,
 } from "./core-port.js";
-import { initProgress, validateAnswers } from "./init-progress.js";
-import { settingsEtag } from "./settings-etag.js";
+import { initProgress, reviseAnswer, validateAnswers } from "./init-progress.js";
+import { autonomyEtag, settingsEtag } from "./settings-etag.js";
 
 export type RunView = Run & {
   approval: {
@@ -448,6 +448,100 @@ export class Operations {
       `/projects/${projectId}/init`,
       projectId,
     )(() => this.core.startInit(projectId));
+  }
+
+  /** Contradictions are re-checked server-side; any error-level one refuses finalize with 409. */
+  async finalizeInit(
+    p: Principal,
+    sessionId: string,
+    options: { acceptRecommended?: boolean } = {},
+  ) {
+    const session = await core(() => this.core.getInit(sessionId));
+    if (!session) throw new HttpError(404, "not_found", `init session ${sessionId} not found`);
+    return this.op(
+      p,
+      "admin",
+      `/init/${sessionId}/finalize`,
+      session.projectId,
+    )(async () => {
+      const errors = initProgress(session.answers).contradictions.filter(
+        (c) => c.severity === "error",
+      );
+      if (errors.length > 0 && session.state !== "completed") {
+        throw new HttpError(
+          409,
+          "contradictions",
+          errors.map((c) => c.message).join("; "),
+          undefined,
+          errors,
+        );
+      }
+      const finalized = await this.core.finalizeInit(sessionId, options);
+      if (finalized.result?.status === "contradictions") {
+        throw new HttpError(
+          409,
+          "contradictions",
+          finalized.result.contradictions.map((c) => c.message).join("; "),
+          undefined,
+          finalized.result.contradictions,
+        );
+      }
+      return finalized;
+    });
+  }
+
+  /** Changes a confirmed answer; dependent and no-longer-applicable answers are dropped. */
+  async reviseInitAnswer(p: Principal, sessionId: string, questionId: string, value: unknown) {
+    const session = await core(() => this.core.getInit(sessionId));
+    if (!session) throw new HttpError(404, "not_found", `init session ${sessionId} not found`);
+    return this.op(
+      p,
+      "admin",
+      `/init/${sessionId}/answers/${questionId}`,
+      session.projectId,
+    )(async () => {
+      const { answers, dropped } = reviseAnswer(session.answers, questionId, value);
+      const updated = await this.core.replaceInitAnswers(sessionId, answers);
+      return { session: updated, dropped, progress: initProgress(updated.answers) };
+    });
+  }
+
+  /** Every phase's autonomy in one atomic write, guarded by the project's autonomy ETag. */
+  async setAutonomyPolicy(
+    p: Principal,
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    ifMatch: string | undefined,
+  ) {
+    if (ifMatch === undefined) {
+      throw new HttpError(
+        428,
+        "precondition_required",
+        "send If-Match with the project's autonomy ETag",
+      );
+    }
+    return this.op(
+      p,
+      "admin",
+      `/projects/${projectId}/autonomy-policy`,
+      projectId,
+    )(() => {
+      const write = this.settingsLock.then(async () => {
+        const project = await this.core.getProject(projectId);
+        if (!project) throw new CoreError("not_found", `project ${projectId} not found`);
+        if (ifMatch.replace(/^W\//, "") !== autonomyEtag(project)) {
+          throw new HttpError(412, "precondition_failed", "autonomy changed since you loaded it");
+        }
+        return this.core.setAutonomyPolicy(projectId, policy, this.actor(p));
+      });
+      this.settingsLock = write.catch(() => undefined);
+      return write;
+    });
+  }
+
+  async getInitContradictions(p: Principal, sessionId: string) {
+    const session = await this.getInit(p, sessionId);
+    return initProgress(session.answers).contradictions;
   }
 
   async getInitProgress(p: Principal, sessionId: string) {
