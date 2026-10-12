@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { TicketStore } from "@matrix/tickets";
 import { type Issue, type IssueStore, ingest } from "./group.js";
 import { type NormalizeOptions, normalize } from "./normalize/index.js";
@@ -30,6 +31,10 @@ export interface MonitorDeps {
   verify?: VerifyOptions;
   /** Re-read this much before the cursor each tick; dedupe makes the overlap free. */
   overlapMs?: number;
+  /** Identifies this worker for issue leases when several monitors share a store. */
+  workerId?: string;
+  /** Lease length per issue while it is triaged and ticketed. */
+  leaseMs?: number;
   clock?: () => string;
 }
 
@@ -54,6 +59,7 @@ const errText = (e: unknown) =>
 export class Monitor {
   private cursor: string;
   private readonly now: () => string;
+  private readonly workerId: string;
 
   constructor(
     private readonly deps: MonitorDeps,
@@ -61,6 +67,7 @@ export class Monitor {
   ) {
     this.cursor = since;
     this.now = deps.clock ?? (() => new Date().toISOString());
+    this.workerId = deps.workerId ?? randomUUID();
   }
 
   get since() {
@@ -92,13 +99,20 @@ export class Monitor {
     const pending = (await this.deps.store.list()).filter((i) => PENDING.has(i.status));
     const triaged: TickResult["triaged"] = [];
     for (const issue of pending) {
+      const leaseMs = this.deps.leaseMs ?? 10 * 60_000;
+      if (!(await this.deps.store.claim(issue.fingerprint, this.workerId, leaseMs, now))) continue;
       try {
-        triaged.push(await this.process(issue, now));
+        // Re-read under the lease: another worker may have finished it since the list.
+        const current = await this.deps.store.get(issue.fingerprint);
+        if (!current || !PENDING.has(current.status)) continue;
+        triaged.push(await this.process(current, now));
       } catch (e) {
         errors.push(`triage ${issue.fingerprint}: ${errText(e)}`);
         const latest = (await this.deps.store.get(issue.fingerprint)) ?? issue;
         latest.lastError = errText(e);
         await this.deps.store.save(latest);
+      } finally {
+        await this.deps.store.release(issue.fingerprint, this.workerId);
       }
     }
 

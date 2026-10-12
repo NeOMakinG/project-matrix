@@ -17,6 +17,7 @@ const issue: Issue = {
   ],
   providers: ["sentry"],
   trust: ["client"],
+  evidenceTrust: "client",
   flags: [],
   environments: ["production"],
   releases: {

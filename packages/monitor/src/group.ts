@@ -16,6 +16,9 @@ export type IssueStatus =
 
 export type Trust = Signal["trust"];
 
+/** Which source's content an issue shows: server-side code evidence first, then infra, then client. */
+export const TRUST_RANK: Record<Trust, number> = { client: 0, infra: 1, server: 2 };
+
 export interface ReleaseStats {
   count: number;
   firstSeen: string;
@@ -29,7 +32,11 @@ export interface Occurrence {
   release?: string;
 }
 
-/** A group of signals that share a root cause. All text is already redacted. */
+/**
+ * A group of signals that share a root cause. All text is already redacted.
+ * Evidence fields (title, message, exceptionType, frames, urls) come from the most trusted
+ * source seen so far (`evidenceTrust`); lower-trust signals only add counts, never content.
+ */
 export interface Issue {
   fingerprint: string;
   projectId: string;
@@ -42,6 +49,8 @@ export interface Issue {
   providers: SignalProvider[];
   /** Trust levels of the signals in this issue (see Signal.trust). */
   trust: Trust[];
+  /** Trust level of the signal the evidence fields were taken from. */
+  evidenceTrust: Trust;
   /** Instruction-like content found in the evidence (see injection.ts). */
   flags: string[];
   environments: string[];
@@ -75,12 +84,31 @@ export interface IssueStore {
   /** Idempotent per `occurrence.signalId`. */
   addOccurrence(fingerprint: string, occurrence: Occurrence): Promise<void>;
   occurrences(fingerprint: string, from: string, to: string): Promise<Occurrence[]>;
+  /**
+   * Atomic lease on one issue for one worker (a unique row / `INSERT … ON CONFLICT` in SQL).
+   * Returns false while another worker holds an unexpired lease.
+   */
+  claim(fingerprint: string, owner: string, ttlMs: number, now: string): Promise<boolean>;
+  release(fingerprint: string, owner: string): Promise<void>;
 }
 
 export class MemoryIssueStore implements IssueStore {
   private issues = new Map<string, Issue>();
   private signals = new Set<string>();
   private occ = new Map<string, Map<string, Occurrence>>();
+  private leases = new Map<string, { owner: string; until: number }>();
+
+  async claim(fp: string, owner: string, ttlMs: number, now: string) {
+    // No await between the check and the write, so this is atomic within the process.
+    const t = Date.parse(now);
+    const held = this.leases.get(fp);
+    if (held && held.owner !== owner && held.until > t) return false;
+    this.leases.set(fp, { owner, until: t + ttlMs });
+    return true;
+  }
+  async release(fp: string, owner: string) {
+    if (this.leases.get(fp)?.owner === owner) this.leases.delete(fp);
+  }
 
   async get(fp: string) {
     const i = this.issues.get(fp);
@@ -184,6 +212,7 @@ function fresh(fp: string, s: Signal): Issue {
     frames: s.frames,
     providers: [s.provider],
     trust: [s.trust],
+    evidenceTrust: s.trust,
     flags: [],
     environments: [],
     releases: {},
@@ -204,11 +233,23 @@ function fold(issue: Issue, s: Signal): void {
   issue.firstSeen = minIso(issue.firstSeen, s.occurredAt);
   issue.lastSeen = maxIso(issue.lastSeen, s.occurredAt);
   if (LEVEL_RANK[s.level] > LEVEL_RANK[issue.level]) issue.level = s.level;
-  if (issue.frames.length === 0 && s.frames.length > 0) issue.frames = s.frames;
+  const rank = TRUST_RANK[s.trust] - TRUST_RANK[issue.evidenceTrust];
+  if (rank > 0) {
+    // A more trusted source replaces the evidence entirely: no client content in a server ticket.
+    issue.evidenceTrust = s.trust;
+    issue.title = s.title;
+    issue.message = s.message;
+    issue.frames = s.frames;
+    issue.urls = s.url ? [s.url] : [];
+    if (s.exceptionType) issue.exceptionType = s.exceptionType;
+    else delete issue.exceptionType;
+  } else if (rank === 0) {
+    if (issue.frames.length === 0 && s.frames.length > 0) issue.frames = s.frames;
+    issue.urls = addUnique(issue.urls, s.url).slice(0, 10);
+  }
   issue.providers = addUnique(issue.providers, s.provider);
   issue.trust = addUnique(issue.trust, s.trust);
   issue.environments = addUnique(issue.environments, s.environment);
-  issue.urls = addUnique(issue.urls, s.url).slice(0, 10);
   issue.reportedUsers = Math.max(issue.reportedUsers, s.reportedUsers);
   for (const h of s.userHashes) {
     if (issue.userHashes.length >= MAX_USER_HASHES) break;

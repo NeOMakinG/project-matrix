@@ -24,6 +24,9 @@ const PATTERNS: [RegExp, string][] = [
   ],
   // Emails
   [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, "[EMAIL]"],
+  // Phone numbers: international (+ and 8-15 digits, optional separators) or grouped national numbers
+  [/(?<![\w.\/:-])\+\d(?:[\s.()-]?\d){7,14}(?![\w.-])/g, "[PHONE]"],
+  [/(?<![\w.\/:-])\(?0\d{1,4}\)?(?:[\s.-]\d{2,4}){2,4}(?![\w.-])/g, "[PHONE]"],
   // Card-like digit runs (13-19 digits, optional separators)
   [/\b(?:\d[ -]?){13,19}\b/g, "[NUMBER]"],
   // IPv4
@@ -53,12 +56,20 @@ function maskHighEntropy(text: string): string {
 
 /** Drops query strings and fragments from every URL in the text. */
 export function stripUrlQueries(text: string): string {
-  return text.replace(/\b(https?:\/\/[^\s?#"'<>]+)[?#][^\s"'<>]*/gi, "$1");
+  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/[^\s?#"'<>]+)[?#][^\s"'<>]*/gi, "$1");
+}
+
+/**
+ * Drops credentials from any URL or DSN (`https://user:pass@host`, `postgres://…`, `mongodb+srv://…`,
+ * `redis://:pass@…`, `amqp://…`): everything between `scheme://` and the last `@` before the host.
+ */
+export function stripUserinfo(text: string): string {
+  return text.replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#"'<>]*@/gi, "$1[REDACTED]@");
 }
 
 /** Masks secrets and personal data. Applied before anything is stored, sent to an LLM or put in a ticket. */
 export function redact(text: string, options: RedactOptions = {}): string {
-  let out = stripUrlQueries(text);
+  let out = stripUrlQueries(stripUserinfo(text));
   for (const item of options.denylist ?? []) {
     out =
       typeof item === "string"
