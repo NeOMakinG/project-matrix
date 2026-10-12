@@ -30,11 +30,17 @@ export class NativeWorkspace implements Workspace {
     const result = await runToCompletion(this.#o.executor ?? hostExecutor, {
       cmd: [this.#o.gitBinary ?? "git", ...args],
       cwd,
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp", GIT_TERMINAL_PROMPT: "0" },
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        HOME: process.env.HOME ?? "/tmp",
+        GIT_TERMINAL_PROMPT: "0",
+      },
       timeoutMs: 120_000,
     });
     if (result.exitCode !== 0) {
-      throw new Error(`git ${args[0]} failed (${result.exitCode}): ${result.stderrTail.trim().slice(-500)}`);
+      throw new Error(
+        `git ${args[0]} failed (${result.exitCode}): ${result.stderrTail.trim().slice(-500)}`,
+      );
     }
     return result.stdout.trim();
   }
@@ -52,13 +58,32 @@ export class NativeWorkspace implements Workspace {
     await mkdir(dirname(workdir), { recursive: true });
     const exists = await this.#git(target.repoPath, ["branch", "--list", target.branch]);
     if (exists) await this.#git(target.repoPath, ["worktree", "add", workdir, target.branch]);
-    else await this.#git(target.repoPath, ["worktree", "add", "-b", target.branch, workdir, target.baseBranch]);
+    else
+      await this.#git(target.repoPath, [
+        "worktree",
+        "add",
+        "-b",
+        target.branch,
+        workdir,
+        target.baseBranch,
+      ]);
     return { workdir, ref: workdir };
   }
 
   async cleanup(prepared: PreparedWorkspace): Promise<void> {
     if (!existsSync(prepared.workdir)) return;
-    const commonDir = await this.#git(prepared.workdir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-    await this.#git(dirname(commonDir), ["--git-dir", commonDir, "worktree", "remove", "--force", prepared.workdir]);
+    const commonDir = await this.#git(prepared.workdir, [
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-common-dir",
+    ]);
+    await this.#git(dirname(commonDir), [
+      "--git-dir",
+      commonDir,
+      "worktree",
+      "remove",
+      "--force",
+      prepared.workdir,
+    ]);
   }
 }

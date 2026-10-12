@@ -29,14 +29,17 @@ interface OrcaEnvelope {
 }
 
 function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 /** Validates an `orca agent-context --json` document against the contract above. Returns problems found. */
 export function checkOrcaContract(context: unknown): string[] {
   const doc = record(context);
   const problems: string[] = [];
-  if (doc.schemaVersion !== ORCA_SCHEMA_VERSION) problems.push(`unsupported schemaVersion ${String(doc.schemaVersion)}`);
+  if (doc.schemaVersion !== ORCA_SCHEMA_VERSION)
+    problems.push(`unsupported schemaVersion ${String(doc.schemaVersion)}`);
   const commands = Array.isArray(doc.commands) ? doc.commands.map(record) : [];
   for (const [command, flags] of Object.entries(ORCA_REQUIRED_COMMANDS)) {
     const found = commands.find((c) => c.command === command);
@@ -45,7 +48,8 @@ export function checkOrcaContract(context: unknown): string[] {
       continue;
     }
     const available = new Set(Array.isArray(found.flags) ? found.flags : []);
-    for (const flag of flags) if (!available.has(flag)) problems.push(`orca ${command} lacks --${flag}`);
+    for (const flag of flags)
+      if (!available.has(flag)) problems.push(`orca ${command} lacks --${flag}`);
   }
   return problems;
 }
@@ -61,7 +65,10 @@ export class OrcaWorkspace implements Workspace {
   }
 
   async #orca(args: string[]): Promise<unknown> {
-    const env: Record<string, string> = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp" };
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: process.env.HOME ?? "/tmp",
+    };
     const full = [...args];
     if (this.#o.environment) full.push("--environment", this.#o.environment);
     const result = await runToCompletion(this.#o.executor ?? hostExecutor, {
@@ -74,12 +81,16 @@ export class OrcaWorkspace implements Workspace {
     try {
       parsed = JSON.parse(result.stdout);
     } catch {
-      throw new Error(`orca ${args.slice(0, 2).join(" ")} returned non-JSON (exit ${result.exitCode}): ${result.stderrTail.trim().slice(-300)}`);
+      throw new Error(
+        `orca ${args.slice(0, 2).join(" ")} returned non-JSON (exit ${result.exitCode}): ${result.stderrTail.trim().slice(-300)}`,
+      );
     }
     const envelope = record(parsed) as OrcaEnvelope;
     if (result.exitCode !== 0 || envelope.ok === false) {
       const message = typeof envelope.error === "string" ? envelope.error : envelope.error?.message;
-      throw new Error(`orca ${args.slice(0, 2).join(" ")} failed: ${message ?? result.stderrTail.trim().slice(-300)}`);
+      throw new Error(
+        `orca ${args.slice(0, 2).join(" ")} failed: ${message ?? result.stderrTail.trim().slice(-300)}`,
+      );
     }
     return "result" in envelope ? envelope.result : parsed;
   }
@@ -98,9 +109,12 @@ export class OrcaWorkspace implements Workspace {
     const repos = Array.isArray(result.repos) ? result.repos.map(record) : [];
     for (const repo of repos) {
       const path = typeof repo.path === "string" ? repo.path : "";
-      if (path && (path === wanted || (await realpath(path).catch(() => path)) === wanted)) return String(repo.id);
+      if (path && (path === wanted || (await realpath(path).catch(() => path)) === wanted))
+        return String(repo.id);
     }
-    throw new Error(`repository ${repoPath} is not registered in Orca (run: orca repo add --path ${repoPath})`);
+    throw new Error(
+      `repository ${repoPath} is not registered in Orca (run: orca repo add --path ${repoPath})`,
+    );
   }
 
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {

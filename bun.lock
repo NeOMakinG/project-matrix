@@ -191,6 +191,9 @@
     "packages/tickets": {
       "name": "@matrix/tickets",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/sandbox": "workspace:*",
+      },
     },
     "packages/watch": {
       "name": "@matrix/watch",

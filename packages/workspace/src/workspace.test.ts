@@ -24,14 +24,22 @@ describe("native workspace", () => {
     const repoPath = await repo();
     const root = await mkdtemp(join(tmpdir(), "matrix-ws-root-"));
     const ws = new NativeWorkspace({ root });
-    const target = { projectId: "p/1", ticketId: "MX-1", repoPath, branch: "matrix/mx-1", baseBranch: "main" };
+    const target = {
+      projectId: "p/1",
+      ticketId: "MX-1",
+      repoPath,
+      branch: "matrix/mx-1",
+      baseBranch: "main",
+    };
     const prepared = await ws.prepare(target);
     expect(prepared.workdir).toBe(join(root, "p-1", "MX-1"));
     expect(existsSync(join(prepared.workdir, "README.md"))).toBe(true);
     expect((await ws.prepare(target)).workdir).toBe(prepared.workdir);
     await ws.cleanup(prepared);
     expect(existsSync(prepared.workdir)).toBe(false);
-    expect(execFileSync("git", ["branch", "--list", "matrix/mx-1"], { cwd: repoPath }).toString()).toContain("matrix/mx-1");
+    expect(
+      execFileSync("git", ["branch", "--list", "matrix/mx-1"], { cwd: repoPath }).toString(),
+    ).toContain("matrix/mx-1");
     const again = await ws.prepare(target);
     expect(existsSync(again.workdir)).toBe(true);
   });
@@ -39,7 +47,13 @@ describe("native workspace", () => {
   test("rejects invalid branch names", async () => {
     const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
     await expect(
-      ws.prepare({ projectId: "p", ticketId: "t", repoPath: await repo(), branch: "bad..name", baseBranch: "main" }),
+      ws.prepare({
+        projectId: "p",
+        ticketId: "t",
+        repoPath: await repo(),
+        branch: "bad..name",
+        baseBranch: "main",
+      }),
     ).rejects.toThrow();
   });
 });
@@ -47,7 +61,10 @@ describe("native workspace", () => {
 const goodContext = {
   schemaVersion: 1,
   commands: [
-    { command: "worktree create", flags: ["repo", "name", "base-branch", "json", "agent", "prompt", "issue"] },
+    {
+      command: "worktree create",
+      flags: ["repo", "name", "base-branch", "json", "agent", "prompt", "issue"],
+    },
     { command: "worktree rm", flags: ["worktree", "force", "json"] },
     { command: "repo list", flags: ["json"] },
   ],
@@ -61,14 +78,16 @@ describe("orca workspace", () => {
     );
   });
 
-  test.runIf((() => {
-    try {
-      execFileSync("orca", ["agent-context", "--json"], { stdio: "ignore", timeout: 15_000 });
-      return true;
-    } catch {
-      return false;
-    }
-  })())("installed Orca satisfies the contract (read-only)", () => {
+  test.runIf(
+    (() => {
+      try {
+        execFileSync("orca", ["agent-context", "--json"], { stdio: "ignore", timeout: 15_000 });
+        return true;
+      } catch {
+        return false;
+      }
+    })(),
+  )("installed Orca satisfies the contract (read-only)", () => {
     const context = JSON.parse(execFileSync("orca", ["agent-context", "--json"]).toString());
     expect(checkOrcaContract(context)).toEqual([]);
   });
@@ -82,29 +101,73 @@ describe("orca workspace", () => {
       let result: unknown = {};
       if (args.startsWith("agent-context")) result = goodContext;
       else if (args.startsWith("repo list")) result = { repos: [{ id: "repo-1", path: repoPath }] };
-      else if (args.startsWith("worktree create")) result = { worktree: { id: "wt-9", path: "/orca/wt-9" } };
+      else if (args.startsWith("worktree create"))
+        result = { worktree: { id: "wt-9", path: "/orca/wt-9" } };
       onLine(JSON.stringify(args.startsWith("agent-context") ? result : { ok: true, result }));
       return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
     };
-    const ws = new OrcaWorkspace({ executor, agent: "claude", prompt: () => "build MX-1", issue: () => 42 });
-    const prepared = await ws.prepare({ projectId: "p", ticketId: "MX-1", repoPath, branch: "matrix/mx-1", baseBranch: "main" });
+    const ws = new OrcaWorkspace({
+      executor,
+      agent: "claude",
+      prompt: () => "build MX-1",
+      issue: () => 42,
+    });
+    const prepared = await ws.prepare({
+      projectId: "p",
+      ticketId: "MX-1",
+      repoPath,
+      branch: "matrix/mx-1",
+      baseBranch: "main",
+    });
     expect(prepared).toEqual({ workdir: "/orca/wt-9", ref: "wt-9" });
     expect(calls[2]).toEqual([
-      "orca", "worktree", "create", "--repo", "id:repo-1", "--name", "matrix-mx-1", "--base-branch", "main", "--json",
-      "--agent", "claude", "--prompt", "build MX-1", "--issue", "42",
+      "orca",
+      "worktree",
+      "create",
+      "--repo",
+      "id:repo-1",
+      "--name",
+      "matrix-mx-1",
+      "--base-branch",
+      "main",
+      "--json",
+      "--agent",
+      "claude",
+      "--prompt",
+      "build MX-1",
+      "--issue",
+      "42",
     ]);
     await ws.cleanup(prepared);
-    expect(calls.at(-1)).toEqual(["orca", "worktree", "rm", "--worktree", "id:wt-9", "--force", "--json"]);
+    expect(calls.at(-1)).toEqual([
+      "orca",
+      "worktree",
+      "rm",
+      "--worktree",
+      "id:wt-9",
+      "--force",
+      "--json",
+    ]);
   });
 
   test("unregistered repo is a clear error", async () => {
     const executor: LineExecutor = async (spec, onLine) => {
       const args = spec.cmd.slice(1).join(" ");
-      onLine(JSON.stringify(args.startsWith("agent-context") ? goodContext : { ok: true, result: { repos: [] } }));
+      onLine(
+        JSON.stringify(
+          args.startsWith("agent-context") ? goodContext : { ok: true, result: { repos: [] } },
+        ),
+      );
       return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
     };
     await expect(
-      new OrcaWorkspace({ executor }).prepare({ projectId: "p", ticketId: "t", repoPath: await repo(), branch: "b", baseBranch: "main" }),
+      new OrcaWorkspace({ executor }).prepare({
+        projectId: "p",
+        ticketId: "t",
+        repoPath: await repo(),
+        branch: "b",
+        baseBranch: "main",
+      }),
     ).rejects.toThrow(/not registered in Orca/);
   });
 });
