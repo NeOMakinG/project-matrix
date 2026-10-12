@@ -8,14 +8,17 @@ const git = (args: string[]) =>
   spawnSync("git", args, { cwd: import.meta.dirname, encoding: "utf8" });
 
 /**
- * Commit of the factory tooling to pin in generated CI: the running tool's commit when it is
- * published on a remote branch, else the remote main it was built from. Never a moving branch.
+ * Commit of the factory tooling to pin in generated CI. Only commits on the tool's main line are
+ * pinned: the newest release tag reachable from `origin/main`, else `origin/main` itself. A
+ * feature-branch commit the tool happens to run from is never used.
  */
 export function toolCommit(): string | undefined {
-  const head = git(["rev-parse", "HEAD"]).stdout?.trim();
-  if (head && git(["branch", "-r", "--contains", head]).stdout?.trim()) return head;
-  const main = git(["rev-parse", "origin/main"]).stdout?.trim();
-  return main && /^[0-9a-f]{40}$/.test(main) ? main : undefined;
+  const sha = (ref: string) => {
+    const out = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).stdout?.trim();
+    return out && /^[0-9a-f]{40}$/.test(out) ? out : undefined;
+  };
+  const tag = git(["describe", "--tags", "--abbrev=0", "origin/main"]).stdout?.trim();
+  return (tag ? sha(tag) : undefined) ?? sha("origin/main");
 }
 
 /**
@@ -23,7 +26,8 @@ export function toolCommit(): string | undefined {
  * gates. ADR rules are loaded from the PR's base branch (`--rules-from`), so a PR cannot weaken
  * the rules it is checked against; the tooling is pinned to a commit.
  */
-export function ciWorkflow(_c: MatrixConfig, ref = toolCommit()): string {
+/** `ref: null` means no main-line commit could be found; the workflow then asks to pin one. */
+export function ciWorkflow(_c: MatrixConfig, ref: string | null = toolCommit() ?? null): string {
   const pinned = ref ?? "main";
   return `name: ci
 
