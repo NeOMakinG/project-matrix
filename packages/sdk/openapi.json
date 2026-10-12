@@ -406,6 +406,29 @@
           "ownerId": {
             "type": "string"
           },
+          "title": {
+            "type": "string"
+          },
+          "prUrl": {
+            "type": "string"
+          },
+          "approval": {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": ["none", "pending", "approved", "rejected"]
+              },
+              "approvalId": {
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/components/schemas/Phase"
+              }
+            },
+            "required": ["state"],
+            "description": "Latest approval requested for this run"
+          },
           "headSha": {
             "type": "string"
           },
@@ -439,6 +462,7 @@
           "projectId",
           "ticketId",
           "ownerId",
+          "approval",
           "phase",
           "state",
           "runner",
@@ -716,6 +740,202 @@
           }
         },
         "required": ["at", "keyId", "action", "method", "path", "status"]
+      },
+      "Integration": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/Pill"
+          }
+        },
+        "required": ["name", "detail", "status"]
+      },
+      "Pill": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "tone": {
+            "$ref": "#/components/schemas/Tone"
+          }
+        },
+        "required": ["label", "tone"]
+      },
+      "Tone": {
+        "type": "string",
+        "enum": ["green", "blue", "amber", "red", "violet", "neutral"]
+      },
+      "InitProgress": {
+        "type": "object",
+        "properties": {
+          "packs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "answered": {
+                  "type": "number"
+                },
+                "total": {
+                  "type": "number"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": ["done", "active", "todo"]
+                }
+              },
+              "required": ["id", "label", "answered", "total", "state"]
+            }
+          },
+          "answered": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "questionId": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": ["questionId", "label", "value"]
+            }
+          },
+          "question": {
+            "type": ["object", "null"],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "pack": {
+                "type": "string"
+              },
+              "index": {
+                "type": "number"
+              },
+              "total": {
+                "type": "number"
+              },
+              "context": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "facts": {
+                "type": "string"
+              },
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "recommended": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["id", "label", "description", "recommended"]
+                }
+              }
+            },
+            "required": [
+              "id",
+              "pack",
+              "index",
+              "total",
+              "context",
+              "prompt",
+              "rationale",
+              "facts",
+              "options"
+            ]
+          },
+          "configPreview": {
+            "type": "string"
+          },
+          "adrs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "status": {
+                  "$ref": "#/components/schemas/Pill"
+                }
+              },
+              "required": ["id", "title", "status"]
+            }
+          }
+        },
+        "required": ["packs", "answered", "question", "configPreview", "adrs"]
+      },
+      "CheckResult": {
+        "type": "object",
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "violations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "level": {
+                  "type": "string",
+                  "enum": ["error", "warn"]
+                },
+                "adr": {
+                  "type": "string"
+                },
+                "location": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "note": {
+                  "type": "string"
+                }
+              },
+              "required": ["level", "adr", "location", "message", "note"]
+            }
+          }
+        },
+        "required": ["ref", "violations"]
       },
       "Overview": {
         "type": "object",
@@ -3639,6 +3859,280 @@
                   "items": {
                     "$ref": "#/components/schemas/AuditEntry"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/integrations": {
+      "get": {
+        "tags": ["dashboard"],
+        "summary": "Integration status (gateway, Orca, webhooks); never includes secrets",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Integration"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/init/{id}/progress": {
+      "get": {
+        "tags": ["init"],
+        "summary": "Interview progress: packs, current question, config and ADR previews",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InitProgress"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/checks": {
+      "get": {
+        "tags": ["knowledge"],
+        "summary": "Latest `matrix check` result on the default branch",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResult"
                 }
               }
             }
