@@ -11,6 +11,7 @@ const IGNORED_DIRS = new Set([
   "coverage",
   ".git",
   ".matrix",
+  ".matrix-tool",
   ".turbo",
   ".next",
   ".output",

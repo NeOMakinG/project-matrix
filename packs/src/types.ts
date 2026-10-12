@@ -1,3 +1,4 @@
+import type { RuleCheck } from "@matrix/rules";
 export type AnswerValue = string | number | boolean | string[];
 export type Answers = Record<string, AnswerValue>;
 
@@ -33,6 +34,8 @@ export interface RuleStub {
   engine: "dependency-cruiser" | "ast-grep" | "biome" | "semgrep" | "custom";
   description: string;
   pattern?: string;
+  /** Machine-checkable body enforced by `matrix check`. Stubs without one are reported as unenforced. */
+  check?: RuleCheck;
 }
 
 export interface AdrTemplate {

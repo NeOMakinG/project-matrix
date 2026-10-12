@@ -123,12 +123,27 @@ export const nodePack: Pack = {
       context: "Data access must go through one layer so agents don't scatter raw SQL.",
       when: () => true,
       rules: (v) =>
-        v === "drizzle"
+        v === "drizzle" || v === "prisma"
           ? [
               {
                 engine: "dependency-cruiser",
-                description: "Only src/db may import drizzle-orm.",
-                pattern: "^drizzle-orm",
+                description: `Only src/db may import ${v === "drizzle" ? "drizzle-orm" : "@prisma/client"}.`,
+                pattern: v === "drizzle" ? "^drizzle-orm" : "^@prisma/client",
+                check: {
+                  type: "forbidden-import",
+                  files: ["apps/api/src/**"],
+                  except: ["apps/api/src/db/**"],
+                  import: v === "drizzle" ? "^drizzle-orm" : "^@prisma/client",
+                },
+              },
+              {
+                engine: "dependency-cruiser",
+                description: `One ORM: ${v === "drizzle" ? "Prisma" : "Drizzle"} must not be added next to ${v}.`,
+                check: {
+                  type: "forbidden-import",
+                  files: ["apps/**"],
+                  import: v === "drizzle" ? "^@prisma/client" : "^drizzle-orm",
+                },
               },
             ]
           : [],

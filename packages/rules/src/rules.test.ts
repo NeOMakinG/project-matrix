@@ -1,6 +1,9 @@
+import { writeGraph } from "@matrix/graph";
 import { describe, expect, test } from "vitest";
+import { fixtureProject } from "../../graph/src/test-utils";
 import { parseAdr } from "./adr";
 import { parseCallPattern } from "./checks";
+import { architectureGates } from "./gates";
 import { adrMarkdown, runRuleCase } from "./harness";
 import { formatHuman, toReceipt } from "./report";
 
@@ -202,5 +205,25 @@ describe("reporting", () => {
     const receipt = toReceipt(r);
     expect(receipt.kind).toBe("adr-check");
     expect(receipt.ok).toBe(false);
+  });
+});
+
+describe("architecture gates", () => {
+  test("checks-phase receipts: ADR rules + code graph drift", async () => {
+    const root = await fixtureProject({
+      "docs/adr/0023-orm.md": adrMarkdown("0023", "ORM", [
+        {
+          description: "Only src/db may import drizzle-orm.",
+          check: { type: "forbidden-import", import: "^drizzle-orm", except: ["src/db/**"] },
+        },
+      ]),
+      "src/db/client.ts": 'import { drizzle } from "drizzle-orm";\nexport const db = drizzle;\n',
+    });
+    await writeGraph(root);
+    const receipts = await architectureGates(root);
+    expect(receipts.map((r) => [r.kind, r.ok])).toEqual([
+      ["adr-check", true],
+      ["adr-check", true],
+    ]);
   });
 });
