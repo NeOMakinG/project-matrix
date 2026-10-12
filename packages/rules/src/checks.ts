@@ -2,75 +2,65 @@ import {
   extractImports,
   type ImportRef,
   inScope,
-  isRelative,
   lineIndex,
   parseSource,
-  resolveRelative,
+  type Resolver,
   type Scope,
 } from "@matrix/graph";
 import picomatch from "picomatch";
 import ts from "typescript";
+import { callPatternHits } from "./callpattern";
+import { compileSafeRegex, MAX_REGEX_SCAN_BYTES } from "./safe";
 import type { RuleCheck } from "./schema";
 
 export interface Hit {
   file: string;
   line: number;
   message: string;
+  /** Downgrades the rule's severity for hits the engine cannot judge (e.g. computed imports). */
+  severity?: "warning";
 }
 
-/** Lazily reads and caches file text, parsed imports and source trees. */
+/** Lazily reads and caches file text, parsed imports, source trees and a type-checked program. */
 export interface SourceIndex {
   files: string[];
   known: ReadonlySet<string>;
   text(file: string): Promise<string>;
   imports(file: string): Promise<ImportRef[]>;
   sourceFile(file: string): Promise<ts.SourceFile>;
+  /** Resolves a specifier (relative, workspace package, tsconfig paths) to a repo file. */
+  resolve(from: string, specifier: string): string | undefined;
+  /** Type-checked program over the given files, for symbol-based matching. */
+  program(files: string[]): Promise<ts.Program>;
+  /** Absolute path of a repo file, as the program sees it. */
+  absolute(file: string): string;
 }
 
-const CALL_RE = /^([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\((.*)\)$/s;
-
-interface CallPattern {
-  callee: string;
-  /** Exact argument count, or undefined for `$$$` (any). */
-  arity: number | undefined;
-}
-
-/** Parses the supported subset of ast-grep patterns: `callee(...)` with metavariable args. */
-export function parseCallPattern(pattern: string): CallPattern {
-  const m = CALL_RE.exec(pattern.trim());
-  if (!m?.[1]) throw new Error(`unsupported call pattern "${pattern}" (expected callee($$$))`);
-  const args = (m[2] ?? "").trim();
-  if (args === "$$$") return { callee: m[1], arity: undefined };
-  if (args === "") return { callee: m[1], arity: 0 };
-  const parts = args.split(",").map((a) => a.trim());
-  if (!parts.every((p) => /^\$[A-Z_][A-Z0-9_]*$/.test(p)))
-    throw new Error(`call pattern args must be metavariables ($A) or $$$: "${pattern}"`);
-  return { callee: m[1], arity: parts.length };
-}
-
-const calleeText = (expr: ts.Expression): string | undefined => {
-  if (ts.isIdentifier(expr)) return expr.text;
-  if (ts.isPropertyAccessExpression(expr)) {
-    const left = calleeText(expr.expression);
-    return left ? `${left}.${expr.name.text}` : undefined;
-  }
-  if (expr.kind === ts.SyntaxKind.ThisKeyword) return "this";
-  return undefined;
-};
+export { parseCallPattern } from "./callpattern";
 
 const filesInScope = (index: SourceIndex, check: Scope) =>
   index.files.filter((f) => inScope(f, check));
+
+const computedHit = (file: string, ref: ImportRef): Hit => ({
+  file,
+  line: ref.line,
+  message: `computed ${ref.kind === "require" ? "require()" : "import()"} cannot be checked statically`,
+  severity: "warning",
+});
 
 /** Runs one rule body against the indexed sources. */
 export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hit[]> {
   const hits: Hit[] = [];
   switch (check.type) {
     case "forbidden-import": {
-      const re = new RegExp(check.import);
+      const re = compileSafeRegex(check.import);
       for (const file of filesInScope(index, check))
-        for (const ref of await index.imports(file))
-          if ((check.includeTypeImports || ref.kind !== "type") && re.test(ref.specifier))
+        for (const ref of await index.imports(file)) {
+          if (ref.kind === "type" && !check.includeTypeImports) continue;
+          if (ref.computed) hits.push(computedHit(file, ref));
+          else if (re.test(ref.specifier))
             hits.push({ file, line: ref.line, message: `imports "${ref.specifier}"` });
+        }
       break;
     }
     case "boundary": {
@@ -78,38 +68,32 @@ export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hi
       const allowed = check.allow ? picomatch(check.allow, { dot: true }) : () => false;
       for (const file of filesInScope(index, check))
         for (const ref of await index.imports(file)) {
-          if (!isRelative(ref.specifier)) continue;
           if (ref.kind === "type" && !check.includeTypeImports) continue;
-          const target = resolveRelative(file, ref.specifier, index.known);
+          if (ref.computed) {
+            hits.push(computedHit(file, ref));
+            continue;
+          }
+          const target = index.resolve(file, ref.specifier);
           if (target && disallowed(target) && !allowed(target))
-            hits.push({ file, line: ref.line, message: `imports ${target} across a boundary` });
+            hits.push({
+              file,
+              line: ref.line,
+              message: `imports ${target}${target === ref.specifier ? "" : ` (via "${ref.specifier}")`} across a boundary`,
+            });
         }
       break;
     }
-    case "call-pattern": {
-      const pattern = parseCallPattern(check.pattern);
-      for (const file of filesInScope(index, check)) {
-        const sf = await index.sourceFile(file);
-        const visit = (node: ts.Node): void => {
-          if (
-            ts.isCallExpression(node) &&
-            calleeText(node.expression) === pattern.callee &&
-            (pattern.arity === undefined || node.arguments.length === pattern.arity)
-          ) {
-            const line = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
-            hits.push({ file, line, message: `calls ${pattern.callee}()` });
-          }
-          ts.forEachChild(node, visit);
-        };
-        visit(sf);
-      }
+    case "call-pattern":
+      hits.push(...(await callPatternHits(check, index)));
       break;
-    }
     case "regex": {
-      const flags = (check.flags ?? "").replace("g", "");
-      const re = new RegExp(check.pattern, `${flags}g`);
+      const re = compileSafeRegex(check.pattern, `${(check.flags ?? "").replace("g", "")}g`);
       for (const file of filesInScope(index, check)) {
         const text = await index.text(file);
+        if (text.length > MAX_REGEX_SCAN_BYTES) {
+          hits.push({ file, line: 1, message: "file too large for regex rules; not scanned" });
+          continue;
+        }
         const lineOf = lineIndex(text);
         for (const m of text.matchAll(re))
           hits.push({ file, line: lineOf(m.index ?? 0), message: `matches /${check.pattern}/` });
@@ -117,7 +101,7 @@ export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hi
       break;
     }
     case "required-header": {
-      const re = new RegExp(check.header, "m");
+      const re = compileSafeRegex(check.header, "m");
       for (const file of filesInScope(index, check)) {
         const head = (await index.text(file)).split("\n").slice(0, 10).join("\n");
         if (!re.test(head)) hits.push({ file, line: 1, message: "missing required header" });
@@ -128,13 +112,34 @@ export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hi
   return hits;
 }
 
+export interface SourceIndexOptions {
+  /** Absolute project root; a virtual root is used for in-memory sources. */
+  root: string;
+  resolver: Resolver;
+}
+
+const PROGRAM_OPTIONS: ts.CompilerOptions = {
+  allowJs: true,
+  jsx: ts.JsxEmit.Preserve,
+  target: ts.ScriptTarget.ESNext,
+  module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler,
+  lib: ["lib.esnext.d.ts", "lib.dom.d.ts"],
+  types: [],
+  noEmit: true,
+  skipLibCheck: true,
+};
+
 export function createSourceIndex(
   files: string[],
   read: (file: string) => Promise<string>,
+  opts: SourceIndexOptions,
 ): SourceIndex {
   const texts = new Map<string, Promise<string>>();
   const imports = new Map<string, Promise<ImportRef[]>>();
   const trees = new Map<string, Promise<ts.SourceFile>>();
+  const programs = new Map<string, Promise<ts.Program>>();
+  const absolute = (file: string) => `${opts.root.replace(/\/+$/, "")}/${file}`;
   const text = (file: string) => {
     let p = texts.get(file);
     if (!p) {
@@ -143,10 +148,31 @@ export function createSourceIndex(
     }
     return p;
   };
+
+  const buildProgram = async (scope: string[]) => {
+    const loaded = new Map<string, string>();
+    for (const f of files) loaded.set(absolute(f), await text(f));
+    const host = ts.createCompilerHost(PROGRAM_OPTIONS, true);
+    const getSourceFile = host.getSourceFile.bind(host);
+    const fileExists = host.fileExists.bind(host);
+    const readFile = host.readFile.bind(host);
+    host.fileExists = (f) => loaded.has(f) || fileExists(f);
+    host.readFile = (f) => loaded.get(f) ?? readFile(f);
+    host.getSourceFile = (f, lang, onError, create) => {
+      const t = loaded.get(f);
+      return t !== undefined
+        ? ts.createSourceFile(f, t, lang, true)
+        : getSourceFile(f, lang, onError, create);
+    };
+    return ts.createProgram(scope.map(absolute), PROGRAM_OPTIONS, host);
+  };
+
   return {
     files,
     known: new Set(files),
     text,
+    absolute,
+    resolve: (from, specifier) => opts.resolver.resolve(from, specifier),
     imports(file) {
       let p = imports.get(file);
       if (!p) {
@@ -160,6 +186,15 @@ export function createSourceIndex(
       if (!p) {
         p = text(file).then((t) => parseSource(file, t));
         trees.set(file, p);
+      }
+      return p;
+    },
+    program(scope) {
+      const key = [...scope].sort().join("\0");
+      let p = programs.get(key);
+      if (!p) {
+        p = buildProgram(scope);
+        programs.set(key, p);
       }
       return p;
     },

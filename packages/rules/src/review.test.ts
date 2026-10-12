@@ -1,0 +1,170 @@
+import { spawnSync } from "node:child_process";
+import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { describe, expect, test } from "vitest";
+import { fixtureProject } from "../../graph/src/test-utils";
+import { checkProject } from "./engine";
+import { adrMarkdown, runRuleCase } from "./harness";
+
+const git = (cwd: string, ...args: string[]) => {
+  const r = spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
+    cwd,
+    encoding: "utf8",
+  });
+  if (r.status !== 0) throw new Error(r.stderr);
+  return r.stdout;
+};
+
+const put = async (root: string, rel: string, text: string) => {
+  await mkdir(dirname(join(root, rel)), { recursive: true });
+  await writeFile(join(root, rel), text);
+};
+
+const ormAdr = adrMarkdown("0023", "ORM", [
+  {
+    description: "Only src/db may import drizzle-orm.",
+    check: { type: "forbidden-import", import: "^drizzle-orm", except: ["src/db/**"] },
+  },
+]);
+
+describe("P1-1 rules come from the base commit, not the code under check", () => {
+  test("superseding or deleting an ADR in the branch does not disable its rule", async () => {
+    const root = await fixtureProject({
+      "docs/adr/0023-orm.md": ormAdr,
+      "src/db/client.ts": 'import { drizzle } from "drizzle-orm";\nexport const db = drizzle;\n',
+    });
+    git(root, "init", "-q", "-b", "main");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "base");
+    git(root, "checkout", "-q", "-b", "feature");
+    await put(root, "docs/adr/0023-orm.md", ormAdr.replace("accepted", "superseded"));
+    await put(root, "src/leak.ts", 'import { eq } from "drizzle-orm";\nexport const x = eq;\n');
+
+    const local = await checkProject(root);
+    expect(local.ok).toBe(true);
+
+    const gated = await checkProject(root, { rulesFrom: "main" });
+    expect(gated.ok).toBe(false);
+    expect(gated.violations.map((v) => `${v.adr} ${v.file}:${v.line}`)).toEqual([
+      "ADR-0023 src/leak.ts:1",
+    ]);
+    expect(gated.rulesSource.kind).toBe("git");
+    expect(gated.adrChanges).toEqual([{ file: "docs/adr/0023-orm.md", change: "modified" }]);
+    expect(gated.requiresReview).toBe(true);
+
+    await rm(join(root, "docs/adr/0023-orm.md"));
+    await rm(join(root, "src/leak.ts"));
+    const removed = await checkProject(root, { rulesFrom: "main" });
+    expect(removed.failures.join("\n")).toMatch(/drops enforced ADR rules from 1 to 0/);
+    expect((await checkProject(root, { rulesFrom: "main", allowRuleRemoval: true })).ok).toBe(true);
+  });
+});
+
+describe("P1-2 boundaries see through package names, aliases and every import form", () => {
+  test("workspace package, tsconfig paths, export-from, import(), require(), computed", async () => {
+    const r = await runRuleCase({
+      rules: [
+        {
+          description: "Web never imports API server code.",
+          check: { type: "boundary", files: ["apps/web/**"], disallow: ["apps/api/**"] },
+        },
+      ],
+      files: {
+        "apps/api/package.json": '{ "name": "ledgerly-api" }',
+        "apps/api/src/db/schema.ts": "export const users = 1;\n",
+        "apps/web/tsconfig.json":
+          '{ "compilerOptions": { "baseUrl": ".", "paths": { "@api/*": ["../api/src/*"] } } }',
+        "apps/web/src/a.ts": 'export * from "ledgerly-api/src/db/schema";\n',
+        "apps/web/src/b.ts": 'import { users } from "@api/db/schema";\nexport const b = users;\n',
+        "apps/web/src/c.ts": 'export const c = () => import("../../api/src/db/schema");\n',
+        "apps/web/src/d.js": 'const s = require("ledgerly-api/src/db/schema");\n',
+        "apps/web/src/e.ts": "export const e = (p: string) => import(p);\n",
+      },
+    });
+    expect(r.hits).toEqual([
+      "ADR-0099 apps/web/src/a.ts:1",
+      "ADR-0099 apps/web/src/b.ts:1",
+      "ADR-0099 apps/web/src/c.ts:1",
+      "ADR-0099 apps/web/src/d.js:1",
+      "ADR-0099 apps/web/src/e.ts:1",
+    ]);
+    expect(r.violations.find((v) => v.file.endsWith("e.ts"))?.severity).toBe("warning");
+  });
+});
+
+describe("P1-3 nothing is hidden by folder names or symlinks", () => {
+  test("build/, dist/ and coverage/ at depth are checked; escaping symlinks fail", async () => {
+    const outside = await fixtureProject({ "x.ts": 'import "drizzle-orm";\n' });
+    const root = await fixtureProject({
+      "docs/adr/0023-orm.md": ormAdr,
+      "src/build/hidden.ts": 'import "drizzle-orm";\n',
+      "src/dist/also.ts": 'import "drizzle-orm";\n',
+    });
+    await symlink(join(outside, "x.ts"), join(root, "src/escape.ts"));
+    const r = await checkProject(root);
+    expect(r.violations.map((v) => v.file)).toEqual(["src/build/hidden.ts", "src/dist/also.ts"]);
+    expect(r.failures).toEqual([expect.stringMatching(/symlink src\/escape.ts points outside/)]);
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("P1-4 missing rules fail closed", () => {
+  test("a Matrix project without ADR rules fails; a manifest minimum is enforced", async () => {
+    const bare = await fixtureProject({
+      "matrix.config.ts": "export default {};\n",
+      "src/a.ts": "",
+    });
+    const r = await checkProject(bare);
+    expect(r.ok).toBe(false);
+    expect(r.failures[0]).toMatch(/no enforced ADR rules loaded/);
+
+    const shrunk = await fixtureProject({
+      "docs/adr/0023-orm.md": ormAdr,
+      ".matrix/rules-manifest.json": '{ "version": 1, "adrDir": "docs/adr", "minRules": 2 }',
+      "src/a.ts": "",
+    });
+    const s = await checkProject(shrunk);
+    expect(s.failures[0]).toMatch(/only 1 enforced ADR rules loaded .* requires 2/);
+  });
+});
+
+describe("P2 hardening", () => {
+  test("call-pattern catches aliases, globalThis/window access and fetch.call", async () => {
+    const r = await runRuleCase({
+      rules: [
+        {
+          description: "No fetch() outside src/api.",
+          check: { type: "call-pattern", pattern: "fetch($$$)" },
+        },
+      ],
+      files: {
+        "src/a.ts": [
+          "const f = fetch;",
+          'f("/1");',
+          'globalThis.fetch("/2");',
+          'window["fetch"]("/3");',
+          'fetch.call(null, "/4");',
+          '(globalThis as any).fetch("/5");',
+          "const client = { fetch: (x: number) => x };",
+          "client.fetch(1);",
+        ].join("\n"),
+      },
+    });
+    expect(r.hits).toEqual([
+      "ADR-0099 src/a.ts:2",
+      "ADR-0099 src/a.ts:3",
+      "ADR-0099 src/a.ts:4",
+      "ADR-0099 src/a.ts:5",
+      "ADR-0099 src/a.ts:6",
+    ]);
+  });
+
+  test("catastrophic-backtracking regexes are rejected as invalid rules", async () => {
+    const r = await runRuleCase({
+      rules: [{ description: "bad", check: { type: "regex", pattern: "(a+)+$" } }],
+      files: { "a.ts": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!" },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.invalid[0]?.message).toMatch(/unsafe regex/);
+  });
+});

@@ -1,7 +1,7 @@
-import { isSource } from "@matrix/graph";
+import { createResolver, isSource } from "@matrix/graph";
 import { parseAdr } from "./adr";
 import { createSourceIndex } from "./checks";
-import { type CheckResult, checkAdrs } from "./engine";
+import { checkAdrs, type RuleCheckResult } from "./engine";
 import type { AdrRule } from "./schema";
 
 export interface RuleCase {
@@ -22,14 +22,16 @@ export function adrMarkdown(number: string, title: string, rules: Partial<AdrRul
  * Test harness for rule authors: runs rules against in-memory files without touching disk.
  * Each hit is reported as `ADR-xxxx file:line`.
  */
-export async function runRuleCase(c: RuleCase): Promise<CheckResult & { hits: string[] }> {
+export async function runRuleCase(c: RuleCase): Promise<RuleCheckResult & { hits: string[] }> {
   const number = c.adr ?? "0099";
   const adr = parseAdr(`docs/adr/${number}-case.md`, adrMarkdown(number, "Case", c.rules));
   if (!adr) throw new Error("harness produced an unparsable ADR");
   const files = Object.keys(c.files).filter(isSource).sort();
+  const root = "/__matrix_case__";
+  const resolver = await createResolver(root, files, async (f) => c.files[f]);
   const result = await checkAdrs(
     [adr],
-    createSourceIndex(files, async (f) => c.files[f] ?? ""),
+    createSourceIndex(files, async (f) => c.files[f] ?? "", { root, resolver }),
   );
   return { ...result, hits: result.violations.map((v) => `${v.adr} ${v.file}:${v.line}`) };
 }
