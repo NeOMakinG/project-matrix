@@ -177,3 +177,32 @@ test("api check response bodies are capped", async () => {
   expect(transcript.length).toBeLessThan(200_000);
   expect(transcript).toContain("PASS");
 });
+
+test("receipts never follow agent-made symlinks", async () => {
+  const { symlink, writeFile, mkdir } = await import("node:fs/promises");
+  const { fileReceipt } = await import("./receipts");
+  const root = await mkdtemp(join(tmpdir(), "matrix-root-"));
+  const outside = await mkdtemp(join(tmpdir(), "matrix-outside-"));
+  await writeFile(join(outside, "secret.txt"), "host secret");
+  await symlink(join(outside, "secret.txt"), join(root, "shot.png"));
+  await mkdir(join(root, "docs"));
+  await symlink(outside, join(root, "docs", "linked"));
+  await expect(
+    fileReceipt("screenshot", join(root, "shot.png"), "s", true, undefined, root),
+  ).rejects.toThrow();
+  await expect(
+    fileReceipt(
+      "screenshot",
+      join(root, "docs", "linked", "secret.txt"),
+      "s",
+      true,
+      undefined,
+      root,
+    ),
+  ).rejects.toThrow(/symlink/);
+  await expect(fileReceipt("screenshot", join(root, "shot.png"), "s")).rejects.toThrow();
+  await writeFile(join(root, "ok.png"), "png");
+  expect(
+    (await fileReceipt("screenshot", join(root, "ok.png"), "s", true, undefined, root)).sha256,
+  ).toMatch(/^[a-f0-9]{64}$/);
+});
