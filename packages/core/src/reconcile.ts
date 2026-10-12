@@ -358,6 +358,13 @@ export class Reconciler {
       const result = gate(p, { ok: true, summary: "", receipts }, project);
       if (!result.pass) return `${p} gate no longer passes: ${result.reason}`;
     }
+    const checks = await this.latestRun(w, "checks");
+    for (const p of ["review", "qa"] as const) {
+      const run = await this.latestRun(w, p);
+      if (run && checks && run.headSha !== checks.headSha) {
+        return `${p} ran on a different commit than checks`;
+      }
+    }
     if (w.reviewedTree && w.workdir && (await this.o.git.treeState(w.workdir)) !== w.reviewedTree) {
       return "worktree changed after review";
     }
@@ -374,6 +381,23 @@ export class Reconciler {
       // Idempotency: this exact step already finished (crash before the transition was saved).
       await this.transition(project, w, done.output as PhaseOutcome);
       return "replayed";
+    }
+
+    // Checks start from a host-cleaned tree when the git port supports it: build artifacts and
+    // untracked files are removed, modified tracked files send the ticket back to implement.
+    let checkedSha: string | undefined;
+    if (w.phase === "checks" && w.workdir && this.o.git.cleanForChecks) {
+      try {
+        checkedSha = await this.o.git.cleanForChecks(w.workdir);
+      } catch (error) {
+        await this.loopTo(
+          project,
+          w,
+          "implement",
+          `cannot clean for checks: ${(error as Error).message}`,
+        );
+        return "looped";
+      }
     }
 
     // Validation and irreversible phases only ever see a committed, clean tree.
@@ -434,8 +458,10 @@ export class Reconciler {
     }
 
     const model = this.modelFor(project, w.phase);
+    // Checks bind to the SHA returned by cleanForChecks; review, QA, merge and deploy must match it.
     const headSha =
-      CLEAN_TREE.has(w.phase) && w.workdir ? await this.o.git.headSha(w.workdir) : undefined;
+      checkedSha ??
+      (CLEAN_TREE.has(w.phase) && w.workdir ? await this.o.git.headSha(w.workdir) : undefined);
     await this.o.store.createRun({
       id: runId,
       projectId: project.id,
@@ -886,6 +912,19 @@ export class Reconciler {
     this.o.bus.publish({ type: "autonomy.changed", projectId, phase, mode });
   }
 
+  /** Untracked build output is fine when the git port can clean it; uncommitted tracked changes never are. */
+  private async handedOverClean(workdir: string): Promise<boolean> {
+    if (this.o.git.cleanForChecks) {
+      try {
+        await this.o.git.cleanForChecks(workdir);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return this.o.git.isClean(workdir);
+  }
+
   /**
    * Implement must hand over a committed tree. A validation run must leave HEAD and the tree
    * exactly as it found them, so its verdict applies to the commit it recorded.
@@ -897,7 +936,7 @@ export class Reconciler {
     validatedSha?: string,
   ): Promise<PhaseOutcome> {
     if (outcome.runStatus && outcome.runStatus !== "ok") return outcome;
-    if (phase === "implement" && outcome.ok && !(await this.o.git.isClean(workdir))) {
+    if (phase === "implement" && outcome.ok && !(await this.handedOverClean(workdir))) {
       return {
         ...outcome,
         ok: false,

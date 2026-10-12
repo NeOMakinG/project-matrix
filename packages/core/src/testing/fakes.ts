@@ -151,6 +151,8 @@ export function testProject(overrides: Partial<ProjectConfig> = {}): ProjectConf
 
 /** Git state per worktree; tests mutate it to simulate commits and dirty trees. */
 export class FakeGit {
+  /** Assign to emulate a runtime git port that supports host-side cleaning. */
+  cleanForChecks?: (workdir: string) => Promise<string>;
   readonly sha = new Map<string, string>();
   readonly dirty = new Map<string, string>();
   async headSha(workdir: string): Promise<string> {
