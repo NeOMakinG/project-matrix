@@ -1,0 +1,17 @@
+{
+  "alias": "GlitchTip",
+  "text": "GlitchTip Alert",
+  "attachments": [
+    {
+      "title": "ValueError: invalid currency code 'XXX'",
+      "title_link": "https://glitchtip.example.com/acme/issues/913",
+      "text": "api.billing.convert",
+      "color": "#e52b50",
+      "fields": [
+        { "title": "Project", "value": "ledgerly-api", "short": true },
+        { "title": "Environment", "value": "production", "short": true },
+        { "title": "Release", "value": "api@2.1.0", "short": false }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "heartbeat": {
+    "status": 0,
+    "msg": "Request failed with status code 502",
+    "time": "2026-10-12 09:20:00.000"
+  },
+  "monitor": { "name": "ledgerly web", "url": "https://app.example.com/health" },
+  "msg": "[ledgerly web] [Down] Request failed with status code 502"
+}

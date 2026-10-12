@@ -1,0 +1,4 @@
+{
+  "heartbeat": { "status": 1, "msg": "200 - OK", "time": "2026-10-12 09:25:00.000" },
+  "monitor": { "name": "ledgerly web", "url": "https://app.example.com/health" }
+}

@@ -1,0 +1,27 @@
+{
+  "version": "4",
+  "status": "firing",
+  "receiver": "matrix",
+  "groupKey": "{}:{alertname=\"HighErrorRate\"}",
+  "commonLabels": { "service": "ledgerly-api", "environment": "production" },
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": { "alertname": "HighErrorRate", "severity": "critical", "release": "api@2.1.0" },
+      "annotations": {
+        "summary": "5xx rate above 5% on POST /invoices",
+        "description": "http.server.request.duration error ratio 7.2% over 10m"
+      },
+      "startsAt": "2026-10-12T09:05:00Z",
+      "generatorURL": "https://grafana.example.com/alerting/grafana/abc/view",
+      "fingerprint": "7f3e2d1c0b9a8f7e"
+    },
+    {
+      "status": "resolved",
+      "labels": { "alertname": "DiskAlmostFull", "severity": "warning" },
+      "annotations": { "summary": "disk 92%" },
+      "startsAt": "2026-10-12T07:00:00Z",
+      "fingerprint": "0011223344556677"
+    }
+  ]
+}

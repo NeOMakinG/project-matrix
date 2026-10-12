@@ -1,0 +1,41 @@
+{
+  "event": {
+    "uuid": "01929f2a-7c11-7b8e-9d2e-4f3a2b1c0d9e",
+    "event": "$exception",
+    "distinct_id": "user_7731",
+    "timestamp": "2026-10-12T09:12:44.512Z",
+    "url": "https://app.example.com/invoices",
+    "properties": {
+      "$exception_list": [
+        {
+          "type": "TypeError",
+          "value": "Cannot read properties of undefined (reading 'amount')",
+          "stacktrace": {
+            "type": "resolved",
+            "frames": [
+              {
+                "filename": "src/billing/InvoiceList.tsx",
+                "function": "InvoiceList",
+                "lineno": 41,
+                "in_app": true
+              },
+              {
+                "filename": "src/billing/totals.ts",
+                "function": "invoiceTotal",
+                "lineno": 17,
+                "in_app": true
+              }
+            ]
+          }
+        }
+      ],
+      "$exception_fingerprint": "ph-9c41b2",
+      "$exception_level": "error",
+      "$current_url": "https://app.example.com/invoices",
+      "$app_version": "web@1.4.0",
+      "environment": "production"
+    }
+  },
+  "person": { "id": "p_1", "properties": {} },
+  "project": { "id": 12, "name": "ledgerly" }
+}
