@@ -112,15 +112,17 @@ export class RunEventStream {
       source.addEventListener(kind, (message) => {
         const raw = message as MessageEvent<string>;
         if (raw.lastEventId) this.lastEventId = raw.lastEventId;
+        const data = typeof raw.data === "string" ? raw.data : "";
+        if (!data) return;
         const event =
-          raw.data.length > MAX_FRAME_CHARS
+          data.length > MAX_FRAME_CHARS
             ? {
                 runId: this.runId,
                 at: new Date().toISOString(),
                 kind: "error" as const,
-                message: `event ${raw.lastEventId || ""} dropped: ${raw.data.length} characters is over the limit`,
+                message: `event ${raw.lastEventId || ""} dropped: ${data.length} characters is over the limit`,
               }
-            : parseRunEvent(raw.data);
+            : parseRunEvent(data);
         if (!event || event.runId !== this.runId) return;
         this.attempts = 0;
         if (this.state !== "live") this.state = "live";
