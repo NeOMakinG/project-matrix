@@ -36,8 +36,13 @@ describe("generated project gates", () => {
     expect(result.unenforced).toEqual([]);
     expect(await checkGraphDrift(out)).toEqual({ ok: true, stale: [] });
     const ci = await readFile(join(out, ".github/workflows/ci.yml"), "utf8");
-    expect(ci).toContain("bin.ts check .");
+    expect(ci).toContain('check . --rules-from "origin/$BASE_REF"');
     expect(ci).toContain("bin.ts graph . --check");
+    expect(ci).toContain("bun install --frozen-lockfile");
+    expect(ci).toMatch(/^permissions:\n {2}contents: read$/m);
+    expect(ci).toMatch(/ref: ([0-9a-f]{40}|main)\n/);
+    const manifest = JSON.parse(await readFile(join(out, ".matrix/rules-manifest.json"), "utf8"));
+    expect(manifest.minRules).toBe(result.stats.enforced);
   });
 
   test("feature tickets are linked to their product features", async () => {

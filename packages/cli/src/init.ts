@@ -155,7 +155,7 @@ async function seedBacklog(outDir: string, config: MatrixConfig): Promise<Seeded
     existing.get(input.title) ?? (await store.create(input));
   const setup = await create({
     title: "Bootstrap repository and CI",
-    body: "Install dependencies, make `typecheck`, `lint` and `test` pass, and add the CI workflow.",
+    body: "Install dependencies and commit `bun.lock` (CI installs with `--frozen-lockfile`), make `typecheck`, `lint` and `test` pass, and keep the generated CI workflow green.",
     labels: ["setup"],
     priority: 1,
   });
@@ -256,6 +256,16 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     ".matrix/answers.json": `${JSON.stringify(answers, null, 2)}\n`,
     "CONTEXT.md": contextFile(config),
     ".matrix/graph/product.json": productGraph(config, ds, adrs.numbers),
+    // Fail-closed floor for `matrix check`: rules may only shrink through a reviewed change.
+    ".matrix/rules-manifest.json": `${JSON.stringify(
+      {
+        version: 1,
+        adrDir: "docs/adr",
+        minRules: ds.reduce((n, d) => n + d.rules.filter((r) => r.check).length, 0),
+      },
+      null,
+      2,
+    )}\n`,
     ...adrs.files,
   };
   const warnings: string[] = [];
