@@ -14,7 +14,7 @@ import {
   sandboxNetworkEnv,
   withBridge,
 } from "./launch.js";
-import { hostExecutor, type LineExecutor, type ProcessSpec } from "./process.js";
+import { hostExecutor, type LineExecutor, type ProcessSpec, runToCompletion } from "./process.js";
 
 export interface SandboxResources {
   memory: string;
@@ -37,6 +37,9 @@ export interface PodmanSandboxOptions {
 
 export interface RunPolicy {
   runId: string;
+  /** Labelled on the container so a lease takeover can find and stop it. */
+  projectId?: string;
+  ticketId?: string;
   network: NetworkPolicy;
   allowHosts?: string[];
 }
@@ -64,6 +67,7 @@ export class PodmanSandbox implements Sandbox {
     grant: Pick<Grant, "socketDir" | "network">,
     envFile: string,
     runId: string,
+    labels: Record<string, string> = {},
   ): string[] {
     const inner = this.#o.containerWorkdir ?? "/work";
     const r = this.#resources;
@@ -73,6 +77,8 @@ export class PodmanSandbox implements Sandbox {
       "--rm",
       "-i",
       `--name=${containerName(runId)}`,
+      `--label=matrix.run=${runId}`,
+      ...Object.entries(labels).map(([k, v]) => `--label=matrix.${k}=${v}`),
       "--network=none",
       "--userns=keep-id",
       "--cap-drop=all",
@@ -131,7 +137,10 @@ export class PodmanSandbox implements Sandbox {
           return `${k}=${v}`;
         });
         await writeFile(envFile, `${lines.join("\n")}\n`, { mode: 0o600 });
-        const argv = this.argv(spec, grant, envFile, policy.runId);
+        const labels: Record<string, string> = {};
+        if (policy.projectId) labels.project = policy.projectId;
+        if (policy.ticketId) labels.ticket = policy.ticketId;
+        const argv = this.argv(spec, grant, envFile, policy.runId, labels);
         await this.#o.broker.assertNoSecrets(argv);
         return await exec(
           {
@@ -166,6 +175,42 @@ export class PodmanSandbox implements Sandbox {
         await grant.close();
       }
     };
+  }
+
+  /**
+   * Lease takeover: kills and removes every container matching the filter and waits until they are
+   * gone, so a new owner never shares a worktree with a still-running old runner.
+   */
+  async stop(filter: { runId?: string; projectId?: string; ticketId?: string }): Promise<number> {
+    const labels = [
+      filter.runId && `matrix.run=${filter.runId}`,
+      filter.projectId && `matrix.project=${filter.projectId}`,
+      filter.ticketId && `matrix.ticket=${filter.ticketId}`,
+    ].filter((l): l is string => Boolean(l));
+    if (labels.length === 0) throw new Error("refusing to stop containers without a filter");
+    const exec = this.#o.executor ?? hostExecutor;
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp" };
+    const podman = this.#o.podmanBinary ?? "podman";
+    const list = await runToCompletion(exec, {
+      cmd: [podman, "ps", "-a", "-q", ...labels.flatMap((l) => ["--filter", `label=${l}`])],
+      cwd: tmpdir(),
+      env,
+      timeoutMs: 30_000,
+    });
+    const ids = list.stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (ids.length === 0) return 0;
+    const removed = await runToCompletion(exec, {
+      cmd: [podman, "rm", "-f", "-t", "10", ...ids],
+      cwd: tmpdir(),
+      env,
+      timeoutMs: 120_000,
+    });
+    if (removed.exitCode !== 0)
+      throw new Error(`podman rm failed: ${removed.stderrTail.trim().slice(-300)}`);
+    return ids.length;
   }
 
   async exec(

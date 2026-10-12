@@ -14,6 +14,8 @@ import {
 export interface NativeWorkspaceOptions {
   /** Directory under which worktrees are created: `<root>/<project>/<ticket>`. */
   root: string;
+  /** Stops any runner still attached to a ticket (e.g. `PodmanSandbox.stop`) before its worktree is replaced. */
+  stopRunners?: (target: { projectId: string; ticketId: string }) => Promise<unknown>;
   executor?: LineExecutor;
   gitBinary?: string;
 }
@@ -77,7 +79,12 @@ export class NativeWorkspace implements Workspace {
     const repo = gitLocation(commonDir);
     await this.#git(repo, ["check-ref-format", "--branch", target.branch]);
     const workdir = join(this.#o.root, safeSegment(target.projectId), safeSegment(target.ticketId));
-    if (!existsSync(workdir)) {
+    if (existsSync(workdir)) {
+      // Never reuse: a previous owner's runner may still be writing here (lease takeover).
+      await this.#o.stopRunners?.({ projectId: target.projectId, ticketId: target.ticketId });
+      await this.#remove(workdir, commonDir);
+    }
+    {
       await mkdir(dirname(workdir), { recursive: true });
       const exists = await this.#git(repo, ["branch", "--list", target.branch]);
       const add = exists
@@ -93,9 +100,14 @@ export class NativeWorkspace implements Workspace {
   }
 
   async cleanup(prepared: PreparedWorkspace): Promise<void> {
-    const { commonDir, gitdir } = JSON.parse(prepared.ref) as { commonDir: string; gitdir: string };
+    const { commonDir } = JSON.parse(prepared.ref) as { commonDir: string; gitdir: string };
+    await this.#remove(prepared.workdir, commonDir);
+  }
+
+  async #remove(workdir: string, commonDir: string): Promise<void> {
+    const prepared = { workdir };
     try {
-      await verifyWorktreeLink(prepared.workdir, gitdir);
+      await this.#worktreeGitDir(workdir, commonDir);
       await this.#git(gitLocation(commonDir), [
         "worktree",
         "remove",

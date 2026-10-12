@@ -65,8 +65,12 @@ describe("native workspace", () => {
       `[core]\n\tbare = false\n\tfsmonitor = "touch ${pwned}"\n\thooksPath = ${evil}\n`,
     );
     await writeFile(join(prepared.workdir, ".git"), `gitdir: ${join(evil, "g")}\n`);
-    await expect(ws.prepare(target)).rejects.toThrow();
-    await ws.cleanup(prepared);
+    // A tampered worktree is reclaimed without ever running git against the hostile gitdir.
+    const again = await ws.prepare(target);
+    expect(existsSync(join(again.workdir, "README.md"))).toBe(true);
+    expect(existsSync(pwned)).toBe(false);
+    await writeFile(join(again.workdir, ".git"), `gitdir: ${join(evil, "g")}\n`);
+    await ws.cleanup(again);
     expect(existsSync(pwned)).toBe(false);
     expect(existsSync(prepared.workdir)).toBe(false);
   });
@@ -255,4 +259,29 @@ describe("worktree git port", () => {
       /back-link|tampered|match/,
     );
   });
+});
+
+test("lease takeover: old runner stopped and worktree recreated, never reused", async () => {
+  const repoPath = await repo();
+  const stopped: string[] = [];
+  const ws = new NativeWorkspace({
+    root: await mkdtemp(join(tmpdir(), "matrix-ws-")),
+    stopRunners: async (t) => {
+      stopped.push(`${t.projectId}/${t.ticketId}`);
+    },
+  });
+  const target = {
+    projectId: "p",
+    ticketId: "L",
+    repoPath,
+    branch: "matrix/l",
+    baseBranch: "main",
+  };
+  const first = await ws.prepare(target);
+  await writeFile(join(first.workdir, "half-written.ts"), "old owner");
+  const second = await ws.prepare(target);
+  expect(stopped).toEqual(["p/L"]);
+  expect(second.workdir).toBe(first.workdir);
+  expect(existsSync(join(second.workdir, "half-written.ts"))).toBe(false);
+  expect(existsSync(join(second.workdir, "README.md"))).toBe(true);
 });

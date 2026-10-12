@@ -357,3 +357,21 @@ describe("bounded output", () => {
     expect(Math.max(...lines.map((l) => l.length))).toBeLessThanOrEqual(4 * 1024 * 1024 + 32);
   });
 });
+
+test("containers are labelled and stop() kills and removes them by label", async () => {
+  const calls: string[][] = [];
+  const executor: LineExecutor = async (s, onLine) => {
+    calls.push(s.cmd);
+    if (s.cmd[1] === "ps") onLine("abc123");
+    return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
+  };
+  const podman = new PodmanSandbox({ broker, image: "img", executor });
+  const argv = podman.argv(spec, { network: "none" }, "/e", "run-9", { ticket: "MX-1" });
+  expect(argv).toEqual(
+    expect.arrayContaining(["--label=matrix.run=run-9", "--label=matrix.ticket=MX-1"]),
+  );
+  expect(await podman.stop({ ticketId: "MX-1" })).toBe(1);
+  expect(calls[0]).toEqual(["podman", "ps", "-a", "-q", "--filter", "label=matrix.ticket=MX-1"]);
+  expect(calls[1]).toEqual(["podman", "rm", "-f", "-t", "10", "abc123"]);
+  await expect(podman.stop({})).rejects.toThrow(/without a filter/);
+});
