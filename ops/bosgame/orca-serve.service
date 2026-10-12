@@ -1,0 +1,20 @@
+# systemd user unit: headless Orca runtime for Project Matrix on bosgame.
+# Install: cp ops/bosgame/orca-serve.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+[Unit]
+Description=Orca runtime (headless) for Project Matrix
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Pairing advertises the Tailscale name only; nothing is exposed on public interfaces by Matrix.
+Environment=ORCA_PORT=7420
+EnvironmentFile=-%h/.config/matrix/orca-serve.env
+ExecStart=/usr/bin/orca serve --port ${ORCA_PORT} --pairing-address ${ORCA_PAIRING_ADDRESS} --project-root %h/matrix/projects
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target
