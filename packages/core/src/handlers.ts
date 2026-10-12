@@ -1,5 +1,5 @@
 import { HoldoutStore, holdoutReceipt, parseScenarios, parseVerdicts } from "./holdout.js";
-import { autonomyFor, findingsOf } from "./machine.js";
+import { findingsOf } from "./machine.js";
 import type { Phase, Receipt, Runner, RunnerId, RunResult, Sandbox } from "./ports.js";
 import type {
   DeployPort,
@@ -36,6 +36,7 @@ export async function callModel(
   model: PhaseModel,
   prompt: string,
   phase: Phase = ctx.workflow.phase,
+  workdir: string = ctx.workdir,
 ): Promise<RunResult> {
   const runner = deps.runners[model.runner];
   if (!runner) throw new Error(`runner ${model.runner} is not configured`);
@@ -48,7 +49,7 @@ export async function callModel(
       runner: model.runner,
       model: model.model,
       prompt,
-      workdir: ctx.workdir,
+      workdir,
       timeoutMs: ctx.project.runTimeoutMs,
     },
     (event) => ctx.emit(event.message, event.kind, event.data),
@@ -93,6 +94,9 @@ const spike =
 
     // Scenarios come from a different model than the implementer and are stored outside the worktree.
     const author = pickReviewer(ctx.project, ctx.project.models.implement.model);
+    deps.holdout.assertOutside(ctx.workdir);
+    // The author sees only the ticket, in an empty directory outside the worktree.
+    const authorDir = await ctx.scratchDir();
     const scen = await callModel(
       deps,
       ctx,
@@ -103,6 +107,8 @@ const spike =
         ctx.ticket.body,
         'Reply with JSON only: {"scenarios":[{"id":"s1","given":"...","when":"...","then":"..."}]} with 3 to 12 scenarios.',
       ].join("\n\n"),
+      "spike",
+      authorDir,
     );
     if (scen.status !== "ok") return outcomeFrom(scen, author);
     try {
@@ -117,9 +123,12 @@ const spike =
         runStatus: "failed",
       };
     }
-    return outcomeFrom(plan, model, [
+    const outcome = outcomeFrom(plan, model, [
       { kind: "log", ok: true, summary: "spike plan recorded on ticket" },
     ]);
+    // Account for every model call made in this step, not just the plan.
+    const costUsd = (plan.costUsd ?? 0) + (scen.costUsd ?? 0);
+    return costUsd > 0 ? { ...outcome, costUsd } : outcome;
   };
 
 const implement =
@@ -227,7 +236,12 @@ const qa =
   async (ctx) => {
     if (!deps.qa)
       return { ok: false, summary: "no QA driver configured", receipts: [], runStatus: "failed" };
-    const evidence = await deps.qa.run(ctx);
+    // Only core's judge may produce a holdout receipt; anything the driver supplies is discarded.
+    const supplied = await deps.qa.run(ctx);
+    const evidence = supplied.filter((r) => r.kind !== "holdout");
+    if (evidence.length !== supplied.length) {
+      ctx.emit("discarded holdout receipts supplied by the QA driver", "error");
+    }
     const scenarios = await deps.holdout.load(ctx.project.id, ctx.ticket.id);
     if (scenarios.length === 0) {
       return {
@@ -238,16 +252,20 @@ const qa =
       };
     }
     const judge = pickReviewer(ctx.project, ctx.workflow.implementerModel);
+    // The judge works from the QA evidence in an empty directory: it can neither read nor edit the worktree.
+    const judgeDir = await ctx.scratchDir();
     const verdict = await callModel(
       deps,
       ctx,
       judge,
       [
-        "Judge whether the software in this working tree satisfies each scenario. You may run it and its tests; do not edit files.",
+        "Judge from the QA evidence below whether the software satisfies each scenario. A scenario the evidence does not demonstrate is not satisfied.",
         `QA evidence:\n${evidence.map((r) => `- ${r.kind} ${r.ok ? "ok" : "FAILED"}: ${r.summary}`).join("\n")}`,
         `Scenarios:\n${JSON.stringify(scenarios, null, 2)}`,
         'Reply with JSON only: {"verdicts":[{"id":"s1","satisfied":true,"reason":"..."}]}',
       ].join("\n\n"),
+      "qa",
+      judgeDir,
     );
     if (verdict.status !== "ok") return outcomeFrom(verdict, judge, evidence);
     try {
@@ -274,7 +292,20 @@ const merge =
   (deps: HandlerDeps): PhaseHandler =>
   async (ctx) => {
     if (!deps.merge) return { ok: false, summary: "no merge port configured", receipts: [] };
-    const res = await deps.merge.merge(ctx, autonomyFor(ctx.project, "merge"));
+    const auth = await ctx.authorize("merge");
+    if (!auth.ok) {
+      return {
+        ok: false,
+        summary: auth.reason,
+        receipts: [],
+        requiresApproval: auth.kind === "approval",
+      };
+    }
+    const res = await deps.merge.merge(ctx, {
+      headSha: auth.headSha,
+      idempotencyKey: ctx.idempotencyKey,
+      mode: auth.mode,
+    });
     return {
       ok: res.ok,
       summary: res.summary,
@@ -288,7 +319,20 @@ const deploy =
   (deps: HandlerDeps): PhaseHandler =>
   async (ctx) => {
     if (!deps.deploy) return { ok: false, summary: "no deploy port configured", receipts: [] };
-    const res = await deps.deploy.deploy(ctx);
+    const auth = await ctx.authorize("deploy");
+    if (!auth.ok) {
+      return {
+        ok: false,
+        summary: auth.reason,
+        receipts: [],
+        requiresApproval: auth.kind === "approval",
+      };
+    }
+    const res = await deps.deploy.deploy(ctx, {
+      headSha: auth.headSha,
+      idempotencyKey: ctx.idempotencyKey,
+      mode: auth.mode,
+    });
     return {
       ok: res.ok,
       summary: res.summary,
