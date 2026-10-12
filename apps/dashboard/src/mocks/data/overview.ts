@@ -1,38 +1,26 @@
-import type { Gateway, Overview, Project } from "@/api/schemas";
+import type { Gateway, Overview } from "@/api/contracts";
 
-export const projects: Project[] = [
+const projects: Overview["projects"] = [
   {
     id: "ledgerly",
     name: "ledgerly",
-    description: "Invoicing for freelancers",
     kind: "web + API · pilot",
-    openTickets: 14,
     summary: "14 open · 3 in QA",
     status: { label: "healthy", tone: "green" },
-    autonomy: "human merge",
-    tracker: "beads",
   },
   {
     id: "project-matrix",
     name: "project-matrix",
-    description: "The factory, building itself",
     kind: "self-hosted factory",
-    openTickets: 22,
     summary: "22 open · 1 in review",
     status: { label: "healthy", tone: "green" },
-    autonomy: "human merge",
-    tracker: "github",
   },
   {
     id: "wayline",
     name: "wayline",
-    description: "Travel journal app",
     kind: "Expo app · onboarding",
-    openTickets: 0,
     summary: "paused",
     status: { label: "paused", tone: "neutral" },
-    autonomy: "human merge",
-    tracker: "beads",
   },
 ];
 
@@ -146,7 +134,6 @@ export const overview: Overview = {
   orca: {
     status: { label: "healthy", tone: "green" },
     host: "bosgame · orca serve v1.4.2",
-    version: "1.4.2",
     worktrees: "6 active · 2 idle",
     decisionGates: "1 waiting (MX-139 merge)",
   },

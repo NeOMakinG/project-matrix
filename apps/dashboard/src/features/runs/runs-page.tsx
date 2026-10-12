@@ -11,7 +11,7 @@ import {
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import { queries } from "@/api/queries";
-import type { RunSummary } from "@/api/schemas";
+import type { RunSummaryView as RunSummary } from "@/api/view";
 import { PageHeader } from "@/components/page-header";
 import { Card } from "@/components/ui/card";
 import { Pill } from "@/components/ui/pill";

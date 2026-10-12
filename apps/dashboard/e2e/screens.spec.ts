@@ -40,14 +40,16 @@ test("run detail streams the live log and records a merge decision", async ({ pa
   await settle(page);
   await expect(page.getByRole("link", { name: "Open in Orca" })).toHaveAttribute(
     "href",
-    /orca:\/\//,
+    /^orca:\/\//,
   );
-  await expect(page.getByText("curl POST /api/checkout → 200 (412 ms)")).toBeVisible({
+  await expect(page.getByText("Uploading receipts to ticket MX-142")).toBeVisible({
     timeout: 10_000,
   });
+  // the mock sends one event twice: the client must show it once
+  await expect(page.getByText("curl POST /api/checkout → 200 (412 ms)")).toHaveCount(1);
   await page.screenshot({ path: `${SHOTS}/03-run-detail.png`, fullPage: true });
-  await page.getByRole("button", { name: /Approve & merge/ }).click();
-  await expect(page.getByText("approved · merges after QA")).toBeVisible();
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(page.getByText("approved at 3c1e9a2")).toBeVisible();
 });
 
 test("runs list sorts by column", async ({ page }) => {
@@ -60,19 +62,23 @@ test("runs list sorts by column", async ({ page }) => {
 
 test("init interview confirms the recommended answer", async ({ page }) => {
   await page.goto("/p/ledgerly/init");
-  await expect(page.getByRole("heading", { name: "New project · Init interview" })).toBeVisible();
   await settle(page);
+  await page.getByRole("button", { name: "Start interview" }).click();
+  await expect(page.getByRole("heading", { name: "New project · Init interview" })).toBeVisible();
   await expect(page.getByRole("radio", { name: /TanStack Query \+ tRPC/ })).toBeChecked();
   await page.screenshot({ path: `${SHOTS}/04-init-interview.png`, fullPage: true });
+  await page.keyboard.press("Tab");
   await page.getByRole("button", { name: "Confirm & next" }).click();
-  await expect(page.getByText("answer saved")).toBeVisible();
-  await expect(page.getByText("39 answers so far", { exact: false })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Which form library should the web app use?" }),
+  ).toBeVisible();
 });
 
 test("knowledge renders the product graph and ADR rules", async ({ page }) => {
   await page.goto("/p/ledgerly/knowledge");
   await settle(page);
-  await expect(page.locator(".react-flow__node")).toHaveCount(14);
+  await expect(page.locator(".react-flow__node")).toHaveCount(13);
+  await page.getByText("MX-142 Checkout").click();
   await expect(page.getByText("Float arithmetic on money: amount * 1.2")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/05-knowledge.png`, fullPage: true });
 });
@@ -93,9 +99,12 @@ test("settings saves autonomy and creates an API key", async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/07-settings.png`, fullPage: true });
 
   await page.getByRole("combobox", { name: "Autonomy for deploy" }).click();
-  await page.getByRole("option", { name: "auto", exact: true }).click();
+  await page.getByRole("option", { name: "autonomous", exact: true }).click();
   await page.getByRole("button", { name: "Save changes" }).click();
-  await expect(page.getByText("changed just now by you")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save changes" })).toBeDisabled();
+  await expect(page.getByRole("combobox", { name: "Autonomy for deploy" })).toHaveText(
+    /autonomous/,
+  );
 
   await page.getByRole("button", { name: "New key" }).click();
   await page.getByRole("button", { name: "Create key" }).click();
@@ -104,6 +113,7 @@ test("settings saves autonomy and creates an API key", async ({ page }) => {
   await page.getByRole("button", { name: "Create key" }).click();
   await expect(page.getByRole("heading", { name: "Copy your key now" })).toBeVisible();
   await page.getByRole("button", { name: "Done" }).click();
+  await expect(page.getByText(/mx_live_/)).toHaveCount(0);
   await expect(page.getByText("orca agents")).toBeVisible();
 });
 
@@ -120,4 +130,26 @@ test("unknown run shows an error state with retry", async ({ page }) => {
   await page.goto("/p/ledgerly/runs/r_missing");
   await expect(page.getByRole("alert")).toContainText("Couldn't load this view");
   await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+});
+
+test("custom radios show a visible keyboard focus ring", async ({ page }) => {
+  await page.goto("/p/ledgerly/init");
+  await settle(page);
+  await page.getByRole("button", { name: "Start interview" }).click();
+  const radio = page.getByRole("radio", { name: /TanStack Query \+ tRPC/ });
+  await expect(radio).toBeChecked();
+  await radio.focus();
+  await page.keyboard.press("ArrowDown");
+  const label = page.locator("label", {
+    has: page.getByRole("radio", { name: /TanStack Query \+ REST/ }),
+  });
+  await expect(label).toHaveCSS("outline-style", "solid");
+});
+
+test("unsafe links from the API are never rendered", async ({ page }) => {
+  await page.goto("/p/ledgerly/runs/r_bad");
+  await settle(page);
+  await expect(page.getByRole("heading", { name: /MX-144/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open in Orca" })).toHaveCount(0);
+  await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
 });

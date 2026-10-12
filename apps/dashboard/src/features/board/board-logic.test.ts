@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { tickets } from "@/mocks/data/board";
+import { adaptTickets } from "@/api/adapters";
+import { runs, tickets as serverTickets } from "@/mocks/data/server";
 import { buildColumns, countByKind, filterTickets } from "./board-logic";
+
+const tickets = adaptTickets(serverTickets, runs);
 
 describe("board logic", () => {
   it("groups merge, deploy and verify into a Ship column", () => {
@@ -25,12 +28,9 @@ describe("board logic", () => {
   it("filters by kind and search text", () => {
     expect(filterTickets(tickets, "prod-fix", "").map((t) => t.id)).toEqual(["MX-153"]);
     expect(filterTickets(tickets, "all", "pdf").map((t) => t.id)).toEqual(["MX-139", "MX-137"]);
-    expect(filterTickets(tickets, "all", "mx-144").map((t) => t.title)).toEqual([
-      "Rename invoice states",
-    ]);
   });
 
   it("counts tickets per kind", () => {
-    expect(countByKind(tickets)).toEqual({ all: 13, feature: 10, bug: 1, "prod-fix": 1, chore: 1 });
+    expect(countByKind(tickets)).toEqual({ all: 12, feature: 9, bug: 1, "prod-fix": 1, chore: 1 });
   });
 });

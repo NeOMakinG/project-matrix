@@ -1,4 +1,4 @@
-import type { Tone } from "@/api/schemas";
+import type { Tone } from "@/api/contracts";
 import { cn } from "@/lib/cn";
 
 const toneClass: Record<Tone, string> = {

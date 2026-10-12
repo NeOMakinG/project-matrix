@@ -3,7 +3,7 @@ import { Link, useParams } from "@tanstack/react-router";
 import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { queries } from "@/api/queries";
-import type { Project, Ticket } from "@/api/schemas";
+import type { ProjectView, TicketView } from "@/api/view";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Pill } from "@/components/ui/pill";
@@ -20,7 +20,7 @@ import {
 export function BoardPage() {
   const { projectId } = useParams({ from: "/p/$projectId/board" });
   const project = useQuery(queries.project(projectId));
-  const tickets = useQuery(queries.tickets(projectId));
+  const tickets = useQuery(queries.board(projectId));
   return (
     <QueryView query={project}>
       {(p) => (
@@ -34,7 +34,7 @@ export function BoardPage() {
                   hint="Run the init interview to generate the first backlog, or create a ticket."
                 />
               ) : (
-                <Board projectId={projectId} tickets={list} tracker={p.tracker} />
+                <Board projectId={projectId} tickets={list} workspace={p.workspace} />
               )
             }
           </QueryView>
@@ -44,14 +44,14 @@ export function BoardPage() {
   );
 }
 
-function BoardHeader({ project }: { project: Project }) {
+function BoardHeader({ project }: { project: ProjectView }) {
   return (
     <PageHeader
       title={`${project.name} · Board`}
-      subtitle={`${project.description} · ${project.kind.split(" · ")[0]} · autonomy: ${project.autonomy}`}
+      subtitle={`${project.description || "No description"} · autonomy: ${project.mergeLabel}`}
       actions={
         <>
-          <Pill tone="amber">autonomy: {project.autonomy}</Pill>
+          <Pill tone="amber">autonomy: {project.mergeLabel}</Pill>
           <Button asChild>
             <Link to="/p/$projectId/init" params={{ projectId: project.id }}>
               Run interview again
@@ -67,11 +67,11 @@ function BoardHeader({ project }: { project: Project }) {
 function Board({
   projectId,
   tickets,
-  tracker,
+  workspace,
 }: {
   projectId: string;
-  tickets: Ticket[];
-  tracker: string;
+  tickets: TicketView[];
+  workspace: ProjectView["workspace"];
 }) {
   const [kind, setKind] = useState<KindFilter>("all");
   const [search, setSearch] = useState("");
@@ -110,7 +110,7 @@ function Board({
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search tickets, ADRs, files…"
+              placeholder="Search tickets…"
               className="h-8 w-60 rounded-control border border-border-subtle bg-surface pr-3 pl-8 text-body text-fg outline-none placeholder:text-fg-muted focus:border-border-strong"
             />
           </label>
@@ -118,7 +118,7 @@ function Board({
             {groupShip ? "Show all 8 phases" : "Group ship phases"}
           </Button>
           <span className="rounded-control border border-border-subtle px-2.5 py-1.5 text-label text-fg-secondary">
-            Tracker: {tracker}
+            Workspace: {workspace}
           </span>
         </div>
       </div>
@@ -153,14 +153,16 @@ function Board({
   );
 }
 
-function TicketCard({ projectId, ticket }: { projectId: string; ticket: Ticket }) {
+function TicketCard({ projectId, ticket }: { projectId: string; ticket: TicketView }) {
   const body = (
     <>
       <div className="flex items-center justify-between gap-2">
         <span className="shrink-0 whitespace-nowrap font-mono text-caption text-fg-muted">
           {ticket.id}
         </span>
-        <Pill tone={ticket.badge.tone}>{ticket.badge.label}</Pill>
+        <Pill tone={ticket.badge.tone} className="min-w-0 truncate">
+          {ticket.badge.label}
+        </Pill>
       </div>
       <div className="mt-2 text-heading text-fg">{ticket.title}</div>
       <div className="mt-2 text-caption text-fg-secondary">{ticket.meta}</div>

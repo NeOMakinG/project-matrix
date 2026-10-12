@@ -1,10 +1,10 @@
 import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { z } from "zod";
-import { api } from "@/api/client";
+import type { InitProgress } from "@/api/contracts";
+import { endpoints } from "@/api/endpoints";
 import { queries } from "@/api/queries";
-import type { InitSession } from "@/api/schemas";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -14,33 +14,92 @@ import { cn } from "@/lib/cn";
 
 export function InitPage() {
   const { projectId } = useParams({ from: "/p/$projectId/init" });
-  const session = useQuery(queries.initSession(projectId));
+  const { session } = useSearch({ from: "/p/$projectId/init" });
+  return session ? <InitSession sessionId={session} /> : <StartInterview projectId={projectId} />;
+}
+
+function StartInterview({ projectId }: { projectId: string }) {
+  const navigate = useNavigate({ from: "/p/$projectId/init" });
+  const start = useMutation({
+    mutationFn: () => endpoints.startInit(projectId),
+    onSuccess: (session) => navigate({ search: { session: session.id } }),
+  });
   return (
-    <QueryView query={session}>
-      {(data) => <InitView projectId={projectId} session={data} />}
+    <>
+      <PageHeader
+        title="Init interview"
+        subtitle={`${projectId} · business, product, stack, hosting, design, process`}
+      />
+      <Card className="max-w-xl px-5 py-5">
+        <p className="text-body text-fg-secondary">
+          The interview walks every pack, recommends an answer for each question and writes{" "}
+          <span className="font-mono text-fg">matrix.config.ts</span>, the ADRs and the first
+          backlog.
+        </p>
+        <Button
+          className="mt-4"
+          variant="primary"
+          onClick={() => start.mutate()}
+          disabled={start.isPending}
+        >
+          Start interview
+        </Button>
+        {start.isError ? (
+          <p role="alert" className="mt-2 text-caption text-danger">
+            Couldn't start the interview: {start.error.message}
+          </p>
+        ) : null}
+      </Card>
+    </>
+  );
+}
+
+function InitSession({ sessionId }: { sessionId: string }) {
+  const query = useQuery(queries.init(sessionId));
+  return (
+    <QueryView query={query}>
+      {({ session, progress }) => (
+        <InitView
+          sessionId={sessionId}
+          completed={session.state === "completed"}
+          progress={progress}
+        />
+      )}
     </QueryView>
   );
 }
 
-function InitView({ projectId, session }: { projectId: string; session: InitSession }) {
-  const activeIndex = session.packs.findIndex((p) => p.state === "active");
+function InitView({
+  sessionId,
+  completed,
+  progress,
+}: {
+  sessionId: string;
+  completed: boolean;
+  progress: InitProgress;
+}) {
+  const activeIndex = progress.packs.findIndex((p) => p.state === "active");
+  const active = progress.packs[activeIndex];
   return (
     <>
       <PageHeader
         title="New project · Init interview"
-        subtitle={`Pack ${activeIndex + 1} of ${session.packs.length} · ${session.currentPack} · ${session.answersCount} answers so far`}
+        subtitle={
+          completed
+            ? `Interview complete · ${progress.answered.length} answers`
+            : `Pack ${activeIndex + 1} of ${progress.packs.length} · ${active?.label ?? ""} · ${progress.answered.length} answers so far`
+        }
         actions={
-          <>
-            <Button>Save & exit</Button>
-            <Button variant="primary">Generate project</Button>
-          </>
+          <Button variant="primary" disabled={!completed}>
+            Generate project
+          </Button>
         }
       />
       <div className="grid grid-cols-[230px_minmax(0,1fr)_360px] gap-4">
         <Card className="self-start">
           <CardHeader title="Interview packs" />
           <ol className="space-y-0.5 px-2 pb-3">
-            {session.packs.map((pack) => (
+            {progress.packs.map((pack) => (
               <li
                 key={pack.id}
                 aria-current={pack.state === "active" ? "step" : undefined}
@@ -75,23 +134,23 @@ function InitView({ projectId, session }: { projectId: string; session: InitSess
 
         <div className="space-y-4">
           <Card className="px-5 py-4">
-            <div className="text-caption text-fg-secondary">Answered in this pack</div>
+            <div className="text-caption text-fg-secondary">Answered so far</div>
             <dl className="mt-2 space-y-2">
-              {session.answered.map((a) => (
-                <div key={a.label} className="flex justify-between gap-4">
+              {progress.answered.slice(-8).map((a) => (
+                <div key={a.questionId} className="flex justify-between gap-4">
                   <dt className="text-body text-fg-secondary">{a.label}</dt>
                   <dd className="font-mono text-caption text-fg">{a.value}</dd>
                 </div>
               ))}
             </dl>
           </Card>
-          {session.question ? (
-            <QuestionCard projectId={projectId} question={session.question} />
+          {progress.question ? (
+            <QuestionCard sessionId={sessionId} question={progress.question} />
           ) : (
             <Card className="px-5 py-6">
-              <Pill tone="green">answer saved</Pill>
+              <Pill tone="green">all questions answered</Pill>
               <p className="mt-3 text-body text-fg-secondary">
-                The next question is being prepared from your answers and the facts agents found.
+                Review the generated config and ADRs, then generate the project.
               </p>
             </Card>
           )}
@@ -101,13 +160,13 @@ function InitView({ projectId, session }: { projectId: string; session: InitSess
           <Card>
             <CardHeader title="matrix.config.ts" meta={<Pill tone="neutral">draft</Pill>} />
             <pre className="mx-4 mb-4 overflow-x-auto rounded-control bg-canvas p-3 font-mono text-caption text-fg">
-              {session.configPreview}
+              {progress.configPreview}
             </pre>
           </Card>
           <Card>
-            <CardHeader title="Generated ADRs" meta={String(session.adrs.length)} />
+            <CardHeader title="Generated ADRs" meta={String(progress.adrs.length)} />
             <ul className="space-y-3 px-4 pb-4">
-              {session.adrs.map((adr) => (
+              {progress.adrs.map((adr) => (
                 <li
                   key={adr.id}
                   className="grid grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-2"
@@ -125,16 +184,15 @@ function InitView({ projectId, session }: { projectId: string; session: InitSess
   );
 }
 
-type Question = NonNullable<InitSession["question"]>;
+type Question = NonNullable<InitProgress["question"]>;
 
 const answerFormSchema = z.object({ optionId: z.string().min(1, "Pick an option") });
 
-function QuestionCard({ projectId, question }: { projectId: string; question: Question }) {
+function QuestionCard({ sessionId, question }: { sessionId: string; question: Question }) {
   const client = useQueryClient();
   const answer = useMutation({
-    mutationFn: (optionId: string) =>
-      api.answerInit(projectId, { questionId: question.id, optionId }),
-    onSuccess: (session) => client.setQueryData(queries.initSession(projectId).queryKey, session),
+    mutationFn: (optionId: string) => endpoints.answerInit(sessionId, question.id, optionId),
+    onSuccess: () => client.invalidateQueries({ queryKey: queries.init(sessionId).queryKey }),
   });
   const recommended = question.options.find((o) => o.recommended)?.id ?? "";
   const form = useForm({
@@ -146,6 +204,7 @@ function QuestionCard({ projectId, question }: { projectId: string; question: Qu
   return (
     <Card className="px-5 py-5">
       <form
+        key={question.id}
         onSubmit={(e) => {
           e.preventDefault();
           void form.handleSubmit();
@@ -171,7 +230,7 @@ function QuestionCard({ projectId, question }: { projectId: string; question: Qu
                   <label
                     key={option.id}
                     className={cn(
-                      "block cursor-pointer rounded-card border px-4 py-3",
+                      "block cursor-pointer rounded-card border px-4 py-3 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent has-[:focus-visible]:outline-offset-2",
                       selected
                         ? "border-accent bg-accent-dim/40"
                         : "border-border-subtle bg-raised hover:border-border-strong",
@@ -209,7 +268,7 @@ function QuestionCard({ projectId, question }: { projectId: string; question: Qu
         </form.Field>
 
         <div className="mt-4 flex items-center justify-between gap-4">
-          <span className="text-caption text-fg-muted">{question.facts}</span>
+          <span className="text-caption text-fg-secondary">{question.facts}</span>
           <form.Subscribe selector={(s) => s.isSubmitting}>
             {(submitting) => (
               <Button type="submit" variant="primary" disabled={submitting}>
@@ -220,7 +279,7 @@ function QuestionCard({ projectId, question }: { projectId: string; question: Qu
         </div>
         {answer.isError ? (
           <p role="alert" className="mt-2 text-caption text-danger">
-            Couldn't save the answer. Try again.
+            Couldn't save the answer: {answer.error.message}
           </p>
         ) : null}
       </form>

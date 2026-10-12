@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "@tanstack/react-router";
-import { ExternalLink } from "lucide-react";
-import { api } from "@/api/client";
+import { endpoints } from "@/api/endpoints";
 import { queries } from "@/api/queries";
-import type { Run } from "@/api/schemas";
+import { AUTONOMY_LABEL, type RunView } from "@/api/view";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
@@ -15,44 +14,38 @@ import { Findings, Holdout, LiveLog, PhaseStepper, Receipts } from "./run-parts"
 export function RunPage() {
   const { runId } = useParams({ from: "/p/$projectId/runs/$runId" });
   const run = useQuery(queries.run(runId));
-  return <QueryView query={run}>{(data) => <RunView run={data} />}</QueryView>;
+  return <QueryView query={run}>{(data) => <RunDetail run={data} />}</QueryView>;
 }
 
-function useRunMutation<TArgs>(runId: string, fn: (args: TArgs) => Promise<Run>) {
+function RunDetail({ run }: { run: RunView }) {
   const client = useQueryClient();
-  return useMutation({
-    mutationFn: fn,
-    onSuccess: (run) => client.setQueryData(queries.run(runId).queryKey, run),
+  const refresh = () => client.invalidateQueries({ queryKey: queries.run(run.id).queryKey });
+  const pause = useMutation({ mutationFn: () => endpoints.pauseRun(run.id), onSuccess: refresh });
+  const decide = useMutation({
+    mutationFn: ({ decision, sha }: { decision: "approve" | "request_changes"; sha: string }) =>
+      endpoints.decide(run.id, decision, sha),
+    onSuccess: refresh,
   });
-}
-
-function RunView({ run }: { run: Run }) {
-  const pause = useRunMutation(run.id, () => api.pauseRun(run.id));
-  const decide = useRunMutation(run.id, (decision: "approved" | "changes_requested") =>
-    api.decideMerge(run.id, decision),
-  );
-  const qaPassed = run.receipts.length >= run.receiptsExpected && run.receipts.every((r) => r.ok);
 
   return (
     <>
       <PageHeader
         title={`${run.ticketId} · ${run.title}`}
-        subtitle={`Run ${run.id} · started ${clock(run.startedAt).slice(0, 5)} · ${run.projectId}`}
+        subtitle={`Run ${run.id} · started ${clock(run.startedAt).slice(0, 5)} UTC · ${run.projectId} · ${run.state}`}
         actions={
           <>
-            <Button asChild>
-              <a href={run.workspace.url} title={run.workspace.label}>
-                Open in Orca
-              </a>
-            </Button>
-            <Button onClick={() => pause.mutate(undefined)} disabled={pause.isPending}>
-              {run.status === "paused" ? "Resume run" : "Pause run"}
-            </Button>
-            <Button asChild>
-              <a href={run.pullRequest.url} target="_blank" rel="noreferrer">
-                Open draft PR #{run.pullRequest.number}
-                <ExternalLink className="size-3" />
-              </a>
+            {run.workspaceUrl ? (
+              <Button asChild>
+                <a href={run.workspaceUrl} rel="noopener noreferrer">
+                  Open in Orca
+                </a>
+              </Button>
+            ) : null}
+            <Button
+              onClick={() => pause.mutate()}
+              disabled={pause.isPending || run.status !== "running"}
+            >
+              Pause run
             </Button>
           </>
         }
@@ -62,60 +55,70 @@ function RunView({ run }: { run: Run }) {
 
       <div className="mt-5 grid grid-cols-[minmax(0,1fr)_400px] gap-4">
         <div className="space-y-4">
-          <LiveLog runId={run.id} initial={run.log} />
+          <LiveLog runId={run.id} />
           <Findings findings={run.findings} />
         </div>
 
         <div className="space-y-4">
           <Card>
-            <CardHeader title="Runners" meta="per phase" />
+            <CardHeader title="Runner" meta={run.phase} />
             <dl className="space-y-3 px-4 pb-4">
-              {run.runners.map((r) => (
-                <Row key={r.phase} term={r.phase} value={`${r.runner} · ${r.model}`} />
-              ))}
-              <Row term="workspace" value={run.workspace.label} />
-              <Row
-                term="cost so far"
-                value={`${usd(run.costUsd)} · ${Math.round(run.tokens / 1000)}k tokens`}
-              />
+              <Row term={run.phase} value={`${run.runner} · ${run.model}`} />
+              <Row term="commit" value={run.headSha ? run.headSha.slice(0, 7) : "—"} />
+              <Row term="cost so far" value={usd(run.costUsd)} />
             </dl>
           </Card>
 
-          <Receipts receipts={run.receipts} expected={run.receiptsExpected} />
-          <Holdout holdout={run.holdout} />
+          <Receipts receipts={run.receipts} />
+          {run.holdout ? <Holdout holdout={run.holdout} /> : null}
 
           <Card>
-            <CardHeader title="Merge" meta={<Pill tone="amber">{run.merge.mode}</Pill>} />
+            <CardHeader
+              title="Merge"
+              meta={<Pill tone="amber">{AUTONOMY_LABEL[run.mergeMode]}</Pill>}
+            />
             <div className="px-4 pb-4">
-              <p className="text-body text-fg-secondary">{run.merge.note}</p>
-              {run.merge.decision === "pending" ? (
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  <Button
-                    size="lg"
-                    onClick={() => decide.mutate("changes_requested")}
-                    disabled={decide.isPending}
-                  >
-                    Request changes
-                  </Button>
-                  <Button
-                    size="lg"
-                    variant="primary"
-                    onClick={() => decide.mutate("approved")}
-                    disabled={decide.isPending}
-                  >
-                    {qaPassed ? "Approve & merge" : "Approve & merge after QA"}
-                  </Button>
-                </div>
-              ) : (
-                <Pill tone={run.merge.decision === "approved" ? "green" : "amber"} className="mt-4">
-                  {run.merge.decision === "approved"
-                    ? "approved · merges after QA"
+              {decide.isSuccess ? (
+                <Pill tone={decide.data.decision === "approve" ? "green" : "amber"}>
+                  {decide.data.decision === "approve"
+                    ? `approved at ${decide.data.commitSha.slice(0, 7)}`
                     : "changes requested"}
                 </Pill>
+              ) : run.headSha ? (
+                <>
+                  <p className="text-body text-fg-secondary">
+                    Your decision applies to commit{" "}
+                    <span className="font-mono text-fg">{run.headSha.slice(0, 7)}</span>. A newer
+                    push needs a new approval.
+                  </p>
+                  <div className="mt-4 grid grid-cols-2 gap-2">
+                    <Button
+                      size="lg"
+                      disabled={decide.isPending}
+                      onClick={() =>
+                        decide.mutate({ decision: "request_changes", sha: run.headSha ?? "" })
+                      }
+                    >
+                      Request changes
+                    </Button>
+                    <Button
+                      size="lg"
+                      variant="primary"
+                      disabled={decide.isPending}
+                      onClick={() => decide.mutate({ decision: "approve", sha: run.headSha ?? "" })}
+                    >
+                      Approve
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <p className="text-body text-fg-secondary">
+                  Nothing to approve yet: the run has no commit.
+                </p>
               )}
               {decide.isError ? (
                 <p role="alert" className="mt-2 text-caption text-danger">
-                  Couldn't record the decision. Try again.
+                  Couldn't record the decision: {decide.error.message}
                 </p>
               ) : null}
             </div>

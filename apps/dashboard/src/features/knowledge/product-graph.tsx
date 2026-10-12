@@ -8,7 +8,7 @@ import {
   ReactFlowProvider,
 } from "@xyflow/react";
 import { useEffect, useMemo, useState } from "react";
-import type { GraphEdge, GraphNode } from "@/api/schemas";
+import type { GraphEdgeView, GraphNodeView } from "@/api/view";
 import { Skeleton } from "@/components/ui/states";
 import { cn } from "@/lib/cn";
 import {
@@ -17,14 +17,12 @@ import {
   NODE_HEIGHT,
   NODE_WIDTH,
   type PositionedNode,
+  pathThrough,
 } from "./graph-layout";
 
-type FactoryNode = Node<
-  { label: string; kind: GraphNode["kind"]; highlighted: boolean },
-  "factory"
->;
+type FactoryNode = Node<{ label: string; kind: string; highlighted: boolean }, "factory">;
 
-const MONO_KINDS = new Set<GraphNode["kind"]>(["adr", "ticket", "module"]);
+const MONO_KINDS = new Set(["adr", "ticket", "module"]);
 
 function FactoryNodeView({ data }: NodeProps<FactoryNode>) {
   return (
@@ -66,8 +64,10 @@ function FactoryNodeView({ data }: NodeProps<FactoryNode>) {
 
 const nodeTypes = { factory: FactoryNodeView };
 
-export function ProductGraph({ nodes, edges }: { nodes: GraphNode[]; edges: GraphEdge[] }) {
+export function ProductGraph({ nodes, edges }: { nodes: GraphNodeView[]; edges: GraphEdgeView[] }) {
   const [positioned, setPositioned] = useState<PositionedNode[] | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const highlightedIds = useMemo(() => pathThrough(selected, edges), [selected, edges]);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
@@ -86,16 +86,12 @@ export function ProductGraph({ nodes, edges }: { nodes: GraphNode[]; edges: Grap
         id: n.id,
         type: "factory",
         position: { x: n.x, y: n.y },
-        data: { label: n.label, kind: n.kind, highlighted: n.highlighted },
+        data: { label: n.label, kind: n.kind, highlighted: highlightedIds.has(n.id) },
         draggable: false,
       })),
-    [positioned],
+    [positioned, highlightedIds],
   );
 
-  const highlightedIds = useMemo(
-    () => new Set(nodes.filter((n) => n.highlighted).map((n) => n.id)),
-    [nodes],
-  );
   const flowEdges = useMemo<Edge[]>(
     () =>
       edges.map((e) => {
@@ -133,6 +129,10 @@ export function ProductGraph({ nodes, edges }: { nodes: GraphNode[]; edges: Grap
               fitView
               fitViewOptions={{ padding: 0.04 }}
               nodesConnectable={false}
+              onNodeClick={(_, node) =>
+                setSelected((current) => (current === node.id ? null : node.id))
+              }
+              onPaneClick={() => setSelected(null)}
               zoomOnScroll={false}
               panOnDrag
               proOptions={{ hideAttribution: true }}

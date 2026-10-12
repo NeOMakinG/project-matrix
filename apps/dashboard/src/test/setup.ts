@@ -19,15 +19,17 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-class DOMMatrixReadOnlyStub {
-  m22: number;
-  constructor(transform?: string) {
-    const scale = transform?.match(/scale\(([\d.]+)\)/)?.[1];
-    this.m22 = scale !== undefined ? Number(scale) : 1;
+if (typeof window !== "undefined") {
+  class DOMMatrixReadOnlyStub {
+    m22: number;
+    constructor(transform?: string) {
+      const scale = transform?.match(/scale\(([\d.]+)\)/)?.[1];
+      this.m22 = scale !== undefined ? Number(scale) : 1;
+    }
   }
+  globalThis.DOMMatrixReadOnly ??= DOMMatrixReadOnlyStub as unknown as typeof DOMMatrixReadOnly;
+  Element.prototype.scrollIntoView ??= () => {};
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+  window.scrollTo = () => {};
 }
-globalThis.DOMMatrixReadOnly ??= DOMMatrixReadOnlyStub as unknown as typeof DOMMatrixReadOnly;
-Element.prototype.scrollIntoView ??= () => {};
-Element.prototype.hasPointerCapture ??= () => false;
-Element.prototype.releasePointerCapture ??= () => {};
-window.scrollTo = () => {};

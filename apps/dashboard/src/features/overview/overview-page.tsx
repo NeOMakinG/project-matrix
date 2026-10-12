@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import type { Overview } from "@/api/contracts";
 import { queries } from "@/api/queries";
-import type { Overview } from "@/api/schemas";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, StatTile } from "@/components/ui/card";

@@ -1,4 +1,4 @@
-import { PHASES, type Phase, type Ticket, type TicketKind } from "@/api/schemas";
+import { LOOP_PHASES, type Phase, type TicketView as Ticket, type TicketKind } from "@/api/view";
 
 export type KindFilter = "all" | TicketKind;
 
@@ -49,7 +49,7 @@ export function countByKind(tickets: Ticket[]): Record<KindFilter, number> {
 export function buildColumns(tickets: Ticket[], groupShip: boolean): BoardColumn[] {
   const byPhase = (phases: readonly Phase[]) => tickets.filter((t) => phases.includes(t.phase));
   const columns: BoardColumn[] = [];
-  for (const phase of PHASES) {
+  for (const phase of LOOP_PHASES) {
     if (groupShip && SHIP_PHASES.includes(phase)) continue;
     columns.push({ id: phase, label: PHASE_LABEL[phase], tickets: byPhase([phase]) });
   }

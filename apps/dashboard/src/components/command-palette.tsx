@@ -33,7 +33,7 @@ export function CommandPalette({
   const navigate = useNavigate();
   const projectId = useCurrentProjectId();
   const projects = useQuery({ ...queries.projects(), enabled: open });
-  const tickets = useQuery({ ...queries.tickets(projectId), enabled: open });
+  const tickets = useQuery({ ...queries.board(projectId), enabled: open });
 
   const go = (fn: () => Promise<void>) => {
     onOpenChange(false);
@@ -93,7 +93,9 @@ export function CommandPalette({
                     }
                   >
                     {project.name}
-                    <span className="font-mono text-caption text-fg-muted">{project.kind}</span>
+                    <span className="font-mono text-caption text-fg-muted">
+                      {project.workspace}
+                    </span>
                   </Command.Item>
                 ))}
               </Command.Group>
