@@ -23,6 +23,46 @@ describe("webhook replay protection", () => {
     expect(ctx.core.signals).toHaveLength(1);
   });
 
+  test("a new request-id doesn't make a replayed signed body acceptable (round 2)", async () => {
+    const ctx = await setup();
+    const body = JSON.stringify({
+      action: "created",
+      data: { issue: { id: "7", title: "replay" } },
+    });
+    const send = (requestId: string) =>
+      ctx.server.app.request("/hooks/sentry", {
+        method: "POST",
+        body,
+        headers: {
+          "sentry-hook-signature": hmacHex("sentry-test-secret", body),
+          "request-id": requestId,
+        },
+      });
+    expect((await send("first")).status).toBe(202);
+    const replay = await send("brand-new-id");
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({ duplicate: true });
+    expect(ctx.core.signals).toHaveLength(1);
+  });
+
+  test("Sentry deliveries outside the timestamp window are refused", async () => {
+    let now = Date.parse("2026-10-12T12:00:00Z");
+    const ctx = await setup(() => now);
+    const body = JSON.stringify({ data: { issue: { id: "8", title: "old" } } });
+    const send = (timestamp: number) =>
+      ctx.server.app.request("/hooks/sentry", {
+        method: "POST",
+        body,
+        headers: {
+          "sentry-hook-signature": hmacHex("sentry-test-secret", body),
+          "sentry-hook-timestamp": String(Math.floor(timestamp / 1000)),
+        },
+      });
+    expect((await send(now - 10 * 60 * 1000)).status).toBe(401);
+    expect((await send(now)).status).toBe(202);
+    now += 1000;
+  });
+
   test("bearer-secret hooks dedupe identical bodies without a delivery id", async () => {
     const ctx = await setup();
     const body = JSON.stringify({ status: "firing", alerts: [{ labels: { alertname: "X" } }] });

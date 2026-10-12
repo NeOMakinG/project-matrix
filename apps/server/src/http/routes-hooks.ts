@@ -27,13 +27,13 @@ function parse(body: string): unknown {
 const unauthorized = () =>
   new HttpError(401, "bad_signature", "webhook signature or secret is invalid");
 
-/** Remembers delivery ids for 24h so a captured, validly signed request can't be replayed. */
+/** Remembers accepted deliveries for 7 days so a captured, validly signed request can't be replayed. */
 export class DeliveryLog {
   private readonly seen = new Map<string, number>();
 
   constructor(
     private readonly clock: Clock = Date.now,
-    private readonly ttlMs = 24 * 60 * 60 * 1000,
+    private readonly ttlMs = 7 * 24 * 60 * 60 * 1000,
     private readonly max = 50_000,
   ) {}
 
@@ -71,20 +71,41 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
   const deliveries = new DeliveryLog(clock);
   app.use("/hooks/*", bodyLimit({ maxSize: 1024 * 1024 }));
 
-  const deliveryId = (c: Context<AppEnv>, source: Source, header: string, body: string) =>
-    `${source}:${c.req.header(header) ?? c.req.header("x-matrix-delivery") ?? createHash("sha256").update(body).digest("hex")}`;
+  /**
+   * Replay key = what the sender actually authenticated: the body plus its signature header (empty for
+   * shared-secret sources). Delivery-id headers aren't signed, so they're never trusted for dedupe.
+   */
+  const replayKey = (source: Source, signatureHeader: string | undefined, body: string) =>
+    `${source}:${createHash("sha256")
+      .update(`${signatureHeader ?? ""}\n${body}`)
+      .digest("hex")}`;
+
+  /** Sentry sends `sentry-hook-timestamp`; reject deliveries outside a ±5 minute window when present. */
+  const freshEnough = (timestamp: string | undefined) => {
+    if (timestamp === undefined) return true;
+    const sentAt = Number(timestamp) * 1000;
+    const now = clock ? clock() : Date.now();
+    return Number.isFinite(sentAt) && Math.abs(now - sentAt) <= 5 * 60 * 1000;
+  };
 
   const handle = async (
     c: Context<AppEnv>,
     source: MonitorSignal["source"],
     verify: (secret: string | undefined, body: string) => boolean,
-    deliveryHeader: string,
+    signatureHeader: string | undefined,
     describe: (payload: unknown) => { title: string; kind: string; fingerprint?: string },
   ) => {
     const body = await c.req.text();
     const target = secretFor(secrets, source, c.req.query("project"));
     if (!verify(target.secret, body)) throw unauthorized();
-    if (!deliveries.accept(deliveryId(c, source, deliveryHeader, body))) {
+    if (source === "sentry" && !freshEnough(c.req.header("sentry-hook-timestamp"))) {
+      throw new HttpError(401, "stale", "webhook timestamp outside the accepted window");
+    }
+    if (
+      !deliveries.accept(
+        replayKey(source, signatureHeader ? c.req.header(signatureHeader) : undefined, body),
+      )
+    ) {
       return c.json({ duplicate: true }, 200);
     }
     const payload = parse(body);
@@ -106,7 +127,7 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
       c,
       "sentry",
       (secret, body) => verifySentry(secret, body, c.req.header("sentry-hook-signature")),
-      "request-id",
+      "sentry-hook-signature",
       sentryTitle,
     ),
   );
@@ -116,7 +137,7 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
       c,
       "github",
       (secret, body) => verifyGithub(secret, body, c.req.header("x-hub-signature-256")),
-      "x-github-delivery",
+      "x-hub-signature-256",
       (payload) => githubTitle(c.req.header("x-github-event") ?? "unknown", payload),
     ),
   );
@@ -126,7 +147,7 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
       c,
       "posthog",
       (secret) => verifySharedSecret(secret, c.req.header("authorization")),
-      "x-matrix-delivery",
+      undefined,
       posthogTitle,
     ),
   );
@@ -136,7 +157,7 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
       c,
       "otel",
       (secret) => verifySharedSecret(secret, c.req.header("authorization")),
-      "x-matrix-delivery",
+      undefined,
       otelTitle,
     ),
   );
