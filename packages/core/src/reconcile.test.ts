@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { stepKey } from "./reconcile.js";
-import { createHarness } from "./testing/harness.js";
+import { APPROVER, createHarness } from "./testing/harness.js";
 
 describe("reconcile loop", () => {
   test("takes a ready ticket from spike to done with receipts and lessons", async () => {
@@ -122,13 +122,13 @@ describe("reconcile loop", () => {
     expect(merge).not.toBeNull();
     expect(h.events.some((e) => e.type === "approval.requested")).toBe(true);
 
-    await h.reconciler.decideApproval(merge!.id, "approved", "user:valentin");
+    await h.reconciler.decideApproval(merge!.id, "approved", APPROVER);
     await h.drain();
     w = await h.store.getWorkflow("pilot", t.id);
     expect(w).toMatchObject({ phase: "deploy", status: "waiting_approval" });
 
     const deploy = await h.store.getPendingApproval("pilot", t.id, "deploy");
-    await h.reconciler.decideApproval(deploy!.id, "approved", "user:valentin");
+    await h.reconciler.decideApproval(deploy!.id, "approved", APPROVER);
     await h.drain();
     expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
   });

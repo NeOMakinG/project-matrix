@@ -7,7 +7,7 @@ import { HoldoutStore } from "../holdout.js";
 import type { Receipt, RunRequest, RunResult } from "../ports.js";
 import type { ActionRequest } from "../ports-internal.js";
 import { Reconciler } from "../reconcile.js";
-import { MemoryStore, type Store } from "../store.js";
+import { type Actor, MemoryStore, type Store } from "../store.js";
 import type { Limits, ProjectConfig } from "../types.js";
 import {
   FakeGit,
@@ -41,7 +41,7 @@ const SCENARIOS = JSON.stringify({
   ],
 });
 
-export const APPROVER = "user:valentin";
+export const APPROVER: Actor = { id: "user:valentin", kind: "human" };
 
 export function createHarness(opts: HarnessOptions = {}) {
   let now = new Date("2026-10-12T10:00:00Z");

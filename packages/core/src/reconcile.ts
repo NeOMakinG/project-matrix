@@ -18,8 +18,8 @@ import {
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
 import {
+  type Actor,
   type ApprovalRecord,
-  type Approver,
   type RunRecord,
   type Store,
   VersionConflictError,
@@ -90,9 +90,23 @@ export function actionKey(w: WorkflowState, headSha: string): string {
   return hash(w.projectId, w.ticketId, w.phase, w.loops, headSha);
 }
 
-export function toApprover(approver: string | Approver): Approver {
-  if (typeof approver !== "string") return approver;
-  return { id: approver, kind: approver.startsWith("user:") ? "human" : "agent" };
+/**
+ * Validates an actor at runtime. Identities are never inferred from strings: the server builds the
+ * actor from the authenticated session or API key, including whether it is a human or an agent.
+ */
+export function assertActor(actor: unknown): asserts actor is Actor {
+  const a = actor as Partial<Actor> | null;
+  if (
+    typeof a !== "object" ||
+    a === null ||
+    typeof a.id !== "string" ||
+    a.id.length === 0 ||
+    (a.kind !== "human" && a.kind !== "agent")
+  ) {
+    throw new TypeError(
+      "decideApproval requires a structured Actor { id, kind: 'human' | 'agent' }",
+    );
+  }
 }
 
 /** An approval only counts if a human decided it and that human isn't the requester or the run owner. */
@@ -835,17 +849,18 @@ export class Reconciler {
   }
 
   /**
-   * `by` is either an `Approver` or an identity string; strings are human only for `user:*`.
-   * Approving a merge or deploy always requires a human identity that is not the requester,
-   * not a reconciler and not the owner of the approved run.
+   * `actor` must come from the authenticated session or key (never a bare identity string).
+   * Approving a merge or deploy requires a human actor that is not the requester, not a
+   * reconciler and not the owner of the approved run.
    */
   async decideApproval(
     approvalId: string,
     decision: "approved" | "rejected",
-    approver: string | Approver,
+    actor: Actor,
     note?: string,
   ): Promise<WorkflowState> {
-    const decider = toApprover(approver);
+    assertActor(actor);
+    const decider = actor;
     const by = decider.id;
     const approval = await this.o.store.getApproval(approvalId);
     if (!approval) throw new Error(`approval ${approvalId} not found`);
@@ -912,16 +927,11 @@ export class Reconciler {
     this.o.bus.publish({ type: "autonomy.changed", projectId, phase, mode });
   }
 
-  /** Untracked build output is fine when the git port can clean it; uncommitted tracked changes never are. */
+  /**
+   * Handover is checked without cleaning: anything uncommitted (tracked or untracked) is agent work
+   * that must be committed, never silently deleted. cleanForChecks only runs later, before checks.
+   */
   private async handedOverClean(workdir: string): Promise<boolean> {
-    if (this.o.git.cleanForChecks) {
-      try {
-        await this.o.git.cleanForChecks(workdir);
-        return true;
-      } catch {
-        return false;
-      }
-    }
     return this.o.git.isClean(workdir);
   }
 
@@ -940,7 +950,8 @@ export class Reconciler {
       return {
         ...outcome,
         ok: false,
-        summary: "implement left uncommitted changes; commit all work before handing over",
+        summary:
+          "implement left uncommitted or untracked files; commit your work (or ignore build output) before handing over",
       };
     }
     if (VALIDATING.has(phase) && validatedSha) {
