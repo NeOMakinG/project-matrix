@@ -1,9 +1,9 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HttpResponse, http } from "msw";
+import { delay, HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { endpoints } from "@/api/endpoints";
-import { ApiError } from "@/api/http";
+import { ApiError, currentCsrfToken } from "@/api/http";
 import { saveSettings } from "@/features/settings/settings-page";
 import { mockDb } from "@/mocks/handlers";
 import { renderRoute } from "./render";
@@ -189,5 +189,78 @@ describe("session cache isolation", () => {
     expect(await screen.findByRole("heading", { name: "Sign in to matrix" })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/login");
     expect(queryClient.getQueryData(["projects", "ledgerly", "board"])).toBeUndefined();
+  });
+});
+
+describe("session robustness", () => {
+  it("a failed logout keeps you signed in, drops cached data and offers a retry", async () => {
+    server.use(
+      http.post("*/auth/logout", () =>
+        HttpResponse.json(
+          { error: { code: "boom", message: "server unavailable" } },
+          { status: 503 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    const { router, queryClient } = renderRoute("/");
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeInTheDocument();
+    queryClient.setQueryData(["keys"], [{ id: "cached-key" }]);
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(
+      await screen.findByText(/Couldn't sign out, you are still signed in/),
+    ).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/");
+    expect(queryClient.getQueryData(["keys"])).toBeUndefined();
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeInTheDocument();
+    expect(mockDb().logouts).toBe(0);
+
+    server.resetHandlers();
+    await user.click(screen.getByRole("button", { name: "Retry sign out" }));
+    expect(await screen.findByRole("heading", { name: "Sign in to matrix" })).toBeInTheDocument();
+    expect(mockDb().logouts).toBe(1);
+  });
+
+  it("a slow session lookup from before a new login cannot overwrite the new CSRF token", async () => {
+    server.use(
+      http.get("*/auth/session", async () => {
+        await delay(40);
+        return HttpResponse.json({
+          csrfToken: "old-token",
+          expiresAt: "2026-10-13T00:00:00Z",
+          key: null,
+        });
+      }),
+      http.post("*/auth/login", () =>
+        HttpResponse.json({ csrfToken: "new-token", expiresAt: "2026-10-13T00:00:00Z", key: null }),
+      ),
+    );
+    const slow = endpoints.session();
+    await endpoints.signIn("mx_live_demo");
+    expect(currentCsrfToken()).toBe("new-token");
+    await expect(slow).rejects.toSatisfy(
+      (e: unknown) => e instanceof ApiError && e.code === "stale_session",
+    );
+    expect(currentCsrfToken()).toBe("new-token");
+  });
+
+  it("a slow login response is ignored after a newer sign-out", async () => {
+    server.use(
+      http.post("*/auth/login", async () => {
+        await delay(40);
+        return HttpResponse.json({
+          csrfToken: "late-token",
+          expiresAt: "2026-10-13T00:00:00Z",
+          key: null,
+        });
+      }),
+    );
+    await endpoints.session();
+    const late = endpoints.signIn("mx_live_demo");
+    await endpoints.signOut();
+    await expect(late).rejects.toSatisfy(
+      (e: unknown) => e instanceof ApiError && e.code === "stale_session",
+    );
+    expect(currentCsrfToken()).not.toBe("late-token");
   });
 });

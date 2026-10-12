@@ -23,9 +23,14 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const navigate = useNavigate();
   const signOut = useMutation({
     mutationFn: endpoints.signOut,
-    onSettled: () => {
+    // Only a confirmed logout shows the signed-out UI.
+    onSuccess: () => {
       client.clear();
       void navigate({ to: "/login", search: {} });
+    },
+    // The session is still valid: stay signed in, but drop cached data anyway.
+    onError: () => {
+      void client.resetQueries({ predicate: (q) => q.queryKey[0] !== "session" });
     },
   });
   return (
@@ -74,8 +79,23 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
           className="mt-3 flex h-8 items-center gap-2 rounded-control px-2.5 text-body text-fg-secondary hover:bg-hover hover:text-fg"
         >
           <LogOut className="size-4 text-fg-muted" />
-          Sign out
+          {signOut.isPending ? "Signing out…" : "Sign out"}
         </button>
+        {signOut.isError ? (
+          <div
+            role="alert"
+            className="mt-2 rounded-control border border-danger/30 bg-danger-dim/40 p-2.5 text-caption text-danger"
+          >
+            Couldn't sign out, you are still signed in. {signOut.error.message}
+            <button
+              type="button"
+              onClick={() => signOut.mutate()}
+              className="mt-1.5 block font-medium text-fg underline-offset-2 hover:underline"
+            >
+              Retry sign out
+            </button>
+          </div>
+        ) : null}
       </aside>
     </div>
   );
