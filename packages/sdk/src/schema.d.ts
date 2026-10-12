@@ -3282,6 +3282,12 @@ export interface components {
        * @enum {string}
        */
       workspace: "orca" | "native";
+      /** @description Ticket tracker; beads by default */
+      tickets?: {
+        /** @enum {string} */
+        kind: "beads" | "markdown" | "github";
+        repo?: string;
+      };
     };
     SetAutonomy: {
       phase: components["schemas"]["Phase"];

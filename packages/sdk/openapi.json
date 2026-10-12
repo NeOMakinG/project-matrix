@@ -80,6 +80,21 @@
             "type": "string",
             "enum": ["orca", "native"],
             "default": "orca"
+          },
+          "tickets": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["beads", "markdown", "github"]
+              },
+              "repo": {
+                "type": "string",
+                "pattern": "^[\\w.-]+\\/[\\w.-]+$"
+              }
+            },
+            "required": ["kind"],
+            "description": "Ticket tracker; beads by default"
           }
         },
         "required": ["name"]
