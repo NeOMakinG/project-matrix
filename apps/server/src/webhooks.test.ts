@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { createServer } from "./http/app.js";
 import { MemoryCore } from "./memory-core.js";
-import { SECRETS, setup } from "./test-helpers.js";
+import { nowTs, orcaHeaders, SECRETS, setup } from "./test-helpers.js";
 import { hmacHex } from "./webhooks.js";
 
 const post = async (
@@ -26,6 +26,7 @@ describe("webhooks", () => {
     const signature = hmacHex(SECRETS.sentry ?? "", body);
     const ok = await post(ctx, "/hooks/sentry", body, {
       "sentry-hook-signature": signature,
+      "sentry-hook-timestamp": nowTs(),
     });
     expect(ok.status).toBe(202);
     expect(ctx.core.signals[0]).toMatchObject({
@@ -37,6 +38,7 @@ describe("webhooks", () => {
     expect(ctx.core.signals[0]?.projectId).toBeUndefined();
     const tampered = await post(ctx, "/hooks/sentry", body.replace("checkout", "login"), {
       "sentry-hook-signature": signature,
+      "sentry-hook-timestamp": nowTs(),
     });
     expect(tampered.status).toBe(401);
     expect(ctx.core.signals).toHaveLength(1);
@@ -99,21 +101,26 @@ describe("webhooks", () => {
 
   test("Orca hook records agent status and validates fields", async () => {
     const ctx = await setup();
-    const auth = { authorization: `Bearer ${SECRETS.orca}` };
+    const send = (body: string) =>
+      ctx.server.app.request("/hooks/orca", {
+        method: "POST",
+        body,
+        headers: orcaHeaders(body, SECRETS.orca ?? ""),
+      });
     const body = JSON.stringify({
       worktree: "wt/pilot-142",
       agent: "claude-code",
       status: "working",
       runId: "r1",
     });
-    expect((await post(ctx, "/hooks/orca", body, auth)).status).toBe(202);
+    expect((await send(body)).status).toBe(202);
     expect(ctx.core.orca[0]).toMatchObject({
       worktree: "wt/pilot-142",
       status: "working",
       runId: "r1",
     });
-    expect((await post(ctx, "/hooks/orca", JSON.stringify({ agent: "x" }), auth)).status).toBe(400);
-    expect((await post(ctx, "/hooks/orca", "{not json", auth)).status).toBe(400);
+    expect((await send(JSON.stringify({ agent: "x" }))).status).toBe(400);
+    expect((await send("{not json")).status).toBe(400);
   });
 
   test("unconfigured secrets reject everything, even an empty signature", async () => {

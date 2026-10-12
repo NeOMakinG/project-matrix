@@ -1,9 +1,29 @@
+import { randomBytes } from "node:crypto";
 import type { Action, KeyBudget } from "./auth/keys.js";
 import { createServer } from "./http/app.js";
 import { MemoryCore } from "./memory-core.js";
-import type { WebhookSecrets } from "./webhooks.js";
+import { hmacHex, type WebhookSecrets } from "./webhooks.js";
 
 export const AGENT = { id: "key:test-agent", kind: "agent" } as const;
+
+/** Current unix timestamp in seconds, as webhook senders put it in headers. */
+export const nowTs = (at = Date.now()) => String(Math.floor(at / 1000));
+
+/** Headers a signed Orca agent hook sends. */
+export function orcaHeaders(
+  body: string,
+  secret: string,
+  opts: { at?: number; nonce?: string } = {},
+) {
+  const ts = nowTs(opts.at);
+  const nonce = opts.nonce ?? randomBytes(16).toString("hex");
+  return {
+    "content-type": "application/json",
+    "x-orca-timestamp": ts,
+    "x-orca-nonce": nonce,
+    "x-orca-signature": `sha256=${hmacHex(secret, `${ts}.${nonce}.${body}`)}`,
+  };
+}
 
 export const SECRETS: WebhookSecrets = {
   sentry: "sentry-test-secret",

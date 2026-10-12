@@ -3,7 +3,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { describe, expect, test } from "vitest";
 import { createServer } from "./http/app.js";
 import { MemoryCore } from "./memory-core.js";
-import { AGENT, setup } from "./test-helpers.js";
+import { AGENT, nowTs, setup } from "./test-helpers.js";
 import { hmacHex } from "./webhooks.js";
 
 describe("webhook replay protection", () => {
@@ -13,6 +13,7 @@ describe("webhook replay protection", () => {
     const headers = {
       "content-type": "application/json",
       "sentry-hook-signature": hmacHex("sentry-test-secret", body),
+      "sentry-hook-timestamp": nowTs(),
       "request-id": "delivery-1",
     };
     const send = () => ctx.server.app.request("/hooks/sentry", { method: "POST", body, headers });
@@ -35,6 +36,7 @@ describe("webhook replay protection", () => {
         body,
         headers: {
           "sentry-hook-signature": hmacHex("sentry-test-secret", body),
+          "sentry-hook-timestamp": nowTs(),
           "request-id": requestId,
         },
       });
@@ -93,7 +95,11 @@ describe("webhook replay protection", () => {
       app.request(`/hooks/sentry?project=${projectId}`, {
         method: "POST",
         body,
-        headers: { "sentry-hook-signature": hmacHex(secret, body), "request-id": id },
+        headers: {
+          "sentry-hook-signature": hmacHex(secret, body),
+          "sentry-hook-timestamp": nowTs(),
+          "request-id": id,
+        },
       });
     // Replaying a globally signed payload into a project is refused.
     expect((await send(project.id, "global-secret", "d1")).status).toBe(401);
