@@ -45,6 +45,8 @@ export interface RunRequest {
   model: string;
   prompt: string;
   workdir: string;
+  /** Mount the workdir read-only (review and judge runs). */
+  readOnly?: boolean;
   env?: Record<string, string>;
   timeoutMs: number;
 }
