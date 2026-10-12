@@ -6,6 +6,8 @@ export interface ProcessSpec {
   env: Record<string, string>;
   stdin?: string;
   timeoutMs: number;
+  /** Sandboxes mount the working directory read-only (review and judge runs). */
+  readOnly?: boolean;
 }
 
 export interface ProcessOutcome {

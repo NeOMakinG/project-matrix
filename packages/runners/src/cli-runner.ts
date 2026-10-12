@@ -108,6 +108,7 @@ export function createCliRunner(
           env,
           ...(spec.stdin !== undefined ? { stdin: spec.stdin } : {}),
           timeoutMs: req.timeoutMs,
+          ...(req.readOnly ? { readOnly: true } : {}),
         },
         (line) => {
           raw.push(line);

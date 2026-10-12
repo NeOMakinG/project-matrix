@@ -84,7 +84,7 @@ export class PodmanSandbox implements Sandbox {
       `--cpus=${r.cpus}`,
       `--pids-limit=${r.pids}`,
       `--env-file=${envFile}`,
-      `--volume=${spec.cwd}:${inner}:rw`,
+      `--volume=${spec.cwd}:${inner}:${spec.readOnly ? "ro" : "rw"}`,
       `--workdir=${inner}`,
     ];
     for (const m of this.#o.readOnlyMounts ?? []) args.push(`--volume=${m.host}:${m.container}:ro`);

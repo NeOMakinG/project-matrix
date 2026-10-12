@@ -296,3 +296,13 @@ test("createRunner dispatches by id", () => {
   expect(createRunner("opencode", { gateway }).id).toBe("opencode");
   expect(createRunner("claude-code", { gateway }).id).toBe("claude-code");
 });
+
+test("readOnly requests reach the executor", async () => {
+  const { executor, calls } = fakeExecutor(claudeLines);
+  await claudeCodeRunner({ gateway, executor }).run(
+    { ...req, readOnly: true },
+    () => {},
+    new AbortController().signal,
+  );
+  expect(calls[0]?.readOnly).toBe(true);
+});

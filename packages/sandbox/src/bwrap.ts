@@ -50,7 +50,7 @@ export class BwrapSandbox implements Sandbox {
     for (const dir of SYSTEM_DIRS) args.push("--ro-bind-try", dir, dir);
     for (const dir of this.#o.readOnlyBinds ?? []) args.push("--ro-bind", dir, dir);
     args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/home");
-    args.push("--bind", spec.cwd, spec.cwd);
+    args.push(spec.readOnly ? "--ro-bind" : "--bind", spec.cwd, spec.cwd);
     const bridged = grant.network !== "none" && grant.socketDir !== undefined;
     if (bridged && grant.socketDir) {
       args.push("--bind", grant.socketDir, CONTAINER_SOCKET_DIR);

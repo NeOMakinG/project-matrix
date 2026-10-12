@@ -269,3 +269,17 @@ describe("secret gate hardening", () => {
     expect((await gate(["main"])).ok).toBe(true);
   });
 });
+
+test("readOnly runs mount the worktree read-only in both sandboxes", () => {
+  const ro = { ...spec, readOnly: true };
+  const podman = new PodmanSandbox({ broker, image: "img" }).argv(
+    ro,
+    { network: "none" },
+    "/e",
+    "r",
+  );
+  expect(podman).toContain("--volume=/host/wt:/work:ro");
+  const bwrap = new BwrapSandbox({ broker }).argv(ro, { network: "none", token: "t" }).join(" ");
+  expect(bwrap).toContain("--ro-bind /host/wt /host/wt");
+  expect(bwrap).not.toContain("--bind /host/wt /host/wt");
+});
