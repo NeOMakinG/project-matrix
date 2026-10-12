@@ -30,6 +30,7 @@ const { app } = createServer({
   core: new MemoryCore(),
   keys,
   ...(env.MATRIX_AUDIT_FILE ? { auditFile: env.MATRIX_AUDIT_FILE } : {}),
+  replayLogFile: env.MATRIX_REPLAY_LOG ?? `${env.HOME ?? "."}/.matrix/replay.log`,
   sessions: {
     ...(env.MATRIX_DASHBOARD_ORIGINS
       ? { allowedOrigins: env.MATRIX_DASHBOARD_ORIGINS.split(",") }

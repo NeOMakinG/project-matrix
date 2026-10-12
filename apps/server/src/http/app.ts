@@ -2,6 +2,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { Guard, HttpError } from "../auth/guard.js";
 import { KeyStore } from "../auth/keys.js";
 import { AuditLog, BudgetTracker, type Clock, RateLimiter } from "../auth/limits.js";
+import { ReplayLog } from "../auth/replay-log.js";
 import { SessionStore } from "../auth/sessions.js";
 import type { CorePort } from "../core-port.js";
 import { handleMcp } from "../mcp.js";
@@ -23,6 +24,8 @@ export interface ServerOptions {
   auditFile?: string;
   clock?: Clock;
   sessions?: SessionOptions;
+  /** Persists webhook/Orca replay protection across restarts. */
+  replayLogFile?: string;
 }
 
 export function createServer(options: ServerOptions) {
@@ -60,7 +63,16 @@ export function createServer(options: ServerOptions) {
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 
-  hookRoutes(app, options.core, options.secrets ?? {}, options.clock);
+  hookRoutes(
+    app,
+    options.core,
+    options.secrets ?? {},
+    new ReplayLog({
+      ...(options.replayLogFile ? { file: options.replayLogFile } : {}),
+      ...(options.clock ? { clock: options.clock } : {}),
+    }),
+    options.clock,
+  );
 
   const sessions = new SessionStore(options.clock);
   const sessionOptions = options.sessions ?? {};

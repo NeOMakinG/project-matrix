@@ -3,11 +3,14 @@ import type { Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { HttpError } from "../auth/guard.js";
 import type { Clock } from "../auth/limits.js";
+import type { ReplayLog } from "../auth/replay-log.js";
 import type { CorePort, MonitorSignal } from "../core-port.js";
 import {
   githubTitle,
+  hmacHex,
   otelTitle,
   posthogTitle,
+  safeEqual,
   sentryTitle,
   verifyGithub,
   verifySentry,
@@ -24,31 +27,10 @@ function parse(body: string): unknown {
   }
 }
 
+const TERMINAL_ORCA_STATUSES = new Set(["done", "failed", "cancelled", "error", "exited"]);
+
 const unauthorized = () =>
   new HttpError(401, "bad_signature", "webhook signature or secret is invalid");
-
-/** Remembers accepted deliveries for 7 days so a captured, validly signed request can't be replayed. */
-export class DeliveryLog {
-  private readonly seen = new Map<string, number>();
-
-  constructor(
-    private readonly clock: Clock = Date.now,
-    private readonly ttlMs = 7 * 24 * 60 * 60 * 1000,
-    private readonly max = 50_000,
-  ) {}
-
-  /** Returns false when this delivery was already accepted. */
-  accept(id: string): boolean {
-    const now = this.clock();
-    for (const [key, at] of this.seen) {
-      if (at > now - this.ttlMs && this.seen.size <= this.max) break;
-      this.seen.delete(key);
-    }
-    if (this.seen.has(id)) return false;
-    this.seen.set(id, now);
-    return true;
-  }
-}
 
 type Source = MonitorSignal["source"] | "orca";
 
@@ -67,8 +49,14 @@ function secretFor(
 }
 
 /** Signed inbound webhooks. They don't use API keys: each source proves itself with its own secret. */
-export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, clock?: Clock) {
-  const deliveries = new DeliveryLog(clock);
+export function hookRoutes(
+  app: App,
+  core: CorePort,
+  secrets: WebhookSecrets,
+  deliveries: ReplayLog,
+  clock?: Clock,
+) {
+  const orcaState = new Map<string, { at: number; status: string }>();
   app.use("/hooks/*", bodyLimit({ maxSize: 1024 * 1024 }));
 
   /**
@@ -80,9 +68,9 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
       .update(`${signatureHeader ?? ""}\n${body}`)
       .digest("hex")}`;
 
-  /** Sentry sends `sentry-hook-timestamp`; reject deliveries outside a ±5 minute window when present. */
+  /** Timestamps (unix seconds) must be present and within ±5 minutes. */
   const freshEnough = (timestamp: string | undefined) => {
-    if (timestamp === undefined) return true;
+    if (timestamp === undefined || !/^\d{1,12}$/.test(timestamp)) return false;
     const sentAt = Number(timestamp) * 1000;
     const now = clock ? clock() : Date.now();
     return Number.isFinite(sentAt) && Math.abs(now - sentAt) <= 5 * 60 * 1000;
@@ -99,7 +87,7 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
     const target = secretFor(secrets, source, c.req.query("project"));
     if (!verify(target.secret, body)) throw unauthorized();
     if (source === "sentry" && !freshEnough(c.req.header("sentry-hook-timestamp"))) {
-      throw new HttpError(401, "stale", "webhook timestamp outside the accepted window");
+      throw new HttpError(401, "stale", "missing webhook timestamp or outside the accepted window");
     }
     if (
       !deliveries.accept(
@@ -162,10 +150,28 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
     ),
   );
 
-  // Orca agent hooks report worktree/agent status so runs started in Orca stay in sync.
+  /**
+   * Orca agent hooks. Signed: `x-orca-signature: sha256=HMAC(secret, "<timestamp>.<nonce>.<body>")`
+   * with `x-orca-timestamp` (unix seconds, ±5 min) and a single-use `x-orca-nonce`. Status updates are
+   * applied in timestamp order per worktree; older or replayed ones are ignored, and a worktree that
+   * reached a terminal status doesn't move again.
+   */
   app.post("/hooks/orca", async (c) => {
-    if (!verifySharedSecret(secrets.orca, c.req.header("authorization"))) throw unauthorized();
-    const payload = parse(await c.req.text()) as Record<string, unknown>;
+    const body = await c.req.text();
+    const timestamp = c.req.header("x-orca-timestamp");
+    const nonce = c.req.header("x-orca-nonce");
+    const signature = c.req.header("x-orca-signature");
+    if (!secrets.orca || !timestamp || !nonce || !/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) {
+      throw unauthorized();
+    }
+    const expected = `sha256=${hmacHex(secrets.orca, `${timestamp}.${nonce}.${body}`)}`;
+    if (!signature || !safeEqual(expected, signature)) throw unauthorized();
+    if (!freshEnough(timestamp)) {
+      throw new HttpError(401, "stale", "missing timestamp or outside the accepted window");
+    }
+    if (!deliveries.accept(`orca-nonce:${nonce}`)) return c.json({ duplicate: true }, 200);
+
+    const payload = parse(body) as Record<string, unknown>;
     const field = (name: string, max: number) =>
       typeof payload[name] === "string" ? (payload[name] as string).slice(0, max) : undefined;
     const worktree = field("worktree", 300);
@@ -174,13 +180,20 @@ export function hookRoutes(app: App, core: CorePort, secrets: WebhookSecrets, cl
     if (!worktree || !agent || !status) {
       throw new HttpError(400, "invalid_request", "worktree, agent and status are required");
     }
+    const at = Number(timestamp) * 1000;
+    const previous = orcaState.get(worktree);
+    if (previous && at <= previous.at) return c.json({ ignored: "out_of_order" }, 200);
+    if (previous && TERMINAL_ORCA_STATUSES.has(previous.status) && status !== previous.status) {
+      return c.json({ ignored: "terminal" }, 200);
+    }
+    orcaState.set(worktree, { at, status });
     const runId = field("runId", 200);
     const message = field("message", 2000);
     await core.recordOrcaStatus({
       worktree,
       agent,
       status,
-      receivedAt: new Date().toISOString(),
+      receivedAt: new Date(at).toISOString(),
       ...(runId ? { runId } : {}),
       ...(message ? { message } : {}),
     });
