@@ -22,8 +22,15 @@
     "packages/cli": {
       "name": "@matrix/cli",
       "version": "0.0.0",
+      "bin": {
+        "matrix": "./src/bin.ts",
+      },
       "dependencies": {
+        "@biomejs/biome": "^2.2.0",
         "@clack/prompts": "^1.8.1",
+        "@matrix/config": "workspace:*",
+        "@matrix/packs": "workspace:*",
+        "@matrix/tickets": "workspace:*",
         "zod": "^4",
       },
     },

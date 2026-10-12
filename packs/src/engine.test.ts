@@ -8,15 +8,15 @@ describe("design tree", () => {
   test("first round asks only questions without dependencies", () => {
     const ids = nextRound(defaultPacks, {}).map((q) => q.id);
     expect(ids).toContain("business.name");
-    expect(ids).toContain("platforms.targets");
+    expect(ids.every((id) => id.startsWith("business."))).toBe(true);
     expect(ids).not.toContain("frontend.framework");
     expect(ids).not.toContain("product.mvpScope");
   });
 
   test("React questions appear only once web + react are chosen", () => {
-    const a = { "platforms.targets": ["web"], "frontend.framework": "react" };
+    const a = { ...sampleAnswers, "frontend.framework": "react" };
     expect(nextRound(defaultPacks, a).map((q) => q.id)).toContain("frontend.data");
-    const apiOnly = { "platforms.targets": ["api-only"] };
+    const apiOnly = { ...sampleAnswers, "platforms.targets": ["api-only"] };
     const ids = nextRound(defaultPacks, apiOnly).map((q) => q.id);
     expect(ids).not.toContain("frontend.framework");
   });

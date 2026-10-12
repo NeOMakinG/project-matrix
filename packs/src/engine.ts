@@ -19,13 +19,16 @@ export function recommendedFor(q: Question, answers: Answers): AnswerValue | und
  */
 export function nextRound(packs: Pack[], answers: Answers): Question[] {
   const index = byId(packs);
-  return allQuestions(packs).filter((q) => {
+  const ready = allQuestions(packs).filter((q) => {
     if (q.id in answers || !isActive(q, answers)) return false;
     return (q.dependsOn ?? []).every((dep) => {
       const d = index.get(dep);
       return dep in answers || d === undefined || !isActive(d, answers);
     });
   });
+  // Business first: nothing else is asked until the business pack is answered.
+  const business = ready.filter((q) => q.pack === "business");
+  return business.length > 0 ? business : ready;
 }
 
 export function inferAnswers(packs: Pack[], ctx: InferContext): Answers {

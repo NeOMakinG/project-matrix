@@ -13,6 +13,7 @@ import type { Pack } from "./types";
 
 export * from "./contradictions";
 export * from "./engine";
+export * from "./fixtures";
 export * from "./types";
 
 export const name = "@matrix/packs";

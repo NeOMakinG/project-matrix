@@ -10,6 +10,7 @@ export const sampleAnswers: Answers = {
   "business.pricing": "subscription",
   "business.competitors": "FreshBooks, Invoice Ninja, Excel",
   "business.distribution": ["seo", "content", "product-led", "community"],
+  "business.successMetrics": ["activated accounts", "invoices paid on time", "paying customers"],
   "product.personas": "Freelancer: get paid on time; Agency owner: see cash flow at a glance",
   "product.coreFeatures":
     "invoices, automatic reminders, payment links, client portal, cash-flow dashboard",
