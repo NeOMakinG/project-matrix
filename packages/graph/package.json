@@ -8,5 +8,13 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "picomatch": "^4.0.3",
+    "typescript": "^5.9.0",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^4.0.2"
   }
 }
