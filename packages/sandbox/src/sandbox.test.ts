@@ -323,3 +323,37 @@ test("sandboxes refuse to launch with the real key in env or argv", async () => 
     }),
   ).rejects.toThrow(/real gateway credential/);
 });
+
+describe("bounded output", () => {
+  test("runToCompletion fails instead of buffering past its cap", async () => {
+    await expect(
+      runToCompletion(
+        hostExecutor,
+        {
+          cmd: ["sh", "-c", "yes x | head -c 2000000"],
+          cwd: tmpdir(),
+          env: { PATH: "/usr/bin:/bin" },
+          timeoutMs: 10_000,
+        },
+        new AbortController().signal,
+        100_000,
+      ),
+    ).rejects.toThrow(/exceeded/);
+  });
+
+  test("a newline-free stream is cut into bounded lines", async () => {
+    const lines: string[] = [];
+    await hostExecutor(
+      {
+        cmd: ["sh", "-c", "head -c 9000000 /dev/zero | tr '\\0' a"],
+        cwd: tmpdir(),
+        env: { PATH: "/usr/bin:/bin" },
+        timeoutMs: 20_000,
+      },
+      (l) => lines.push(l),
+      new AbortController().signal,
+    );
+    expect(lines.length).toBeGreaterThan(1);
+    expect(Math.max(...lines.map((l) => l.length))).toBeLessThanOrEqual(4 * 1024 * 1024 + 32);
+  });
+});

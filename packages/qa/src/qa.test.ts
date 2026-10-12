@@ -160,3 +160,20 @@ test("mobile drivers are explicit stubs", async () => {
     /not implemented/,
   );
 });
+
+test("api check response bodies are capped", async () => {
+  const big = http.createServer((_req, res) => {
+    res.writeHead(200);
+    res.end("x".repeat(3 * 1024 * 1024));
+  });
+  await new Promise<void>((r) => big.listen(0, "127.0.0.1", () => r()));
+  const url = `http://127.0.0.1:${(big.address() as AddressInfo).port}/`;
+  const receipt = await runApiCheck(
+    { name: "big", url, expect: {} },
+    await mkdtemp(join(tmpdir(), "matrix-qa-")),
+  );
+  big.close();
+  const transcript = await readFile(receipt.path ?? "", "utf8");
+  expect(transcript.length).toBeLessThan(200_000);
+  expect(transcript).toContain("PASS");
+});

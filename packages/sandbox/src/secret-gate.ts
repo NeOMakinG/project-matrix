@@ -44,7 +44,18 @@ function run(
     const child = spawn(cmd, args, { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [];
     let stderr = "";
-    child.stdout.on("data", (c: Buffer) => out.push(c));
+    let size = 0;
+    child.stdout.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_GIT_OUTPUT) {
+        child.kill("SIGKILL");
+        reject(
+          new Error(`${cmd} output exceeded ${MAX_GIT_OUTPUT} bytes; refusing to scan partially`),
+        );
+        return;
+      }
+      out.push(c);
+    });
     child.stderr.on("data", (c: Buffer) => {
       stderr = (stderr + c.toString()).slice(-4000);
     });
@@ -55,6 +66,9 @@ function run(
 }
 
 /** Every encoding of a secret we look for. Values shorter than 8 chars are ignored to avoid noise. */
+/** Fail closed instead of buffering unbounded git output. */
+export const MAX_GIT_OUTPUT = 1024 * 1024 * 1024;
+
 export function secretNeedles(value: string): Buffer[] {
   if (value.length < 8) return [];
   const raw = Buffer.from(value);

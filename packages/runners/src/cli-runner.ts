@@ -69,6 +69,8 @@ export interface CliRunnerDefinition {
 }
 
 const MAX_EVENT_MESSAGE = 4000;
+/** Raw event stream kept for the transcript receipt; events past this are still parsed, not stored. */
+export const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 
 export function truncate(text: string, max = MAX_EVENT_MESSAGE): string {
   return text.length > max ? `${text.slice(0, max)}… [${text.length - max} more chars]` : text;
@@ -99,6 +101,8 @@ export function createCliRunner(
       const spec = definition.command(req, options);
       const parser = definition.parser();
       const raw: string[] = [];
+      let rawBytes = 0;
+      let rawTruncated = false;
       const emit = (event: ParsedEvent) =>
         onEvent({ runId: req.runId, at: now().toISOString(), ...event });
       const env = { ...(options.baseEnv ?? defaultBaseEnv()), ...spec.env, ...(req.env ?? {}) };
@@ -112,7 +116,12 @@ export function createCliRunner(
           ...(req.readOnly ? { readOnly: true } : {}),
         },
         (line) => {
-          raw.push(line);
+          rawBytes += line.length + 1;
+          if (rawBytes <= MAX_TRANSCRIPT_BYTES) raw.push(line);
+          else if (!rawTruncated) {
+            rawTruncated = true;
+            raw.push(`[transcript truncated at ${MAX_TRANSCRIPT_BYTES} bytes]`);
+          }
           for (const event of parser.onLine(line)) emit(event);
         },
         signal,

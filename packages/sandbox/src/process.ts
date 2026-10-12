@@ -24,6 +24,8 @@ export type LineExecutor = (
 ) => Promise<ProcessOutcome>;
 
 const STDERR_TAIL = 8 * 1024;
+/** A single line longer than this is cut, so a newline-free stream can't grow memory unbounded. */
+export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
 export function splitLines(onLine: (line: string) => void): {
   push(chunk: string): void;
@@ -39,6 +41,10 @@ export function splitLines(onLine: (line: string) => void): {
         buffer = buffer.slice(index + 1);
         if (line.length > 0) onLine(line);
         index = buffer.indexOf("\n");
+      }
+      if (buffer.length > MAX_LINE_BYTES) {
+        onLine(`${buffer.slice(0, MAX_LINE_BYTES)}… [line truncated]`);
+        buffer = "";
       }
     },
     flush() {
@@ -123,8 +129,31 @@ export async function runToCompletion(
   executor: LineExecutor,
   spec: ProcessSpec,
   signal: AbortSignal = new AbortController().signal,
+  maxBytes = 32 * 1024 * 1024,
 ): Promise<ProcessOutcome & { stdout: string }> {
   const out: string[] = [];
-  const outcome = await executor(spec, (line) => out.push(line), signal);
-  return { ...outcome, stdout: out.join("\n") };
+  let bytes = 0;
+  let overflow = false;
+  const controller = new AbortController();
+  const forward = () => controller.abort();
+  signal.addEventListener("abort", forward, { once: true });
+  try {
+    const outcome = await executor(
+      spec,
+      (line) => {
+        bytes += line.length + 1;
+        if (bytes > maxBytes) {
+          if (!overflow) controller.abort();
+          overflow = true;
+          return;
+        }
+        out.push(line);
+      },
+      controller.signal,
+    );
+    if (overflow) throw new Error(`${spec.cmd[0]} output exceeded ${maxBytes} bytes`);
+    return { ...outcome, stdout: out.join("\n") };
+  } finally {
+    signal.removeEventListener("abort", forward);
+  }
 }

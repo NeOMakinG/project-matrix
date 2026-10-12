@@ -20,6 +20,27 @@ export interface ApiCheck {
   timeoutMs?: number;
 }
 
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
+
+async function readCapped(res: Response, max: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      await reader.cancel();
+      chunks.push(value.subarray(0, value.length - (size - max)));
+      return `${Buffer.concat(chunks).toString("utf8")}\n[response truncated at ${max} bytes]`;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 const SECRET_HEADERS = /^(authorization|x-api-key|cookie|set-cookie|proxy-authorization)$/i;
 
 function redactHeaders(headers: Record<string, string>): Record<string, string> {
@@ -56,7 +77,7 @@ export async function runApiCheck(
     });
     status = res.status;
     responseHeaders = Object.fromEntries(res.headers.entries());
-    responseText = await res.text();
+    responseText = await readCapped(res, MAX_RESPONSE_BYTES);
   } catch (error) {
     problems.push(`request failed: ${error instanceof Error ? error.message : String(error)}`);
   }
