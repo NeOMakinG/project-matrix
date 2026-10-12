@@ -49,6 +49,7 @@ const { app } = createServer({
   keys,
   ...(env.MATRIX_AUDIT_FILE ? { auditFile: env.MATRIX_AUDIT_FILE } : {}),
   replayLogFile: env.MATRIX_REPLAY_LOG ?? `${env.HOME ?? "."}/.matrix/replay.log`,
+  ...(env.MATRIX_DASHBOARD_DIR ? { dashboardDir: env.MATRIX_DASHBOARD_DIR } : {}),
   sessions: {
     ...(env.MATRIX_DASHBOARD_ORIGINS
       ? { allowedOrigins: env.MATRIX_DASHBOARD_ORIGINS.split(",") }

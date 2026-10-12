@@ -9,6 +9,7 @@ import { handleMcp } from "../mcp.js";
 import { Operations } from "../ops.js";
 import { RunEventLog } from "../run-event-log.js";
 import type { WebhookSecrets } from "../webhooks.js";
+import { dashboardRoutes as serveDashboard } from "./dashboard-static.js";
 import type { AppEnv } from "./route.js";
 import { adminRoutes } from "./routes-admin.js";
 import { dashboardRoutes } from "./routes-dashboard.js";
@@ -26,6 +27,8 @@ export interface ServerOptions {
   sessions?: SessionOptions;
   /** Persists webhook/Orca replay protection across restarts. */
   replayLogFile?: string;
+  /** Built dashboard (apps/dashboard/dist) served same-origin; omit to serve the API only. */
+  dashboardDir?: string;
 }
 
 export function createServer(options: ServerOptions) {
@@ -107,6 +110,8 @@ export function createServer(options: ServerOptions) {
     openapi: "3.1.0",
     info: { title: "Project Matrix API", version: "0.1.0" },
   });
+
+  if (options.dashboardDir) serveDashboard(app, options.dashboardDir);
 
   return { app, ops, keys, audit, sessions };
 }
