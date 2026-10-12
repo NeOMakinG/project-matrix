@@ -96,6 +96,18 @@ ticket ready
 - One rootless Podman container per run, with a git worktree for the ticket. Network allowed only to the gateway, the package registry and hosts listed in the project config.
 - A credential broker mints short-lived, scoped tokens per run (GitHub token limited to the project repo and branch, never main).
 
+### Orca integration
+
+Orca (stablyai/orca) is the preferred workspace layer when it is installed (ADR 0006):
+
+- A ticket run becomes an Orca worktree on an `orca serve` runtime on bosgame, so the maintainer can watch or take over from Orca on the Mac.
+- Loop phases map to Orca orchestration tasks; merge and autonomy approvals map to Orca decision gates.
+- QA reuses Orca's browser, iOS simulator and Android emulator commands.
+- Every Orca agent session gets the Matrix MCP server and a `matrix` skill.
+- Without Orca, the native adapter creates worktrees and Podman containers itself.
+
+Matrix keeps workflow state, receipts, graphs and policy in both modes.
+
 ### Knowledge graphs
 
 - **Code graph:** symbols, imports, modules, owners. Regenerated in CI and after each merge. Exposed to agents through MCP (tokensave-style queries).
