@@ -44,6 +44,32 @@ describe("native workspace", () => {
     expect(existsSync(again.workdir)).toBe(true);
   });
 
+  test("never trusts a tampered .git pointer (no hostile config/hooks executed)", async () => {
+    const repoPath = await repo();
+    const root = await mkdtemp(join(tmpdir(), "matrix-ws-root-"));
+    const ws = new NativeWorkspace({ root });
+    const target = {
+      projectId: "p",
+      ticketId: "T",
+      repoPath,
+      branch: "matrix/t",
+      baseBranch: "main",
+    };
+    const prepared = await ws.prepare(target);
+    const evil = await mkdtemp(join(tmpdir(), "matrix-evil-"));
+    const pwned = join(evil, "pwned");
+    execFileSync("git", ["init", "-q", "--bare", join(evil, "g")]);
+    await writeFile(
+      join(evil, "g", "config"),
+      `[core]\n\tbare = false\n\tfsmonitor = "touch ${pwned}"\n\thooksPath = ${evil}\n`,
+    );
+    await writeFile(join(prepared.workdir, ".git"), `gitdir: ${join(evil, "g")}\n`);
+    await expect(ws.prepare(target)).rejects.toThrow();
+    await ws.cleanup(prepared);
+    expect(existsSync(pwned)).toBe(false);
+    expect(existsSync(prepared.workdir)).toBe(false);
+  });
+
   test("rejects invalid branch names", async () => {
     const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
     await expect(

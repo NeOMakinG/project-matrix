@@ -1,8 +1,15 @@
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
+import { dirname, join, sep } from "node:path";
 import type { PreparedWorkspace, Workspace, WorkspaceTarget } from "@matrix/core";
-import { hostExecutor, type LineExecutor, runToCompletion } from "@matrix/sandbox";
+import {
+  gitLocation,
+  hostExecutor,
+  type LineExecutor,
+  runToCompletion,
+  safeGitEnv,
+  verifyWorktreeLink,
+} from "@matrix/sandbox";
 
 export interface NativeWorkspaceOptions {
   /** Directory under which worktrees are created: `<root>/<project>/<ticket>`. */
@@ -26,15 +33,12 @@ export class NativeWorkspace implements Workspace {
     this.#o = options;
   }
 
-  async #git(cwd: string, args: string[]): Promise<string> {
+  /** Host git, always against host-owned metadata, never discovering anything from a worktree. */
+  async #git(location: string[], args: string[]): Promise<string> {
     const result = await runToCompletion(this.#o.executor ?? hostExecutor, {
-      cmd: [this.#o.gitBinary ?? "git", ...args],
-      cwd,
-      env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        HOME: process.env.HOME ?? "/tmp",
-        GIT_TERMINAL_PROMPT: "0",
-      },
+      cmd: [this.#o.gitBinary ?? "git", ...location, ...args],
+      cwd: this.#o.root,
+      env: safeGitEnv(),
       timeoutMs: 120_000,
     });
     if (result.exitCode !== 0) {
@@ -45,45 +49,64 @@ export class NativeWorkspace implements Workspace {
     return result.stdout.trim();
   }
 
+  /** The canonical repo's git dir. Refuses repos whose `.git` is itself a pointer or symlink. */
+  async #commonDir(repoPath: string): Promise<string> {
+    const dotGit = join(repoPath, ".git");
+    const stat = await lstat(dotGit);
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      throw new Error(`${repoPath} is not a canonical git repository`);
+    return realpath(dotGit);
+  }
+
+  /** Reads the gitdir a worktree points at and checks it lives under `<common>/worktrees/`. */
+  async #worktreeGitDir(workdir: string, commonDir: string): Promise<string> {
+    const marker = join(workdir, ".git");
+    const stat = await lstat(marker);
+    if (stat.isSymbolicLink() || !stat.isFile() || stat.size > 4096)
+      throw new Error(`tampered .git in ${workdir}`);
+    const pointer = (await readFile(marker, "utf8")).trim();
+    const gitdir = await realpath(pointer.replace(/^gitdir: /, ""));
+    if (!gitdir.startsWith(`${join(commonDir, "worktrees")}${sep}`))
+      throw new Error(`${workdir} points outside ${commonDir}`);
+    await verifyWorktreeLink(workdir, gitdir);
+    return gitdir;
+  }
+
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {
-    await this.#git(target.repoPath, ["check-ref-format", "--branch", target.branch]);
+    const commonDir = await this.#commonDir(target.repoPath);
+    const repo = gitLocation(commonDir);
+    await this.#git(repo, ["check-ref-format", "--branch", target.branch]);
     const workdir = join(this.#o.root, safeSegment(target.projectId), safeSegment(target.ticketId));
-    if (existsSync(workdir)) {
-      const branch = await this.#git(workdir, ["rev-parse", "--abbrev-ref", "HEAD"]);
-      if (branch !== target.branch) {
-        throw new Error(`workspace ${workdir} is on ${branch}, expected ${target.branch}`);
-      }
-      return { workdir, ref: workdir };
+    if (!existsSync(workdir)) {
+      await mkdir(dirname(workdir), { recursive: true });
+      const exists = await this.#git(repo, ["branch", "--list", target.branch]);
+      const add = exists
+        ? ["worktree", "add", "--", workdir, target.branch]
+        : ["worktree", "add", "-b", target.branch, "--", workdir, target.baseBranch];
+      await this.#git(repo, add);
     }
-    await mkdir(dirname(workdir), { recursive: true });
-    const exists = await this.#git(target.repoPath, ["branch", "--list", target.branch]);
-    if (exists) await this.#git(target.repoPath, ["worktree", "add", workdir, target.branch]);
-    else
-      await this.#git(target.repoPath, [
-        "worktree",
-        "add",
-        "-b",
-        target.branch,
-        workdir,
-        target.baseBranch,
-      ]);
-    return { workdir, ref: workdir };
+    const gitdir = await this.#worktreeGitDir(workdir, commonDir);
+    const branch = await this.#git(gitLocation(gitdir), ["symbolic-ref", "--short", "HEAD"]);
+    if (branch !== target.branch)
+      throw new Error(`workspace ${workdir} is on ${branch}, expected ${target.branch}`);
+    return { workdir, ref: JSON.stringify({ commonDir, gitdir }) };
   }
 
   async cleanup(prepared: PreparedWorkspace): Promise<void> {
-    if (!existsSync(prepared.workdir)) return;
-    const commonDir = await this.#git(prepared.workdir, [
-      "rev-parse",
-      "--path-format=absolute",
-      "--git-common-dir",
-    ]);
-    await this.#git(dirname(commonDir), [
-      "--git-dir",
-      commonDir,
-      "worktree",
-      "remove",
-      "--force",
-      prepared.workdir,
-    ]);
+    const { commonDir, gitdir } = JSON.parse(prepared.ref) as { commonDir: string; gitdir: string };
+    try {
+      await verifyWorktreeLink(prepared.workdir, gitdir);
+      await this.#git(gitLocation(commonDir), [
+        "worktree",
+        "remove",
+        "--force",
+        "--",
+        prepared.workdir,
+      ]);
+    } catch {
+      // Tampered or partial worktree: remove files without trusting them, then let git forget it.
+      await rm(prepared.workdir, { recursive: true, force: true });
+      await this.#git(gitLocation(commonDir), ["worktree", "prune"]);
+    }
   }
 }
