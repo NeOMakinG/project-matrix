@@ -24,3 +24,9 @@ export const md = (s: string): string =>
     .replace(/[\r\n]+/g, " ")
     .replace(/([\\`*_{}[\]()#+\-.!|<>])/g, "\\$1")
     .trim();
+
+/** A Go interpreted string literal (JSON escapes are a valid subset of Go's). */
+export const goString = (s: string): string => JSON.stringify(s);
+
+/** A TOML basic string. */
+export const tomlString = (s: string): string => JSON.stringify(s);

@@ -27,8 +27,9 @@ export function toolCommit(): string | undefined {
  * the rules it is checked against; the tooling is pinned to a commit.
  */
 /** `ref: null` means no main-line commit could be found; the workflow then asks to pin one. */
-export function ciWorkflow(_c: MatrixConfig, ref: string | null = toolCommit() ?? null): string {
+export function ciWorkflow(c: MatrixConfig, ref: string | null = toolCommit() ?? null): string {
   const pinned = ref ?? "main";
+  const extraJobs = [goJob(c), tauriJob(c)].filter(Boolean).join("");
   return `name: ci
 
 on:
@@ -76,5 +77,39 @@ jobs:
           fi
       - name: Code graph is up to date
         run: bun .matrix-tool/packages/cli/src/bin.ts graph . --check
-`;
+${extraJobs}`;
 }
+
+const goJob = (c: MatrixConfig) =>
+  c.backend?.kind !== "go"
+    ? ""
+    : `
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+      - run: go build -mod=mod ./...
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          working-directory: services/api
+`;
+
+const tauriJob = (c: MatrixConfig) =>
+  c.desktop?.framework !== "tauri"
+    ? ""
+    : `
+  desktop-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+`;

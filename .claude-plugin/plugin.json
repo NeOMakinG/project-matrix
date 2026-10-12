@@ -1,0 +1,9 @@
+{
+  "name": "project-matrix",
+  "version": "0.1.0",
+  "description": "Project Matrix software-factory skills: init interview, ticket loop, Matrix MCP usage, and per-stack quality rules (React, Next.js, TanStack Start, Node API, Expo, Tauri, Go, testing, accessibility, security).",
+  "author": { "name": "NeOMakinG" },
+  "homepage": "https://github.com/NeOMakinG/project-matrix",
+  "license": "Apache-2.0",
+  "keywords": ["software-factory", "agents", "skills", "adr", "quality"]
+}

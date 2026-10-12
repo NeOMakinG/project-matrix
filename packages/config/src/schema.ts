@@ -99,7 +99,7 @@ export const goBackend = z.object({
 });
 
 export const backend = z.object({
-  kind: z.enum(["node-api", "go", "none", "other"]),
+  kind: z.enum(["node-api", "go", "fullstack", "none", "other"]),
   go: goBackend.optional(),
   runtime: z.enum(["bun", "node"]).optional(),
   framework: z.enum(["hono", "fastify", "elysia"]).optional(),

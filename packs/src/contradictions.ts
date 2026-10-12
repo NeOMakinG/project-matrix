@@ -138,6 +138,16 @@ export const contradictionRules: Rule[] = [
       a["frontend.bundler"] !== "tanstack-start",
   },
   {
+    id: "fullstack-without-framework",
+    severity: "error",
+    message: "A full-stack backend needs Next.js or TanStack Start on the web.",
+    questions: ["backend.kind", "frontend.bundler"],
+    test: (a) =>
+      a["backend.kind"] === "fullstack" &&
+      a["frontend.bundler"] !== "next" &&
+      a["frontend.bundler"] !== "tanstack-start",
+  },
+  {
     id: "trpc-with-go",
     severity: "error",
     message: "tRPC needs a TypeScript server; a Go API should publish an OpenAPI contract.",

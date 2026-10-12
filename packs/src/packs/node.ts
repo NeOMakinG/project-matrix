@@ -60,7 +60,12 @@ export const nodePack: Pack = {
       options: [
         opt("node-api", "TypeScript API (Bun/Node)"),
         opt("go", "Go API", "Static binary, low memory, strong concurrency."),
-        opt("none", "No backend (static, BaaS, or full-stack framework routes)"),
+        opt(
+          "fullstack",
+          "Full-stack framework",
+          "Next.js or TanStack Start server code is the backend; no separate API app.",
+        ),
+        opt("none", "No backend (static site or BaaS)"),
         opt("other", "Other (Python… packs coming)"),
       ],
       infer: (ctx) =>
@@ -160,7 +165,7 @@ export const nodePack: Pack = {
         opt("clerk", "Clerk", "Hosted."),
         opt("none", "None"),
       ],
-      recommended: (a) => (hasBackend(a) ? "better-auth" : hasGoBackend(a) ? "clerk" : "none"),
+      recommended: (a) => (hasGoBackend(a) ? "clerk" : hasServer(a) ? "better-auth" : "none"),
       rationale:
         "better-auth keeps user data in your own database (TypeScript only); a Go API verifies Clerk sessions with its Go SDK.",
       detect: { "better-auth": "better-auth", clerk: "@clerk/backend" },

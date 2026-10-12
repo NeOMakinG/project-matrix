@@ -80,9 +80,9 @@ export const reactPack: Pack = {
         opt("tanstack-start", "TanStack Start", "Full-stack, type-safe server functions, SSR."),
         opt("next", "Next.js", "SSR/SEO heavy marketing + app."),
       ],
-      recommended: "vite",
+      recommended: (a) => (a["backend.kind"] === "fullstack" ? "tanstack-start" : "vite"),
       rationale:
-        "A Vite SPA plus a typed API keeps the frontend and backend independently deployable.",
+        "A Vite SPA plus a typed API keeps frontend and backend independently deployable; a full-stack backend needs Next.js or TanStack Start.",
       detect: { "tanstack-start": "@tanstack/react-start", next: "next", vite: "vite" },
       topic: "app framework and bundler",
       context: "Decides rendering mode (SPA/SSR), routing options and hosting targets.",
@@ -115,7 +115,20 @@ export const reactPack: Pack = {
                 },
               },
             ]
-          : [],
+          : v === "next-app-router"
+            ? [
+                {
+                  engine: "dependency-cruiser",
+                  description:
+                    "Routes are Next.js App Router files; no client-side router library.",
+                  check: {
+                    type: "forbidden-import",
+                    files: ["apps/web/**"],
+                    import: "^(react-router(-dom)?|@tanstack/react-router)(/|$)",
+                  },
+                },
+              ]
+            : [],
     }),
     lib({
       key: "data",
@@ -211,8 +224,7 @@ export const reactPack: Pack = {
       recommended: (a) =>
         hasGoBackend(a)
           ? "openapi-fetch"
-          : a["backend.kind"] === "none" &&
-              (a["frontend.bundler"] === "next" || a["frontend.bundler"] === "tanstack-start")
+          : a["backend.kind"] === "fullstack"
             ? "server-functions"
             : "trpc",
       rationale:

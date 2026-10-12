@@ -30,7 +30,9 @@ export const hasBackend = (a: Answers): boolean => is(a, "backend.kind", "node-a
 export const hasGoBackend = (a: Answers): boolean => is(a, "backend.kind", "go");
 
 /** Any server we own (TypeScript or Go). */
-export const hasServer = (a: Answers): boolean => hasBackend(a) || hasGoBackend(a);
+/** Server code we own: a TypeScript or Go API, or a full-stack framework's server side. */
+export const hasServer = (a: Answers): boolean =>
+  hasBackend(a) || hasGoBackend(a) || is(a, "backend.kind", "fullstack");
 
 export const hasMobile = (a: Answers): boolean =>
   includes(a, "platforms.targets", "ios") || includes(a, "platforms.targets", "android");
