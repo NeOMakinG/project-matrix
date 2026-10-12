@@ -3,7 +3,7 @@ import type { AuditLog, BudgetKind, BudgetTracker, Clock, RateLimiter } from "./
 
 export class HttpError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 429,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 412 | 422 | 429,
     readonly code: string,
     message: string,
     readonly retryAfterSec?: number,

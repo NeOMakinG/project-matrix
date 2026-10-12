@@ -1,5 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import type { Operations } from "../ops.js";
+import { settingsEtag } from "../settings-etag.js";
 import { type App, IdParam, route } from "./route.js";
 import * as S from "./schemas.js";
 
@@ -12,7 +13,11 @@ export function adminRoutes(app: App, ops: Operations) {
       summary: "Get factory settings",
       response: S.Settings,
     }),
-    async (c) => c.json(await ops.getSettings(c.var.principal)),
+    async (c) => {
+      const settings = await ops.getSettings(c.var.principal);
+      c.header("etag", settingsEtag(settings));
+      return c.json(settings);
+    },
   );
 
   app.openapi(
@@ -24,7 +29,12 @@ export function adminRoutes(app: App, ops: Operations) {
       body: S.Settings,
       response: S.Settings,
     }),
-    async (c) => c.json(await ops.updateSettings(c.var.principal, c.req.valid("json"))),
+    async (c) => {
+      const ifMatch = c.req.header("if-match");
+      const settings = await ops.updateSettings(c.var.principal, c.req.valid("json"), ifMatch);
+      c.header("etag", settingsEtag(settings));
+      return c.json(settings);
+    },
   );
 
   app.openapi(
