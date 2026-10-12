@@ -195,8 +195,10 @@
           "labels": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 100
+            },
+            "maxItems": 50
           },
           "priority": {
             "anyOf": [
@@ -223,13 +225,16 @@
             ]
           },
           "parent": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "deps": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 200
+            },
+            "maxItems": 100
           }
         },
         "required": ["title"]
@@ -252,8 +257,10 @@
           "labels": {
             "type": "array",
             "items": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 100
+            },
+            "maxItems": 50
           },
           "priority": {
             "anyOf": [
@@ -280,7 +287,8 @@
             ]
           },
           "assignee": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           }
         }
       },
@@ -395,6 +403,12 @@
           "ticketId": {
             "type": "string"
           },
+          "startedBy": {
+            "type": "string"
+          },
+          "headSha": {
+            "type": "string"
+          },
           "phase": {
             "$ref": "#/components/schemas/Phase"
           },
@@ -424,6 +438,7 @@
           "id",
           "projectId",
           "ticketId",
+          "startedBy",
           "phase",
           "state",
           "runner",
@@ -483,17 +498,24 @@
             "type": "string",
             "enum": ["approve", "request_changes"]
           },
+          "commitSha": {
+            "type": "string"
+          },
           "comment": {
             "type": "string"
           },
           "by": {
             "type": "string"
           },
+          "byKind": {
+            "type": "string",
+            "enum": ["human", "agent"]
+          },
           "at": {
             "type": "string"
           }
         },
-        "required": ["runId", "decision", "by", "at"]
+        "required": ["runId", "decision", "commitSha", "by", "byKind", "at"]
       },
       "ApprovalInput": {
         "type": "object",
@@ -502,12 +524,17 @@
             "type": "string",
             "enum": ["approve", "request_changes"]
           },
+          "commitSha": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{7,64}$",
+            "description": "Head commit being approved; must match the run's current head"
+          },
           "comment": {
             "type": "string",
             "maxLength": 5000
           }
         },
-        "required": ["decision"]
+        "required": ["decision", "commitSha"]
       },
       "Settings": {
         "type": "object",
@@ -521,6 +548,10 @@
           },
           "name": {
             "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["human", "agent"]
           },
           "scope": {
             "$ref": "#/components/schemas/KeyScope"
@@ -538,7 +569,7 @@
             "type": "string"
           }
         },
-        "required": ["id", "name", "scope", "budget", "ratePerMinute", "createdAt"]
+        "required": ["id", "name", "kind", "scope", "budget", "ratePerMinute", "createdAt"]
       },
       "KeyScope": {
         "type": "object",
@@ -611,6 +642,10 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 100
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["human", "agent"]
           },
           "scope": {
             "$ref": "#/components/schemas/KeyScope"

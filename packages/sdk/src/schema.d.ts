@@ -2572,6 +2572,8 @@ export interface components {
       id: string;
       projectId: string;
       ticketId: string;
+      startedBy: string;
+      headSha?: string;
       phase: components["schemas"]["Phase"];
       state: string;
       runner: string;
@@ -2599,13 +2601,18 @@ export interface components {
       runId: string;
       /** @enum {string} */
       decision: "approve" | "request_changes";
+      commitSha: string;
       comment?: string;
       by: string;
+      /** @enum {string} */
+      byKind: "human" | "agent";
       at: string;
     };
     ApprovalInput: {
       /** @enum {string} */
       decision: "approve" | "request_changes";
+      /** @description Head commit being approved; must match the run's current head */
+      commitSha: string;
       comment?: string;
     };
     Settings: {
@@ -2614,6 +2621,8 @@ export interface components {
     ApiKey: {
       id: string;
       name: string;
+      /** @enum {string} */
+      kind: "human" | "agent";
       scope: components["schemas"]["KeyScope"];
       budget: components["schemas"]["KeyBudget"];
       ratePerMinute: number;
@@ -2643,6 +2652,8 @@ export interface components {
     };
     CreateKey: {
       name: string;
+      /** @enum {string} */
+      kind?: "human" | "agent";
       scope: components["schemas"]["KeyScope"];
       budget?: components["schemas"]["KeyBudget"];
       ratePerMinute?: number;

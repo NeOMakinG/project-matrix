@@ -24,7 +24,7 @@ describe("webhooks", () => {
       data: { issue: { id: "42", title: "TypeError in checkout" } },
     });
     const signature = hmacHex(SECRETS.sentry ?? "", body);
-    const ok = await post(ctx, `/hooks/sentry?project=${ctx.project.id}`, body, {
+    const ok = await post(ctx, "/hooks/sentry", body, {
       "sentry-hook-signature": signature,
     });
     expect(ok.status).toBe(202);
@@ -32,8 +32,9 @@ describe("webhooks", () => {
       source: "sentry",
       title: "TypeError in checkout",
       fingerprint: "42",
-      projectId: ctx.project.id,
     });
+    // Signed with the global secret: never attributed to a project.
+    expect(ctx.core.signals[0]?.projectId).toBeUndefined();
     const tampered = await post(ctx, "/hooks/sentry", body.replace("checkout", "login"), {
       "sentry-hook-signature": signature,
     });

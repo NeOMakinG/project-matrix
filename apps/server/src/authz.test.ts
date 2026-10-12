@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { Action } from "./auth/keys.js";
-import { setup } from "./test-helpers.js";
+import { AGENT, setup } from "./test-helpers.js";
 
 type Case = {
   name: string;
@@ -10,13 +10,26 @@ type Case = {
 
 const runIdFor = async (ctx: Awaited<ReturnType<typeof setup>>, state?: string) => {
   const ticket = await ctx.core.createTicket(ctx.project.id, { title: "t", body: "" });
-  const run = await ctx.core.startRun({
-    projectId: ctx.project.id,
-    ticketId: ticket.id,
-    phase: "implement",
-  });
+  const run = await ctx.core.startRun(
+    {
+      projectId: ctx.project.id,
+      ticketId: ticket.id,
+      phase: "implement",
+    },
+    AGENT,
+  );
   if (state) ctx.core.runs.set(run.id, { ...run, state: state as never });
   return run.id;
+};
+
+const SHA = "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0";
+
+/** A run that finished QA with passing receipts, waiting on a merge decision at SHA. */
+const readyRun = async (ctx: Awaited<ReturnType<typeof setup>>) => {
+  const runId = await runIdFor(ctx);
+  ctx.core.setHead(runId, SHA);
+  ctx.core.receipts.set(runId, [{ kind: "test", ok: true, summary: "vitest 12/12" }]);
+  return runId;
 };
 
 const cases: Case[] = [
@@ -51,23 +64,29 @@ const cases: Case[] = [
   {
     name: "approve run",
     action: "runs:approve",
-    run: async (c, t) =>
-      c.call(t, "POST", `/v1/runs/${await runIdFor(c, "awaiting_approval")}/approval`, {
+    run: async (c, t) => {
+      await c.core.setAutonomy(c.project.id, "merge", "gated");
+      return c.call(t, "POST", `/v1/runs/${await readyRun(c)}/approval`, {
         decision: "approve",
-      }),
+        commitSha: SHA,
+      });
+    },
   },
   {
     name: "merge run",
     action: "merge",
     run: async (c, t) => {
       await c.core.setAutonomy(c.project.id, "merge", "gated");
-      return c.call(t, "POST", `/v1/runs/${await runIdFor(c, "running")}/merge`);
+      return c.call(t, "POST", `/v1/runs/${await readyRun(c)}/merge`);
     },
   },
   {
     name: "deploy",
     action: "deploy",
-    run: (c, t) => c.call(t, "POST", `/v1/projects/${c.project.id}/deploy`),
+    run: async (c, t) => {
+      await c.core.setAutonomy(c.project.id, "deploy", "autonomous");
+      return c.call(t, "POST", `/v1/projects/${c.project.id}/deploy`);
+    },
   },
   {
     name: "set autonomy",
@@ -121,11 +140,14 @@ describe("project scoping", () => {
   test("run access follows the run's project", async () => {
     const ctx = await setup();
     const ticket = await ctx.core.createTicket(ctx.other.id, { title: "t", body: "" });
-    const run = await ctx.core.startRun({
-      projectId: ctx.other.id,
-      ticketId: ticket.id,
-      phase: "qa",
-    });
+    const run = await ctx.core.startRun(
+      {
+        projectId: ctx.other.id,
+        ticketId: ticket.id,
+        phase: "qa",
+      },
+      AGENT,
+    );
     const token = ctx.key(["read", "runs:start"]);
     expect((await ctx.call(token, "GET", `/v1/runs/${run.id}`)).status).toBe(403);
     expect((await ctx.call(token, "POST", `/v1/runs/${run.id}/cancel`)).status).toBe(403);

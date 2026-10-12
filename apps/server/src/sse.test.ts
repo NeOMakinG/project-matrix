@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { setup } from "./test-helpers.js";
+import { AGENT, setup } from "./test-helpers.js";
 
 async function readEvents(
   response: Response,
@@ -32,11 +32,14 @@ describe("run event stream", () => {
   test("streams run events to an authorized key", async () => {
     const ctx = await setup();
     const ticket = await ctx.core.createTicket(ctx.project.id, { title: "t", body: "" });
-    const run = await ctx.core.startRun({
-      projectId: ctx.project.id,
-      ticketId: ticket.id,
-      phase: "implement",
-    });
+    const run = await ctx.core.startRun(
+      {
+        projectId: ctx.project.id,
+        ticketId: ticket.id,
+        phase: "implement",
+      },
+      AGENT,
+    );
     const response = await ctx.call(ctx.key(["read"]), "GET", `/v1/runs/${run.id}/events`);
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
@@ -54,11 +57,14 @@ describe("run event stream", () => {
   test("refuses streams for runs outside the key's projects", async () => {
     const ctx = await setup();
     const ticket = await ctx.core.createTicket(ctx.other.id, { title: "t", body: "" });
-    const run = await ctx.core.startRun({
-      projectId: ctx.other.id,
-      ticketId: ticket.id,
-      phase: "qa",
-    });
+    const run = await ctx.core.startRun(
+      {
+        projectId: ctx.other.id,
+        ticketId: ticket.id,
+        phase: "qa",
+      },
+      AGENT,
+    );
     expect((await ctx.call(ctx.key(["read"]), "GET", `/v1/runs/${run.id}/events`)).status).toBe(
       403,
     );

@@ -80,7 +80,7 @@ describe("MCP server", () => {
     });
     await client.close();
     const keyId = token.split("_")[1] ?? "";
-    expect(ctx.server.audit.list({ keyId })).toHaveLength(1);
+    expect(ctx.server.audit.list({ keyId }).map((e) => e.status)).toEqual([0, 200]);
   });
 
   test("resources expose ADRs and the product graph", async () => {

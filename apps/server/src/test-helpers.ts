@@ -3,6 +3,8 @@ import { createServer } from "./http/app.js";
 import { MemoryCore } from "./memory-core.js";
 import type { WebhookSecrets } from "./webhooks.js";
 
+export const AGENT = { keyId: "test-agent", kind: "agent" } as const;
+
 export const SECRETS: WebhookSecrets = {
   sentry: "sentry-test-secret",
   github: "github-test-secret",

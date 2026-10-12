@@ -65,11 +65,12 @@ describe("audit log", () => {
     const entries = await ctx.json<
       { action: string; status: number; detail?: string; projectId?: string }[]
     >(await ctx.call(ctx.admin, "GET", `/v1/audit?projectId=${ctx.project.id}`));
-    expect(entries.map((e) => [e.action, e.status])).toEqual([
-      ["tickets:write", 200],
-      ["tickets:write", 403],
+    // Intent is written before the operation runs (status 0), then its outcome.
+    expect(entries.map((e) => [e.action, e.status, e.detail])).toEqual([
+      ["tickets:write", 0, "started"],
+      ["tickets:write", 200, undefined],
+      ["tickets:write", 403, "scope"],
     ]);
-    expect(entries[1]?.detail).toBe("scope");
   });
 
   test("invalid bodies are rejected with 400 before reaching the core", async () => {
