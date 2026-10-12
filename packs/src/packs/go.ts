@@ -13,8 +13,23 @@ const regex = (
   check: { type: "regex", files: GO, pattern, ...extra },
 });
 
-/** sqlc output and other generated code may use the low-level packages. */
-const GENERATED = ["services/api/internal/db/**"];
+/** Structural Go import rule: single, grouped, aliased and raw-string imports all count. */
+const imports = (
+  description: string,
+  importRe: string,
+  extra: { files?: string[]; except?: string[]; exceptGenerated?: boolean } = {},
+): RuleStub => ({
+  engine: "semgrep",
+  description,
+  check: { type: "go-imports", files: extra.files ?? GO, import: importRe, ...extra },
+});
+
+/** sqlc writes its package here; only generated files in this exact folder are exempt. */
+const DB_PACKAGE = ["services/api/internal/db/*.go"];
+/** The entrypoint wires the connection pool. */
+const WIRING = ["services/api/cmd/api/*.go"];
+
+const LOW_LEVEL_DB = "^(database/sql|github\\.com/jackc/pgx)(/|$)";
 
 interface GoChoice {
   key: string;
@@ -72,9 +87,9 @@ export const goPack: Pack = {
         Object.entries(ROUTER_IMPORTS)
           .filter(([k]) => k !== v)
           .map(([k, path]) =>
-            regex(
+            imports(
               `HTTP routing uses ${v}; ${k} must not be imported.`,
-              `"${path.replace(/\./g, "\\.")}`,
+              `^${path.replace(/\./g, "\\.")}(/|$)`,
             ),
           ),
     }),
@@ -94,15 +109,27 @@ export const goPack: Pack = {
       rules: (v) =>
         v === "sqlc"
           ? [
+              imports(
+                "Queries live in sqlc-generated code; hand-written code must not use database/sql or pgx directly.",
+                LOW_LEVEL_DB,
+                { except: [...DB_PACKAGE, ...WIRING] },
+              ),
+              imports(
+                "Only sqlc-generated files may use the low-level driver inside the db package.",
+                LOW_LEVEL_DB,
+                { files: DB_PACKAGE, exceptGenerated: true },
+              ),
+              imports("One data layer: no ORM next to sqlc.", "^(gorm\\.io|entgo\\.io)(/|$)"),
               regex(
-                "Queries live in sqlc-generated code; handlers must not call database/sql directly.",
-                '"database/sql"',
-                { except: GENERATED },
+                "SQL is never built with string concatenation or fmt.Sprintf.",
+                '\\.(Query|QueryRow|Exec)(Context)?\\([^)\\n]*(fmt\\.Sprintf|"\\s*\\+|\\+\\s*")',
               ),
             ]
           : v === "gorm"
-            ? [regex("One data layer: GORM; no sqlc/ent next to it.", '"entgo\\.io/ent')]
-            : [],
+            ? [imports("One data layer: GORM; no ent next to it.", "^entgo\\.io(/|$)")]
+            : v === "ent"
+              ? [imports("One data layer: ent; no GORM next to it.", "^gorm\\.io(/|$)")]
+              : [],
     }),
     choice({
       key: "driver",
@@ -116,7 +143,8 @@ export const goPack: Pack = {
         "pgx is faster and exposes Postgres features lib/pq lacks; lib/pq is in maintenance mode.",
       topic: "Postgres driver",
       context: "The driver decides pooling and which Postgres features are reachable.",
-      rules: (v) => (v === "pgx" ? [regex("Use pgx, not lib/pq.", '"github\\.com/lib/pq"')] : []),
+      rules: (v) =>
+        v === "pgx" ? [imports("Use pgx, not lib/pq.", "^github\\.com/lib/pq(/|$)")] : [],
     }),
     choice({
       key: "telemetry",
@@ -128,11 +156,12 @@ export const goPack: Pack = {
       topic: "Go telemetry",
       context: "Traces and slog logs carry the same trace ids into the monitor.",
       rules: () => [
-        regex(
-          "Logging goes through log/slog (structured, trace-aware), not the old log package or fmt.Print.",
-          "^\\s*(log\\.Print|log\\.Fatal|fmt\\.Print)",
-          { flags: "m", except: GENERATED },
+        imports(
+          "Logging goes through log/slog (structured, trace-aware), not the old log package.",
+          "^log$",
+          { exceptGenerated: true },
         ),
+        regex("No fmt.Print logging; use log/slog.", "\\bfmt\\.Print"),
       ],
     }),
   ],

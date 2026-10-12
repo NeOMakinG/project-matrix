@@ -12,6 +12,7 @@ import ts from "typescript";
 import { callPatternHits } from "./callpattern";
 import { compileSafeRegex, MAX_REGEX_SCAN_BYTES } from "./safe";
 import type { RuleCheck } from "./schema";
+import { checkCapability, isGeneratedGo, parseGoImports } from "./structural";
 
 export interface Hit {
   file: string;
@@ -103,6 +104,35 @@ export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hi
         const lineOf = lineIndex(text);
         for (const m of text.matchAll(re))
           hits.push({ file, line: lineOf(m.index ?? 0), message: `matches /${check.pattern}/` });
+      }
+      break;
+    }
+    case "go-imports": {
+      const re = compileSafeRegex(check.import, "");
+      for (const file of textFilesInScope(index, check)) {
+        if (!file.endsWith(".go")) continue;
+        const text = await index.text(file);
+        if (text.length > MAX_REGEX_SCAN_BYTES) {
+          hits.push({ file, line: 1, message: "file too large to parse imports; not scanned" });
+          continue;
+        }
+        if (check.exceptGenerated && isGeneratedGo(text)) continue;
+        for (const imp of parseGoImports(text))
+          if (re.test(imp.path))
+            hits.push({ file, line: imp.line, message: `imports "${imp.path}"` });
+      }
+      break;
+    }
+    case "tauri-capabilities": {
+      for (const file of textFilesInScope(index, check)) {
+        if (!file.endsWith(".json")) continue;
+        const text = await index.text(file);
+        if (text.length > MAX_REGEX_SCAN_BYTES) {
+          hits.push({ file, line: 1, message: "capability file too large; not verified" });
+          continue;
+        }
+        for (const f of checkCapability(text, check.allow))
+          hits.push({ file, line: 1, message: f.message });
       }
       break;
     }

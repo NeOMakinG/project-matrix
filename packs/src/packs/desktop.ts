@@ -24,7 +24,7 @@ export const desktopPack: Pack = {
       adr: {
         topic: "desktop shell",
         context: "The desktop shell decides the native boundary, permissions and release flow.",
-        rules: () => [
+        rules: (_v, a) => [
           {
             engine: "dependency-cruiser",
             description: "The desktop app is Tauri; Electron must not come in.",
@@ -37,11 +37,14 @@ export const desktopPack: Pack = {
           {
             engine: "custom",
             description:
-              "Tauri capabilities stay explicit: no wildcard shell or filesystem permissions.",
+              "Tauri capabilities grant only the allow-listed permissions; shell, process and broad filesystem families and scopes outside app directories are refused.",
             check: {
-              type: "regex",
+              type: "tauri-capabilities",
               files: ["apps/desktop/src-tauri/capabilities/**"],
-              pattern: '"(shell|fs):allow-[a-z-]*\\*|"fs:default"|"shell:default"',
+              allow: [
+                "core:default",
+                ...(a["desktop.updater"] === true ? ["updater:default"] : []),
+              ],
             },
           },
         ],
