@@ -1,2 +1,12 @@
 export const name = "@matrix/core";
+export * from "./bus.js";
+export { MIGRATIONS_DIR, PgStore } from "./db/pg-store.js";
+export * from "./handlers.js";
+export * from "./holdout.js";
+export * from "./machine.js";
 export * from "./ports.js";
+export type * from "./ports-internal.js";
+export * from "./reconcile.js";
+export * from "./review.js";
+export * from "./store.js";
+export * from "./types.js";
