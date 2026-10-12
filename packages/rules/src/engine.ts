@@ -1,6 +1,7 @@
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type AdrScope, createResolver, type SymlinkEscape, scanSources } from "@matrix/graph";
+import picomatch from "picomatch";
 import { type Adr, DEFAULT_ADR_DIR, isActive } from "./adr";
 import { createSourceIndex, runCheck, type SourceIndex } from "./checks";
 import type { RuleSeverity } from "./schema";
@@ -137,19 +138,30 @@ const isMatrixProject = async (root: string) =>
  */
 export async function checkProject(root: string, opts: CheckOptions = {}): Promise<CheckResult> {
   const adrDir = opts.adrDir ?? DEFAULT_ADR_DIR;
-  const listing = await scanSources(root);
+  const worktree = await loadWorktreeRules(root, adrDir);
+  const rules = opts.rulesFrom ? loadRulesAt(root, opts.rulesFrom, adrDir) : worktree;
+  const allowSubmodule = picomatch(rules.manifest?.allowSubmodules ?? [], { dot: true });
+  const listing = await scanSources(root, { includeSubmodule: (p) => allowSubmodule(p) });
   const resolver = await createResolver(root, listing.files);
   const index = createSourceIndex(listing.files, (f) => readFile(join(root, f), "utf8"), {
     root,
     resolver,
   });
-  const worktree = await loadWorktreeRules(root, adrDir);
-  const rules = opts.rulesFrom ? loadRulesAt(root, opts.rulesFrom, adrDir) : worktree;
   const result = await checkAdrs(rules.adrs, index);
 
   const failures: string[] = [];
   for (const e of listing.escapes)
     failures.push(`symlink ${e.path} points outside the repository (${e.target})`);
+  for (const sub of listing.submodules) {
+    if (!allowSubmodule(sub.path))
+      failures.push(
+        `submodule ${sub.path} hides code from matrix check; allow it in .matrix/rules-manifest.json (allowSubmodules) to check its files`,
+      );
+    else if (!sub.populated)
+      failures.push(
+        `submodule ${sub.path} is allowed but not checked out (git submodule update --init); its code cannot be checked`,
+      );
+  }
   const enforced = result.stats.enforced;
   const where = rules.source.kind === "git" ? `base ${rules.source.commit.slice(0, 12)}` : adrDir;
   if (rules.manifest && enforced < rules.manifest.minRules)

@@ -27,11 +27,26 @@ export interface SymlinkEscape {
   target: string;
 }
 
+/** A git submodule or nested repository. Its files are only listed when explicitly allowed. */
+export interface NestedRepo {
+  path: string;
+  /** False when the folder is missing or empty (submodule not checked out). */
+  populated: boolean;
+  /** True when its files were included in the listing. */
+  included: boolean;
+}
+
 export interface SourceListing {
   files: string[];
   escapes: SymlinkEscape[];
+  submodules: NestedRepo[];
   /** How files were discovered. */
   via: "git" | "walk";
+}
+
+export interface ScanOptions {
+  /** Submodule paths whose files are listed (recursively). Others are only reported. */
+  includeSubmodule?: (path: string) => boolean;
 }
 
 /** Converts `.gitignore` lines to picomatch globs (git semantics, negation unsupported). */
@@ -51,64 +66,114 @@ export function gitignoreGlobs(text: string): string[] {
   return globs;
 }
 
-function gitListing(root: string): string[] | undefined {
-  const r = spawnSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
-    cwd: root,
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  });
-  if (r.status !== 0 || r.error) return undefined;
-  return r.stdout.split("\0").filter(Boolean);
+const gitOut = (root: string, args: string[]) => {
+  const r = spawnSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  return r.status === 0 && !r.error ? r.stdout : undefined;
+};
+
+interface GitListing {
+  paths: string[];
+  /** Gitlinks (mode 160000), `.gitmodules` paths and untracked nested repositories. */
+  nested: string[];
 }
 
-async function walkListing(root: string): Promise<string[]> {
+function gitListing(root: string): GitListing | undefined {
+  const out = gitOut(root, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]);
+  if (out === undefined) return undefined;
+  const nested = new Set<string>();
+  for (const entry of (gitOut(root, ["ls-files", "-z", "--stage"]) ?? "").split("\0")) {
+    const m = /^160000 [0-9a-f]+ \d\t(.+)$/.exec(entry);
+    if (m?.[1]) nested.add(m[1]);
+  }
+  const modules = gitOut(root, ["config", "-f", ".gitmodules", "--get-regexp", "path$"]) ?? "";
+  for (const line of modules.split("\n")) {
+    const path = line.split(" ").slice(1).join(" ").trim();
+    if (path) nested.add(path.replace(/\/+$/, ""));
+  }
+  const paths: string[] = [];
+  for (const p of out.split("\0").filter(Boolean)) {
+    // `--others` reports an untracked nested repository as a single `dir/` entry.
+    if (p.endsWith("/")) nested.add(p.replace(/\/+$/, ""));
+    else if (!nested.has(p)) paths.push(p);
+  }
+  return { paths, nested: [...nested].sort() };
+}
+
+async function walkListing(root: string): Promise<GitListing> {
   const ignoreText = await readFile(join(root, ".gitignore"), "utf8").catch(() => "");
   const ignored = picomatch(gitignoreGlobs(ignoreText), { dot: true });
-  const out: string[] = [];
+  const paths: string[] = [];
+  const nested: string[] = [];
   async function walk(dir: string): Promise<void> {
     for (const e of await readdir(dir, { withFileTypes: true })) {
       const rel = toPosix(relative(root, join(dir, e.name)));
       if (rootExcluded(rel) || ignored(rel)) continue;
-      if (e.isDirectory()) await walk(join(dir, e.name));
-      else out.push(rel);
+      if (e.isDirectory()) {
+        const isRepo = await lstat(join(dir, e.name, ".git")).then(
+          () => true,
+          () => false,
+        );
+        if (isRepo) nested.push(rel);
+        else await walk(join(dir, e.name));
+      } else paths.push(rel);
     }
   }
   await walk(root);
-  return out;
+  return { paths, nested: nested.sort() };
 }
 
 /**
  * Lists every source file a check must see. In a git repo: tracked plus untracked-not-ignored
  * files (`git ls-files`), so committed code in `build/` or `dist/` is never hidden. Outside git:
  * a walk honouring the root `.gitignore`. Symlinks resolving outside `root` are reported.
+ * Submodules and nested repositories are reported, and listed only when `includeSubmodule`
+ * allows them.
  */
-export async function scanSources(root: string): Promise<SourceListing> {
-  const fromGit = gitListing(root);
-  const candidates = (fromGit ?? (await walkListing(root))).map(toPosix);
-  const realRoot = await realpath(root);
+export async function scanSources(root: string, opts: ScanOptions = {}): Promise<SourceListing> {
+  const realTop = await realpath(root);
   const files: string[] = [];
   const escapes: SymlinkEscape[] = [];
-  for (const rel of candidates) {
-    if (rootExcluded(rel)) continue;
-    const abs = join(root, rel);
-    const st = await lstat(abs).catch(() => undefined);
-    if (!st) continue;
-    if (st.isSymbolicLink()) {
-      const target = await realpath(abs).catch(() => undefined);
-      const inside = target ? relative(realRoot, target) : undefined;
-      if (!target || inside === undefined || inside.startsWith("..") || isAbsolute(inside)) {
-        escapes.push({ path: rel, target: target ?? "(dangling)" });
-        continue;
-      }
-      const tst = await lstat(target);
-      if (tst.isDirectory()) continue;
-    } else if (!st.isFile()) continue;
-    if (isSource(rel) && !isDeclaration(rel)) files.push(rel);
-  }
+  const submodules: NestedRepo[] = [];
+  let via: SourceListing["via"] = "walk";
+
+  const scan = async (dir: string, prefix: string, top: boolean): Promise<void> => {
+    const fromGit = gitListing(dir);
+    if (top) via = fromGit ? "git" : "walk";
+    const listing = fromGit ?? (await walkListing(dir));
+    for (const raw of listing.paths) {
+      const rel = toPosix(raw);
+      if (top && rootExcluded(rel)) continue;
+      const full = prefix + rel;
+      const abs = join(dir, rel);
+      const st = await lstat(abs).catch(() => undefined);
+      if (!st) continue;
+      if (st.isSymbolicLink()) {
+        const target = await realpath(abs).catch(() => undefined);
+        const inside = target ? relative(realTop, target) : undefined;
+        if (!target || inside === undefined || inside.startsWith("..") || isAbsolute(inside)) {
+          escapes.push({ path: full, target: target ?? "(dangling)" });
+          continue;
+        }
+        if ((await lstat(target)).isDirectory()) continue;
+      } else if (!st.isFile()) continue;
+      if (isSource(rel) && !isDeclaration(rel)) files.push(full);
+    }
+    for (const sub of listing.nested) {
+      const full = prefix + sub;
+      const entries = await readdir(join(dir, sub)).catch(() => [] as string[]);
+      const populated = entries.some((e) => e !== ".git");
+      const included = populated && (opts.includeSubmodule?.(full) ?? false);
+      submodules.push({ path: full, populated, included });
+      if (included) await scan(join(dir, sub), `${full}/`, false);
+    }
+  };
+
+  await scan(root, "", true);
   return {
     files: [...new Set(files)].sort(),
     escapes: escapes.sort((a, b) => a.path.localeCompare(b.path)),
-    via: fromGit ? "git" : "walk",
+    submodules: submodules.sort((a, b) => a.path.localeCompare(b.path)),
+    via,
   };
 }
 

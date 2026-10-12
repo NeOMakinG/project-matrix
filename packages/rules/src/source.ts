@@ -11,6 +11,11 @@ export interface RulesManifest {
   adrDir: string;
   /** Minimum number of enforced rules; fewer loaded rules fails the check. */
   minRules: number;
+  /**
+   * Submodule / nested-repository paths (globs) whose files `matrix check` reads. Any other
+   * submodule fails the check, since its code would otherwise go unchecked.
+   */
+  allowSubmodules?: string[];
 }
 
 /** Where rules were loaded from. `git` means a base commit, not the code under check. */
