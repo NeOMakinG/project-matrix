@@ -29,6 +29,8 @@ export interface ServerOptions {
   replayLogFile?: string;
   /** Built dashboard (apps/dashboard/dist) served same-origin; omit to serve the API only. */
   dashboardDir?: string;
+  /** Extra health details (store, runtime, loop state) for /healthz. */
+  health?: () => Promise<Record<string, unknown>>;
 }
 
 export function createServer(options: ServerOptions) {
@@ -64,7 +66,12 @@ export function createServer(options: ServerOptions) {
     return c.json({ error: { code: "internal", message: "internal error" } }, 500);
   });
 
-  app.get("/healthz", (c) => c.json({ ok: true }));
+  app.get("/healthz", async (c) => {
+    const details =
+      (await options.health?.().catch((e: unknown) => ({ ok: false, error: String(e) }))) ?? {};
+    const ok = details.ok !== false;
+    return c.json({ ...details, ok }, ok ? 200 : 503);
+  });
 
   hookRoutes(
     app,

@@ -3288,6 +3288,12 @@ export interface components {
         kind: "beads" | "markdown" | "github";
         repo?: string;
       };
+      /** @description Check commands run in the sandbox (argv, no shell) */
+      checks?: {
+        /** @enum {string} */
+        kind: "typecheck" | "lint" | "test" | "adr-check";
+        cmd: string[];
+      }[];
     };
     SetAutonomy: {
       phase: components["schemas"]["Phase"];

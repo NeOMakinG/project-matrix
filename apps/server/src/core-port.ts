@@ -182,6 +182,8 @@ export interface CorePort {
     description: string;
     workspace: Project["workspace"];
     tickets?: { kind: "beads" | "markdown" | "github"; repo?: string };
+    /** Check commands run by the checks and QA phases (the init interview sets these later). */
+    checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
   }): Promise<Project>;
   setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode): Promise<Project>;
 

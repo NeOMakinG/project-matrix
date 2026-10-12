@@ -164,6 +164,10 @@ export async function createFactory(options: FactoryOptions) {
   });
 
   const timers: ReturnType<typeof setInterval>[] = [];
+  const loop = {
+    lastTickAt: undefined as string | undefined,
+    lastError: undefined as string | undefined,
+  };
   const guarded = (name: string, fn: () => Promise<unknown>) => async () => {
     try {
       await fn();
@@ -198,9 +202,28 @@ export async function createFactory(options: FactoryOptions) {
     reconciler,
     monitor,
     runtime: runtime.kind,
+    /** Health for /healthz: store reachable, runtime kind, reconcile loop state. */
+    async health() {
+      await store.listProjects();
+      return {
+        runtime: runtime.kind,
+        store: options.databaseUrl ? "postgres" : "memory",
+        lastTickAt: loop.lastTickAt ?? null,
+        ...(loop.lastError ? { ok: false, lastError: loop.lastError } : {}),
+      };
+    },
     /** Starts the reconcile, monitor and (optional) weekly watch loops. */
     start() {
-      const tick = guarded("reconcile", () => reconciler.tick());
+      const tick = async () => {
+        try {
+          await reconciler.tick();
+          loop.lastTickAt = new Date().toISOString();
+          loop.lastError = undefined;
+        } catch (error) {
+          loop.lastError = error instanceof Error ? error.message : String(error);
+          log(`reconcile failed: ${loop.lastError}`);
+        }
+      };
       const monitorTick = guarded("monitor", () => monitor.tick());
       timers.push(setInterval(tick, options.tickMs ?? 5_000));
       timers.push(setInterval(monitorTick, options.monitorMs ?? 30_000));

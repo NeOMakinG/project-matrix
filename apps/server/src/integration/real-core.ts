@@ -127,6 +127,7 @@ export class RealCore implements CorePort {
     description: string;
     workspace: Project["workspace"];
     tickets?: TicketSettings;
+    checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
   }): Promise<Project> {
     const id = randomUUID();
     const repoPath = join(this.o.projectsRoot, id);
@@ -144,6 +145,7 @@ export class RealCore implements CorePort {
         createdAt: new Date().toISOString(),
       },
     });
+    if (input.checks) config.checks = input.checks;
     await this.o.store.upsertProject(config);
     return toProject(config);
   }

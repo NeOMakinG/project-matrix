@@ -119,6 +119,7 @@ export class Operations {
       description: string;
       workspace: Project["workspace"];
       tickets?: { kind: "beads" | "markdown" | "github"; repo?: string };
+      checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
     },
   ) {
     return this.op(p, "admin", "/projects")(() => this.core.createProject(input));

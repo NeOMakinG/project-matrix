@@ -52,6 +52,7 @@ export function projectRoutes(app: App, ops: Operations) {
                 },
               }
             : {}),
+          ...(body.checks ? { checks: body.checks } : {}),
         }),
       );
     },

@@ -38,6 +38,16 @@ export const CreateProject = z
       })
       .optional()
       .openapi({ description: "Ticket tracker; beads by default" }),
+    checks: z
+      .array(
+        z.object({
+          kind: z.enum(["typecheck", "lint", "test", "adr-check"]),
+          cmd: z.array(z.string().min(1).max(200)).min(1).max(20),
+        }),
+      )
+      .max(20)
+      .optional()
+      .openapi({ description: "Check commands run in the sandbox (argv, no shell)" }),
   })
   .openapi("CreateProject");
 

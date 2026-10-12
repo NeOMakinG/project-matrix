@@ -95,6 +95,31 @@
             },
             "required": ["kind"],
             "description": "Ticket tracker; beads by default"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["typecheck", "lint", "test", "adr-check"]
+                },
+                "cmd": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "minItems": 1,
+                  "maxItems": 20
+                }
+              },
+              "required": ["kind", "cmd"]
+            },
+            "maxItems": 20,
+            "description": "Check commands run in the sandbox (argv, no shell)"
           }
         },
         "required": ["name"]
