@@ -39,6 +39,10 @@ function toWorkflow(r: typeof s.workflows.$inferSelect): WorkflowState {
     ...opt("workdir", r.workdir),
     ...opt("lastError", r.lastError),
     ...opt("nextAttemptAt", r.nextAttemptAt),
+    ...opt("currentRunId", r.currentRunId),
+    ...opt("leaseOwner", r.leaseOwner),
+    ...opt("leaseExpiresAt", r.leaseExpiresAt),
+    ...opt("reviewedTree", r.reviewedTree),
   };
 }
 
@@ -51,9 +55,11 @@ function toRun(r: typeof s.runs.$inferSelect): RunRecord {
     attempt: r.attempt,
     stepKey: r.stepKey,
     host: r.host,
+    ownerId: r.ownerId,
     status: r.status as RunRecordStatus,
     startedAt: r.startedAt,
     lastEventAt: r.lastEventAt,
+    heartbeatAt: r.heartbeatAt,
     ...opt("runner", r.runner as RunRecord["runner"] | null),
     ...opt("model", r.model),
     ...opt("summary", r.summary),
@@ -70,6 +76,9 @@ function toApproval(r: typeof s.approvals.$inferSelect): ApprovalRecord {
     projectId: r.projectId,
     ticketId: r.ticketId,
     phase: r.phase as Phase,
+    runId: r.runId,
+    headSha: r.headSha,
+    requestedBy: r.requestedBy,
     status: r.status as ApprovalRecord["status"],
     requestedAt: r.requestedAt,
     ...opt("decidedAt", r.decidedAt),
@@ -199,6 +208,10 @@ export class PgStore implements Store {
         workdir: state.workdir ?? null,
         lastError: state.lastError ?? null,
         nextAttemptAt: state.nextAttemptAt ?? null,
+        currentRunId: state.currentRunId ?? null,
+        leaseOwner: state.leaseOwner ?? null,
+        leaseExpiresAt: state.leaseExpiresAt ?? null,
+        reviewedTree: state.reviewedTree ?? null,
         version: state.version + 1,
         updatedAt: new Date(),
       })
@@ -234,9 +247,11 @@ export class PgStore implements Store {
       runner: run.runner ?? null,
       model: run.model ?? null,
       host: run.host,
+      ownerId: run.ownerId,
       status: run.status,
       startedAt: run.startedAt,
       lastEventAt: run.lastEventAt,
+      heartbeatAt: run.heartbeatAt,
     });
   }
 
@@ -364,9 +379,32 @@ export class PgStore implements Store {
       projectId: a.projectId,
       ticketId: a.ticketId,
       phase: a.phase,
+      runId: a.runId,
+      headSha: a.headSha,
+      requestedBy: a.requestedBy,
       status: a.status,
       requestedAt: a.requestedAt,
     });
+  }
+
+  async getApproval(id: string) {
+    const [row] = await this.db.select().from(s.approvals).where(eq(s.approvals.id, id));
+    return row ? toApproval(row) : null;
+  }
+
+  async listApprovals(projectId: string, ticketId: string, phase: Phase) {
+    const rows = await this.db
+      .select()
+      .from(s.approvals)
+      .where(
+        and(
+          eq(s.approvals.projectId, projectId),
+          eq(s.approvals.ticketId, ticketId),
+          eq(s.approvals.phase, phase),
+        ),
+      )
+      .orderBy(asc(s.approvals.requestedAt), asc(s.approvals.id));
+    return rows.map(toApproval);
   }
 
   async getPendingApproval(projectId: string, ticketId: string, phase: Phase) {

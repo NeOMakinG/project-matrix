@@ -3,6 +3,9 @@ CREATE TABLE "approvals" (
 	"project_id" text NOT NULL,
 	"ticket_id" text NOT NULL,
 	"phase" text NOT NULL,
+	"run_id" text NOT NULL,
+	"head_sha" text NOT NULL,
+	"requested_by" text NOT NULL,
 	"status" text NOT NULL,
 	"requested_at" timestamp with time zone NOT NULL,
 	"decided_at" timestamp with time zone,
@@ -93,6 +96,7 @@ CREATE TABLE "runs" (
 	"runner" text,
 	"model" text,
 	"host" text NOT NULL,
+	"owner_id" text NOT NULL,
 	"status" text NOT NULL,
 	"summary" text,
 	"input_tokens" integer,
@@ -100,6 +104,7 @@ CREATE TABLE "runs" (
 	"cost_usd" double precision,
 	"started_at" timestamp with time zone NOT NULL,
 	"last_event_at" timestamp with time zone NOT NULL,
+	"heartbeat_at" timestamp with time zone NOT NULL,
 	"finished_at" timestamp with time zone
 );
 --> statement-breakpoint
@@ -140,6 +145,10 @@ CREATE TABLE "workflows" (
 	"implementer_model" text,
 	"workspace_ref" text,
 	"workdir" text,
+	"current_run_id" text,
+	"lease_owner" text,
+	"lease_expires_at" timestamp with time zone,
+	"reviewed_tree" text,
 	"last_error" text,
 	"next_attempt_at" timestamp with time zone,
 	"version" integer DEFAULT 0 NOT NULL,

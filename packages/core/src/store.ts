@@ -13,6 +13,7 @@ export interface RunRecord {
   runner?: RunnerId;
   model?: string;
   host: string;
+  ownerId: string;
   status: RunRecordStatus;
   summary?: string;
   inputTokens?: number;
@@ -20,6 +21,7 @@ export interface RunRecord {
   costUsd?: number;
   startedAt: Date;
   lastEventAt: Date;
+  heartbeatAt: Date;
   finishedAt?: Date;
 }
 
@@ -44,6 +46,12 @@ export interface ApprovalRecord {
   projectId: string;
   ticketId: string;
   phase: Phase;
+  /** The run whose result is being approved (QA run for merge, merge run for deploy). */
+  runId: string;
+  /** Commit that was reviewed and tested; merge refuses any other HEAD. */
+  headSha: string;
+  /** Identity that triggered the request (reconciler or agent key); may not decide it. */
+  requestedBy: string;
   status: ApprovalStatus;
   requestedAt: Date;
   decidedAt?: Date;
@@ -115,6 +123,8 @@ export interface Store {
   completeStep(key: string, patch: Partial<StepRecord>): Promise<void>;
 
   createApproval(approval: ApprovalRecord): Promise<void>;
+  getApproval(id: string): Promise<ApprovalRecord | null>;
+  listApprovals(projectId: string, ticketId: string, phase: Phase): Promise<ApprovalRecord[]>;
   getPendingApproval(
     projectId: string,
     ticketId: string,
@@ -236,6 +246,16 @@ export class MemoryStore implements Store {
   }
   async createApproval(a: ApprovalRecord) {
     this.approvals.set(a.id, clone(a));
+  }
+  async getApproval(id: string) {
+    const a = this.approvals.get(id);
+    return a ? clone(a) : null;
+  }
+  async listApprovals(projectId: string, ticketId: string, phase: Phase) {
+    return [...this.approvals.values()]
+      .filter((x) => x.projectId === projectId && x.ticketId === ticketId && x.phase === phase)
+      .sort((x, y) => x.requestedAt.getTime() - y.requestedAt.getTime())
+      .map(clone);
   }
   async getPendingApproval(projectId: string, ticketId: string, phase: Phase) {
     const a = [...this.approvals.values()].find(
