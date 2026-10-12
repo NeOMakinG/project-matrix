@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { type BusEvent, EventBus } from "../bus.js";
 import { createDefaultHandlers, type HandlerDeps } from "../handlers.js";
 import { HoldoutStore } from "../holdout.js";
-import type { RunRequest, RunResult } from "../ports.js";
+import type { Receipt, RunRequest, RunResult } from "../ports.js";
+import type { ActionRequest } from "../ports-internal.js";
 import { Reconciler } from "../reconcile.js";
 import { MemoryStore, type Store } from "../store.js";
 import type { Limits, ProjectConfig } from "../types.js";
 import {
+  FakeGit,
   FakeRunner,
   FakeSandbox,
   FakeTicketStore,
@@ -28,7 +30,8 @@ export interface HarnessOptions {
     call: number,
     signal: AbortSignal,
   ) => Partial<RunResult> | Promise<Partial<RunResult>>;
-  stallMs?: number;
+  qaReceipts?: () => Receipt[];
+  leaseMs?: number;
 }
 
 const SCENARIOS = JSON.stringify({
@@ -37,6 +40,8 @@ const SCENARIOS = JSON.stringify({
     { id: "s2", given: "a user", when: "they log out", then: "they see the login page" },
   ],
 });
+
+export const APPROVER = "user:valentin";
 
 export function createHarness(opts: HarnessOptions = {}) {
   let now = new Date("2026-10-12T10:00:00Z");
@@ -49,19 +54,24 @@ export function createHarness(opts: HarnessOptions = {}) {
   const tickets = new FakeTicketStore();
   const workspace = new FakeWorkspace();
   const sandbox = new FakeSandbox();
+  const git = new FakeGit();
   const holdout = new HoldoutStore(mkdtempSync(join(tmpdir(), "matrix-holdout-")));
+  const merges: ActionRequest[] = [];
+  const deploys: ActionRequest[] = [];
   let implementCalls = 0;
   let reviewCalls = 0;
 
   const implementer = new FakeRunner("claude-code", async (req, signal) => {
-    if (req.phase === "implement")
+    if (req.phase === "implement") {
       return (await opts.implement?.(req, implementCalls++, signal)) ?? { summary: "implemented" };
+    }
     return { summary: "plan: 3 steps" };
   });
   const reviewer = new FakeRunner("codex", (req) => {
     if (req.prompt.includes("acceptance scenarios")) return { summary: SCENARIOS };
-    if (req.phase === "review")
+    if (req.phase === "review") {
       return { summary: opts.findings?.(req, reviewCalls++) ?? '{"findings":[]}' };
+    }
     if (req.phase === "qa") {
       return {
         summary:
@@ -77,35 +87,48 @@ export function createHarness(opts: HarnessOptions = {}) {
     sandbox,
     holdout,
     store,
-    qa: { run: async () => qaEvidence() },
+    qa: { run: async () => opts.qaReceipts?.() ?? qaEvidence() },
     merge: {
-      merge: async () => ({ ok: true, summary: "merged PR #1", url: "https://example.test/pr/1" }),
+      merge: async (_ctx, request) => {
+        merges.push(request);
+        return { ok: true, summary: "merged PR #1", url: "https://example.test/pr/1" };
+      },
     },
-    deploy: { deploy: async () => ({ ok: true, summary: "deployed" }) },
+    deploy: {
+      deploy: async (_ctx, request) => {
+        deploys.push(request);
+        return { ok: true, summary: "deployed" };
+      },
+    },
     verify: { verify: async () => [{ kind: "curl", ok: true, summary: "GET / 200" }] },
   };
 
   const project = testProject(opts.project);
-  const reconciler = new Reconciler({
-    store,
-    bus,
-    handlers: createDefaultHandlers(deps),
-    workspace,
-    tickets: (projectId) => (projectId === project.id ? tickets : new FakeTicketStore()),
-    limits: {
-      perProject: 4,
-      perModel: {},
-      defaultPerModel: 4,
-      perHost: {},
-      defaultPerHost: 8,
-      ...opts.limits,
-    },
-    backoff: { baseMs: 1000, maxMs: 60_000 },
-    stallMs: opts.stallMs ?? 600_000,
-    host: "bosgame",
-    clock: () => now,
-    ids: () => `${prefix}-${++seq}`,
-  });
+  const makeReconciler = (ownerId: string) =>
+    new Reconciler({
+      store,
+      bus,
+      handlers: createDefaultHandlers(deps),
+      workspace,
+      git,
+      tickets: (projectId) => (projectId === project.id ? tickets : new FakeTicketStore()),
+      limits: {
+        perProject: 4,
+        perModel: {},
+        defaultPerModel: 4,
+        perHost: {},
+        defaultPerHost: 8,
+        ...opts.limits,
+      },
+      backoff: { baseMs: 1000, maxMs: 60_000 },
+      leaseMs: opts.leaseMs ?? 600_000,
+      heartbeatMs: 3_600_000,
+      host: "bosgame",
+      ownerId,
+      clock: () => now,
+      ids: () => `${prefix}-${++seq}`,
+    });
+  const reconciler = makeReconciler(`reconciler:${prefix}-a`);
 
   return {
     store,
@@ -114,12 +137,16 @@ export function createHarness(opts: HarnessOptions = {}) {
     tickets,
     workspace,
     sandbox,
+    git,
     holdout,
     implementer,
     reviewer,
     deps,
+    merges,
+    deploys,
     project,
     reconciler,
+    makeReconciler,
     advanceClock(ms: number) {
       now = new Date(now.getTime() + ms);
     },
@@ -127,11 +154,11 @@ export function createHarness(opts: HarnessOptions = {}) {
       await store.upsertProject(project);
     },
     /** Tick until nothing is left to dispatch (or the cap is hit). */
-    async drain(maxTicks = 50) {
+    async drain(maxTicks = 50, r: Reconciler = reconciler) {
       for (let i = 0; i < maxTicks; i++) {
-        const r = await reconciler.tick();
-        await reconciler.idle();
-        if (r.dispatched.length === 0 && r.replayed.length === 0) {
+        const report = await r.tick();
+        await r.idle();
+        if (report.dispatched.length === 0 && report.replayed.length === 0) {
           const pending = await store.listWorkflows({ status: ["pending"] });
           if (pending.length === 0) return;
           now = new Date(now.getTime() + 60_000);

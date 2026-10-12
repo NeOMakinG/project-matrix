@@ -146,3 +146,18 @@ export function testProject(overrides: Partial<ProjectConfig> = {}): ProjectConf
     ...overrides,
   };
 }
+
+/** Git state per worktree; tests mutate it to simulate commits and dirty trees. */
+export class FakeGit {
+  readonly sha = new Map<string, string>();
+  readonly dirty = new Map<string, string>();
+  async headSha(workdir: string): Promise<string> {
+    return this.sha.get(workdir) ?? "a".repeat(40);
+  }
+  async treeState(workdir: string): Promise<string> {
+    return `${await this.headSha(workdir)}:${this.dirty.get(workdir) ?? ""}`;
+  }
+  commit(workdir: string, sha: string): void {
+    this.sha.set(workdir, sha);
+  }
+}

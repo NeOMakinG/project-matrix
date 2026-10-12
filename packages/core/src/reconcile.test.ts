@@ -82,38 +82,6 @@ describe("reconcile loop", () => {
     await h2.reconciler.idle();
   });
 
-  test("restarts a stalled run with back-off", async () => {
-    const h = createHarness({
-      stallMs: 1_000,
-      implement: (_req, call, signal) =>
-        call === 0
-          ? new Promise((_resolve, reject) =>
-              signal.addEventListener("abort", () => reject(signal.reason)),
-            )
-          : { summary: "implemented" },
-    });
-    await h.setup();
-    const t = h.tickets.add("Slow");
-    await h.reconciler.tick(); // spike
-    await h.reconciler.idle();
-    await h.reconciler.tick(); // implement hangs
-    await new Promise((r) => setTimeout(r, 10));
-    h.advanceClock(5_000);
-    const report = await h.reconciler.tick();
-    expect(report.stalled).toEqual([t.id]);
-    const w = await h.store.getWorkflow("pilot", t.id);
-    expect(w).toMatchObject({ phase: "implement", status: "pending", attempt: 1 });
-    expect(w?.nextAttemptAt?.getTime()).toBeGreaterThan(Date.parse("2026-10-12T10:00:05Z"));
-    const implementRuns = (await h.store.listRuns({ ticketId: t.id })).filter(
-      (r) => r.phase === "implement",
-    );
-    expect(implementRuns.every((r) => r.status !== "running")).toBe(true);
-
-    // After the back-off the ticket is retried and completes.
-    await h.drain();
-    expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
-  });
-
   test("replays a completed step instead of running it again", async () => {
     const h = createHarness();
     await h.setup();
