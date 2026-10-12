@@ -1,5 +1,7 @@
 import type { MatrixConfig } from "@matrix/config";
+import { lintPreset } from "@matrix/rules";
 import { apiFiles } from "./api";
+import { ciWorkflow } from "./ci";
 import type { Files } from "./docs";
 import { md } from "./escape";
 import { pick } from "./versions";
@@ -15,7 +17,7 @@ export function scaffoldFiles(c: MatrixConfig): { files: Files; warnings: string
   const warnings: string[] = [];
   const pkg = packageName(c.business.name);
   const fe = c.frontend;
-  const biome = fe?.framework !== "react" || fe.lint === "biome";
+  const lint = lintPreset(c);
   let files: Files = {
     "package.json": `${JSON.stringify(
       {
@@ -26,9 +28,9 @@ export function scaffoldFiles(c: MatrixConfig): { files: Files; warnings: string
         scripts: {
           typecheck: "bun run --filter '*' typecheck",
           test: "bun run --filter '*' test",
-          ...(biome ? { lint: "biome check ." } : {}),
+          ...lint.scripts,
         },
-        devDependencies: pick(["typescript", ...(biome ? ["@biomejs/biome"] : [])]),
+        devDependencies: pick(["typescript", ...lint.devDependencies]),
       },
       null,
       2,
@@ -51,19 +53,8 @@ export function scaffoldFiles(c: MatrixConfig): { files: Files; warnings: string
       2,
     )}\n`,
     ".gitignore": "node_modules/\ndist/\n.env\n.env.*\n",
-    ...(biome
-      ? {
-          "biome.json": `${JSON.stringify(
-            {
-              $schema: "https://biomejs.dev/schemas/2.2.0/schema.json",
-              files: { includes: ["**", "!**/dist", "!**/node_modules", "!.matrix"] },
-              formatter: { indentStyle: "space", indentWidth: 2, lineWidth: 100 },
-            },
-            null,
-            2,
-          )}\n`,
-        }
-      : {}),
+    ...lint.files,
+    ".github/workflows/ci.yml": ciWorkflow(c),
     "README.md": `# ${md(c.business.name)}
 
 ${md(c.business.problem)}

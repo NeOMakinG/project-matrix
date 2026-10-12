@@ -29,7 +29,9 @@
         "@biomejs/biome": "^2.2.0",
         "@clack/prompts": "^1.8.1",
         "@matrix/config": "workspace:*",
+        "@matrix/graph": "workspace:*",
         "@matrix/packs": "workspace:*",
+        "@matrix/rules": "workspace:*",
         "@matrix/tickets": "workspace:*",
         "zod": "^4",
       },
@@ -106,6 +108,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@matrix/config": "workspace:*",
+        "@matrix/rules": "workspace:*",
       },
     },
   },

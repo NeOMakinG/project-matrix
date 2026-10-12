@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import type { MatrixConfig } from "@matrix/config";
+import { linkTicket, loadProductGraph, saveProductGraph, writeGraph } from "@matrix/graph";
 import {
   type Answers,
   buildConfig,
@@ -27,6 +28,7 @@ import {
   productGraph,
   recordAdr,
   renderAdr,
+  slug,
 } from "./generate/docs";
 import { scaffoldFiles } from "./generate/scaffold";
 
@@ -139,7 +141,13 @@ async function planAdrs(
   return { files, numbers };
 }
 
-async function seedBacklog(outDir: string, config: MatrixConfig): Promise<string[]> {
+interface SeededBacklog {
+  ids: string[];
+  /** Feature tickets and the product-graph feature they implement. */
+  features: { id: string; title: string; feature: string }[];
+}
+
+async function seedBacklog(outDir: string, config: MatrixConfig): Promise<SeededBacklog> {
   const root = await realpath(outDir);
   const store = new MarkdownTicketStore(join(root, ".matrix/tickets"), { root });
   const existing = new Map((await store.list()).map((t) => [t.title, t]));
@@ -174,6 +182,7 @@ async function seedBacklog(outDir: string, config: MatrixConfig): Promise<string
     const t = await create({ title, body, labels: ["setup"], priority: 2, deps: [setup.id] });
     ids.push(t.id);
   }
+  const features: SeededBacklog["features"] = [];
   for (const feature of config.product.mvpScope) {
     const t = await create({
       title: `Feature: ${feature}`,
@@ -183,8 +192,18 @@ async function seedBacklog(outDir: string, config: MatrixConfig): Promise<string
       deps: [setup.id],
     });
     ids.push(t.id);
+    features.push({ id: t.id, title: t.title, feature: `feature:${slug(feature)}` });
   }
-  return ids;
+  return { ids, features };
+}
+
+/** Links feature tickets to the product-graph features they implement. */
+async function linkBacklog(outDir: string, backlog: SeededBacklog): Promise<void> {
+  const graph = await loadProductGraph(outDir);
+  const known = new Set(graph.nodes.map((n) => n.id));
+  for (const t of backlog.features)
+    linkTicket(graph, { id: t.id, title: t.title }, known.has(t.feature) ? [t.feature] : []);
+  await saveProductGraph(outDir, graph);
 }
 
 /** Formats the generated project with the factory's own Biome so it passes `lint` out of the box. */
@@ -281,14 +300,16 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     const formatted = formatWithBiome(opts.outDir, written);
     if (formatted) warnings.push(formatted);
   }
-  const tickets = await seedBacklog(opts.outDir, config);
+  const backlog = await seedBacklog(opts.outDir, config);
+  await linkBacklog(opts.outDir, backlog);
+  if (opts.scaffold) await writeGraph(opts.outDir);
   return {
     status: "ok",
     config,
     answers,
     files: written,
     skipped,
-    tickets,
+    tickets: backlog.ids,
     warnings,
     contradictions,
   };

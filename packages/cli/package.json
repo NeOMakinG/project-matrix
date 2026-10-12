@@ -15,7 +15,9 @@
     "@matrix/config": "workspace:*",
     "@matrix/packs": "workspace:*",
     "@matrix/tickets": "workspace:*",
-    "zod": "^4"
+    "zod": "^4",
+    "@matrix/rules": "workspace:*",
+    "@matrix/graph": "workspace:*"
   },
   "bin": {
     "matrix": "./src/bin.ts"
