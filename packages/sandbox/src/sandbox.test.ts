@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { CredentialBroker } from "./broker";
 import { BwrapSandbox } from "./bwrap";
-import { mapPath, withBridge } from "./launch";
+import { mapPath, RUN_TOKEN_PLACEHOLDER, withBridge } from "./launch";
 import { PodmanSandbox } from "./podman";
 import { hostExecutor, type LineExecutor, runToCompletion } from "./process";
 import { runSecretGate, secretNeedles } from "./secret-gate";
@@ -194,4 +194,14 @@ describe("secret gate", () => {
   test("short values are ignored", () => {
     expect(secretNeedles("short")).toEqual([]);
   });
+});
+
+test("run token placeholder is replaced at launch", () => {
+  const sandbox = new PodmanSandbox({ broker, image: "img" });
+  const env = sandbox.containerEnv(
+    { ...spec, env: { ANTHROPIC_API_KEY: RUN_TOKEN_PLACEHOLDER } },
+    "gateway",
+    "mxr_abc",
+  );
+  expect(env.ANTHROPIC_API_KEY).toBe("mxr_abc");
 });

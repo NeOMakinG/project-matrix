@@ -6,6 +6,7 @@ import {
   BRIDGE_ASSET,
   CONTAINER_BRIDGE,
   CONTAINER_SOCKET_DIR,
+  fillRunToken,
   sandboxNetworkEnv,
   withBridge,
 } from "./launch.js";
@@ -60,7 +61,9 @@ export class BwrapSandbox implements Sandbox {
       HOME: "/tmp/home",
       ...sandboxNetworkEnv(grant.network),
     };
-    for (const [k, v] of Object.entries(spec.env)) if (k !== "PATH" && k !== "HOME") env[k] = v;
+    for (const [k, v] of Object.entries(spec.env)) {
+      if (k !== "PATH" && k !== "HOME") env[k] = fillRunToken(v, grant.token);
+    }
     if (bridged) env.MATRIX_RUN_TOKEN = grant.token;
     for (const [k, v] of Object.entries(env)) {
       assertEnvName(k);

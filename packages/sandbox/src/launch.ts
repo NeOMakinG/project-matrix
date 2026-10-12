@@ -5,6 +5,12 @@ export const EGRESS_PORT = 18081;
 export const CONTAINER_SOCKET_DIR = "/run/matrix";
 export const CONTAINER_BRIDGE = "/opt/matrix/bridge.mjs";
 export const READY_FILE = "/tmp/.matrix-bridge-ready";
+/** Put this in a runner's gateway apiKey; the sandbox swaps in the per-run token minted at launch. */
+export const RUN_TOKEN_PLACEHOLDER = "__MATRIX_RUN_TOKEN__";
+
+export function fillRunToken(value: string, token: string): string {
+  return value.split(RUN_TOKEN_PLACEHOLDER).join(token);
+}
 
 export const BRIDGE_ASSET = fileURLToPath(new URL("../assets/bridge.mjs", import.meta.url));
 

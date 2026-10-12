@@ -9,6 +9,7 @@ import {
   BRIDGE_ASSET,
   CONTAINER_BRIDGE,
   CONTAINER_SOCKET_DIR,
+  fillRunToken,
   mapPath,
   sandboxNetworkEnv,
   withBridge,
@@ -104,7 +105,7 @@ export class PodmanSandbox implements Sandbox {
     const env: Record<string, string> = { HOME: "/home/agent", ...sandboxNetworkEnv(network) };
     for (const [k, v] of Object.entries(spec.env)) {
       if (k === "PATH" || k === "HOME" || k === "TMPDIR") continue;
-      env[k] = mapPath(v, spec.cwd, inner);
+      env[k] = fillRunToken(mapPath(v, spec.cwd, inner), token);
     }
     if (network !== "none") env.MATRIX_RUN_TOKEN = token;
     return env;
