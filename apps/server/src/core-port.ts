@@ -12,9 +12,12 @@ export interface Project {
 
 export type RunState = "queued" | "running" | "paused" | "awaiting_approval" | RunStatus;
 
-/** Who performs an action. `kind` comes from the API key: humans vs automated agents. */
+/**
+ * Who performs an action. `id` is the identity recorded by the core (`key:<keyId>` for API keys,
+ * `user:<name>` for people); `kind` comes from the API key: humans vs automated agents.
+ */
 export interface Actor {
-  keyId: string;
+  id: string;
   kind: "human" | "agent";
 }
 
@@ -22,8 +25,8 @@ export interface Run {
   id: string;
   projectId: string;
   ticketId: string;
-  /** Key that started the run; it may never approve its own run. */
-  startedBy: string;
+  /** Identity that started the run; it may never decide an approval on its own run. */
+  ownerId: string;
   /** Commit currently under review. Approvals are bound to it; a new commit voids them. */
   headSha?: string;
   phase: Phase;
@@ -36,16 +39,25 @@ export interface Run {
   workspaceUrl?: string;
 }
 
-export type ApprovalDecision = "approve" | "request_changes";
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+export type ApprovalDecision = "approved" | "rejected";
 
+/** Mirrors core's ApprovalRecord: requested by the reconciler, decided by someone else. */
 export interface Approval {
+  id: string;
+  projectId: string;
+  ticketId: string;
+  phase: Phase;
+  /** The run whose result is being approved (QA run for merge, merge run for deploy). */
   runId: string;
-  decision: ApprovalDecision;
-  commitSha: string;
-  comment?: string;
-  by: string;
-  byKind: Actor["kind"];
-  at: string;
+  /** Commit that was reviewed and tested; merge refuses any other HEAD. */
+  headSha: string;
+  requestedBy: string;
+  status: ApprovalStatus;
+  requestedAt: string;
+  decidedAt?: string;
+  decidedBy?: string;
+  note?: string;
 }
 
 export interface Adr {
@@ -124,21 +136,23 @@ export interface CorePort {
   pauseRun(id: string): Promise<Run>;
   cancelRun(id: string): Promise<Run>;
   listReceipts(runId: string): Promise<Receipt[]>;
+  listApprovals(query: { projectId?: string; status?: ApprovalStatus }): Promise<Approval[]>;
+  getApproval(id: string): Promise<Approval | null>;
   /**
-   * Must enforce: the run is awaiting approval; `commitSha` equals the run's `headSha`; the actor is not
-   * the key that started the run; when the project's merge autonomy is `human`, the actor is a human key.
+   * Same rules as core's `decideApproval`: the identity that requested it, any `reconciler:*` identity
+   * and the run's owner can't decide; the approval must be pending; approving requires the run to have
+   * succeeded and HEAD to still be the approval's `headSha`.
    */
-  approve(input: {
-    runId: string;
-    decision: ApprovalDecision;
-    commitSha: string;
-    actor: Actor;
-    comment?: string;
-  }): Promise<Approval>;
+  decideApproval(
+    id: string,
+    decision: ApprovalDecision,
+    by: string,
+    note?: string,
+  ): Promise<Approval>;
   /**
    * Must enforce: failed, cancelled and timed-out runs are never mergeable; an already merged run is a
    * conflict; every receipt must be present and passing (all modes); in `human` merge mode there must be
-   * an `approve` by a human key bound to the current `headSha`.
+   * an approved approval for the run bound to its current `headSha`.
    */
   merge(runId: string, actor: Actor): Promise<Run>;
   /**

@@ -62,14 +62,12 @@ const cases: Case[] = [
     },
   },
   {
-    name: "approve run",
+    name: "decide approval",
     action: "runs:approve",
     run: async (c, t) => {
       await c.core.setAutonomy(c.project.id, "merge", "gated");
-      return c.call(t, "POST", `/v1/runs/${await readyRun(c)}/approval`, {
-        decision: "approve",
-        commitSha: SHA,
-      });
+      const approval = c.core.requestApproval(await readyRun(c));
+      return c.call(t, "POST", `/v1/approvals/${approval.id}/decision`, { decision: "approved" });
     },
   },
   {

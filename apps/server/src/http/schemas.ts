@@ -86,7 +86,7 @@ export const Run = z
     id: z.string(),
     projectId: z.string(),
     ticketId: z.string(),
-    startedBy: z.string(),
+    ownerId: z.string(),
     headSha: z.string().optional(),
     phase: Phase,
     state: z.string(),
@@ -115,26 +115,29 @@ export const Receipt = z
   })
   .openapi("Receipt");
 
-export const ApprovalInput = z
+export const ApprovalStatus = z.enum(["pending", "approved", "rejected"]).openapi("ApprovalStatus");
+
+export const ApprovalDecisionInput = z
   .object({
-    decision: z.enum(["approve", "request_changes"]),
-    commitSha: z
-      .string()
-      .regex(/^[0-9a-f]{7,64}$/)
-      .openapi({ description: "Head commit being approved; must match the run's current head" }),
-    comment: z.string().max(5000).optional(),
+    decision: z.enum(["approved", "rejected"]),
+    note: z.string().max(5000).optional(),
   })
-  .openapi("ApprovalInput");
+  .openapi("ApprovalDecisionInput");
 
 export const Approval = z
   .object({
+    id: z.string(),
+    projectId: z.string(),
+    ticketId: z.string(),
+    phase: Phase,
     runId: z.string(),
-    decision: z.enum(["approve", "request_changes"]),
-    commitSha: z.string(),
-    comment: z.string().optional(),
-    by: z.string(),
-    byKind: z.enum(["human", "agent"]),
-    at: z.string(),
+    headSha: z.string(),
+    requestedBy: z.string(),
+    status: ApprovalStatus,
+    requestedAt: z.string(),
+    decidedAt: z.string().optional(),
+    decidedBy: z.string().optional(),
+    note: z.string().optional(),
   })
   .openapi("Approval");
 

@@ -403,7 +403,7 @@
           "ticketId": {
             "type": "string"
           },
-          "startedBy": {
+          "ownerId": {
             "type": "string"
           },
           "headSha": {
@@ -438,7 +438,7 @@
           "id",
           "projectId",
           "ticketId",
-          "startedBy",
+          "ownerId",
           "phase",
           "state",
           "runner",
@@ -491,50 +491,72 @@
       "Approval": {
         "type": "object",
         "properties": {
+          "id": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "ticketId": {
+            "type": "string"
+          },
+          "phase": {
+            "$ref": "#/components/schemas/Phase"
+          },
           "runId": {
             "type": "string"
           },
-          "decision": {
-            "type": "string",
-            "enum": ["approve", "request_changes"]
-          },
-          "commitSha": {
+          "headSha": {
             "type": "string"
           },
-          "comment": {
+          "requestedBy": {
             "type": "string"
           },
-          "by": {
+          "status": {
+            "$ref": "#/components/schemas/ApprovalStatus"
+          },
+          "requestedAt": {
             "type": "string"
           },
-          "byKind": {
-            "type": "string",
-            "enum": ["human", "agent"]
+          "decidedAt": {
+            "type": "string"
           },
-          "at": {
+          "decidedBy": {
+            "type": "string"
+          },
+          "note": {
             "type": "string"
           }
         },
-        "required": ["runId", "decision", "commitSha", "by", "byKind", "at"]
+        "required": [
+          "id",
+          "projectId",
+          "ticketId",
+          "phase",
+          "runId",
+          "headSha",
+          "requestedBy",
+          "status",
+          "requestedAt"
+        ]
       },
-      "ApprovalInput": {
+      "ApprovalStatus": {
+        "type": "string",
+        "enum": ["pending", "approved", "rejected"]
+      },
+      "ApprovalDecisionInput": {
         "type": "object",
         "properties": {
           "decision": {
             "type": "string",
-            "enum": ["approve", "request_changes"]
+            "enum": ["approved", "rejected"]
           },
-          "commitSha": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{7,64}$",
-            "description": "Head commit being approved; must match the run's current head"
-          },
-          "comment": {
+          "note": {
             "type": "string",
             "maxLength": 5000
           }
         },
-        "required": ["decision", "commitSha"]
+        "required": ["decision"]
       },
       "Settings": {
         "type": "object",
@@ -2543,10 +2565,114 @@
         }
       }
     },
-    "/v1/runs/{id}/approval": {
+    "/v1/approvals": {
+      "get": {
+        "tags": ["approvals"],
+        "summary": "List approvals",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": false,
+            "name": "projectId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "$ref": "#/components/schemas/ApprovalStatus"
+            },
+            "required": false,
+            "name": "status",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Approval"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/approvals/{id}/decision": {
       "post": {
-        "tags": ["runs"],
-        "summary": "Approve a run or request changes",
+        "tags": ["approvals"],
+        "summary": "Approve or reject a pending approval",
         "security": [
           {
             "bearer": []
@@ -2568,7 +2694,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ApprovalInput"
+                "$ref": "#/components/schemas/ApprovalDecisionInput"
               }
             }
           }

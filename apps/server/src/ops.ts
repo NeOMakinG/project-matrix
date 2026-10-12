@@ -14,6 +14,7 @@ import type { AuditLog } from "./auth/limits.js";
 import {
   type Actor,
   type ApprovalDecision,
+  type ApprovalStatus,
   CoreError,
   type CorePort,
   type Project,
@@ -67,7 +68,7 @@ export class Operations {
   }
 
   private actor(p: Principal): Actor {
-    return { keyId: p.key.id, kind: p.key.kind };
+    return { id: `key:${p.key.id}`, kind: p.key.kind };
   }
 
   private async projectOfRun(runId: string): Promise<string> {
@@ -191,17 +192,36 @@ export class Operations {
     )(() => this.core.listReceipts(runId));
   }
 
-  async approve(
-    p: Principal,
-    input: { runId: string; decision: ApprovalDecision; commitSha: string; comment?: string },
-  ) {
-    const projectId = await this.projectOfRun(input.runId);
+  async listApprovals(p: Principal, query: { projectId?: string; status?: ApprovalStatus }) {
+    const approvals = await this.op(
+      p,
+      "read",
+      "/approvals",
+      query.projectId ?? { kind: "list" },
+    )(() => this.core.listApprovals(query));
+    const scope = p.key.scope.projects;
+    return scope === "*" ? approvals : approvals.filter((a) => scope.includes(a.projectId));
+  }
+
+  /**
+   * Decisions are recorded under `key:<id>`. Core refuses the requester, reconcilers and the run owner;
+   * on top of that, a phase in `human` autonomy only accepts decisions from human keys.
+   */
+  async decideApproval(p: Principal, id: string, decision: ApprovalDecision, note?: string) {
+    const approval = await core(() => this.core.getApproval(id));
+    if (!approval) throw new HttpError(404, "not_found", `approval ${id} not found`);
     return this.op(
       p,
       "runs:approve",
-      `/runs/${input.runId}/approval`,
-      projectId,
-    )(() => this.core.approve({ ...input, actor: this.actor(p) }));
+      `/approvals/${id}/decision`,
+      approval.projectId,
+    )(async () => {
+      const project = await this.core.getProject(approval.projectId);
+      if (project?.autonomy[approval.phase] === "human" && p.key.kind !== "human") {
+        throw new CoreError("forbidden", "this phase requires a decision from a human key");
+      }
+      return this.core.decideApproval(id, decision, this.actor(p).id, note);
+    });
   }
 
   async merge(p: Principal, runId: string) {

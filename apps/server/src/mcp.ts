@@ -162,16 +162,29 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     ({ runId }) => result(() => ops.listReceipts(p, runId)),
   );
   server.registerTool(
-    "approve_run",
+    "list_approvals",
     {
-      description: "Approve a run waiting for a human decision, or request changes.",
-      inputSchema: {
-        runId: id,
-        ...S.ApprovalInput.shape,
-      },
+      description: "List approvals, e.g. pending merge or deploy decisions.",
+      inputSchema: { projectId: id.optional(), status: S.ApprovalStatus.optional() },
+      annotations: { readOnlyHint: true },
     },
-    ({ runId, decision, commitSha, comment }) =>
-      result(() => ops.approve(p, { runId, decision, commitSha, ...(comment ? { comment } : {}) })),
+    ({ projectId, status }) =>
+      result(() =>
+        ops.listApprovals(p, {
+          ...(projectId ? { projectId } : {}),
+          ...(status ? { status } : {}),
+        }),
+      ),
+  );
+  server.registerTool(
+    "decide_approval",
+    {
+      description:
+        "Approve or reject a pending approval. Requesters, reconcilers and the run's owner can't decide.",
+      inputSchema: { approvalId: id, ...S.ApprovalDecisionInput.shape },
+    },
+    ({ approvalId, decision, note }) =>
+      result(() => ops.decideApproval(p, approvalId, decision, note)),
   );
   server.registerTool(
     "merge_run",

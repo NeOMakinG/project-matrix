@@ -83,23 +83,38 @@ export function runRoutes(app: App, ops: Operations, keys: KeyStore) {
 
   app.openapi(
     route({
+      method: "get",
+      path: "/v1/approvals",
+      tag: "approvals",
+      summary: "List approvals",
+      query: z.object({ projectId: z.string().optional(), status: S.ApprovalStatus.optional() }),
+      response: z.array(S.Approval),
+    }),
+    async (c) => {
+      const q = c.req.valid("query");
+      return c.json(
+        await ops.listApprovals(c.var.principal, {
+          ...(q.projectId ? { projectId: q.projectId } : {}),
+          ...(q.status ? { status: q.status } : {}),
+        }),
+      );
+    },
+  );
+
+  app.openapi(
+    route({
       method: "post",
-      path: "/v1/runs/{id}/approval",
-      tag: "runs",
-      summary: "Approve a run or request changes",
+      path: "/v1/approvals/{id}/decision",
+      tag: "approvals",
+      summary: "Approve or reject a pending approval",
       params: IdParam,
-      body: S.ApprovalInput,
+      body: S.ApprovalDecisionInput,
       response: S.Approval,
     }),
     async (c) => {
-      const { decision, commitSha, comment } = c.req.valid("json");
+      const { decision, note } = c.req.valid("json");
       return c.json(
-        await ops.approve(c.var.principal, {
-          runId: c.req.valid("param").id,
-          decision,
-          commitSha,
-          ...(comment ? { comment } : {}),
-        }),
+        await ops.decideApproval(c.var.principal, c.req.valid("param").id, decision, note),
       );
     },
   );

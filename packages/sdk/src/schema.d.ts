@@ -1728,7 +1728,100 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/v1/runs/{id}/approval": {
+  "/v1/approvals": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List approvals */
+    get: {
+      parameters: {
+        query?: {
+          projectId?: string;
+          status?: components["schemas"]["ApprovalStatus"];
+        };
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Approval"][];
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/approvals/{id}/decision": {
     parameters: {
       query?: never;
       header?: never;
@@ -1737,7 +1830,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Approve a run or request changes */
+    /** Approve or reject a pending approval */
     post: {
       parameters: {
         query?: never;
@@ -1749,7 +1842,7 @@ export interface paths {
       };
       requestBody: {
         content: {
-          "application/json": components["schemas"]["ApprovalInput"];
+          "application/json": components["schemas"]["ApprovalDecisionInput"];
         };
       };
       responses: {
@@ -2572,7 +2665,7 @@ export interface components {
       id: string;
       projectId: string;
       ticketId: string;
-      startedBy: string;
+      ownerId: string;
       headSha?: string;
       phase: components["schemas"]["Phase"];
       state: string;
@@ -2598,22 +2691,25 @@ export interface components {
       data?: unknown;
     };
     Approval: {
+      id: string;
+      projectId: string;
+      ticketId: string;
+      phase: components["schemas"]["Phase"];
       runId: string;
-      /** @enum {string} */
-      decision: "approve" | "request_changes";
-      commitSha: string;
-      comment?: string;
-      by: string;
-      /** @enum {string} */
-      byKind: "human" | "agent";
-      at: string;
+      headSha: string;
+      requestedBy: string;
+      status: components["schemas"]["ApprovalStatus"];
+      requestedAt: string;
+      decidedAt?: string;
+      decidedBy?: string;
+      note?: string;
     };
-    ApprovalInput: {
+    /** @enum {string} */
+    ApprovalStatus: "pending" | "approved" | "rejected";
+    ApprovalDecisionInput: {
       /** @enum {string} */
-      decision: "approve" | "request_changes";
-      /** @description Head commit being approved; must match the run's current head */
-      commitSha: string;
-      comment?: string;
+      decision: "approved" | "rejected";
+      note?: string;
     };
     Settings: {
       [key: string]: unknown;

@@ -6,6 +6,7 @@ import {
   type Adr,
   type Approval,
   type ApprovalDecision,
+  type ApprovalStatus,
   CoreError,
   type CorePort,
   type InitSession,
@@ -149,7 +150,7 @@ export class MemoryCore implements CorePort {
     const run: Run = {
       id: randomUUID(),
       ...input,
-      startedBy: actor.keyId,
+      ownerId: actor.id,
       state: "queued",
       runner: "claude-code",
       model: "claude-fable-5-1",
@@ -190,39 +191,78 @@ export class MemoryCore implements CorePort {
     return this.receipts.get(runId) ?? [];
   }
 
-  async approve(input: {
-    runId: string;
-    decision: ApprovalDecision;
-    commitSha: string;
-    actor: Actor;
-    comment?: string;
-  }) {
-    const run = this.run(input.runId);
-    const project = this.project(run.projectId);
-    if (run.state !== "awaiting_approval") {
-      throw new CoreError("invalid_state", "run is not awaiting approval");
-    }
-    if (!run.headSha || input.commitSha !== run.headSha) {
-      throw new CoreError("conflict", "approval must target the run's current head commit");
-    }
-    if (input.actor.keyId === run.startedBy) {
-      throw new CoreError("forbidden", "a key cannot approve a run it started");
-    }
-    if (project.autonomy.merge === "human" && input.actor.kind !== "human") {
-      throw new CoreError("forbidden", "this project requires a human approval");
-    }
+  /** Fake-only: the reconciler asks for a decision on a run that finished its phase. */
+  requestApproval(
+    runId: string,
+    phase: Phase = "merge",
+    requestedBy = "reconciler:memory",
+  ): Approval {
+    const run = this.run(runId);
+    if (!run.headSha) throw new CoreError("invalid_state", "run has no head commit");
     const approval: Approval = {
-      runId: run.id,
-      decision: input.decision,
-      commitSha: input.commitSha,
-      by: input.actor.keyId,
-      byKind: input.actor.kind,
-      at: now(),
-      ...(input.comment ? { comment: input.comment } : {}),
+      id: randomUUID(),
+      projectId: run.projectId,
+      ticketId: run.ticketId,
+      phase,
+      runId,
+      headSha: run.headSha,
+      requestedBy,
+      status: "pending",
+      requestedAt: now(),
     };
     this.approvals.push(approval);
-    if (input.decision === "request_changes") this.transition(run.id, "queued");
     return approval;
+  }
+
+  async listApprovals(query: { projectId?: string; status?: ApprovalStatus }) {
+    return this.approvals.filter(
+      (a) =>
+        (!query.projectId || a.projectId === query.projectId) &&
+        (!query.status || a.status === query.status),
+    );
+  }
+
+  async getApproval(id: string) {
+    return this.approvals.find((a) => a.id === id) ?? null;
+  }
+
+  async decideApproval(id: string, decision: ApprovalDecision, by: string, note?: string) {
+    const index = this.approvals.findIndex((a) => a.id === id);
+    const approval = this.approvals[index];
+    if (!approval) throw new CoreError("not_found", `approval ${id} not found`);
+    if (by === approval.requestedBy || by.startsWith("reconciler:")) {
+      throw new CoreError(
+        "forbidden",
+        "an approval cannot be decided by the identity that requested it",
+      );
+    }
+    const run = this.run(approval.runId);
+    if (by === run.ownerId) {
+      throw new CoreError("forbidden", "an approval cannot be decided by the run's initiator");
+    }
+    if (approval.status !== "pending")
+      throw new CoreError("conflict", `approval already ${approval.status}`);
+    if (decision === "approved") {
+      if (run.state !== "awaiting_approval") {
+        throw new CoreError("invalid_state", "the approved run did not succeed");
+      }
+      if (run.headSha !== approval.headSha) {
+        throw new CoreError(
+          "conflict",
+          "HEAD moved since the approval was requested; request a new approval",
+        );
+      }
+    }
+    const decided: Approval = {
+      ...approval,
+      status: decision,
+      decidedAt: now(),
+      decidedBy: by,
+      ...(note ? { note } : {}),
+    };
+    this.approvals[index] = decided;
+    if (decision === "rejected") this.transition(run.id, "queued");
+    return decided;
   }
 
   async merge(runId: string, _actor: Actor) {
@@ -241,17 +281,10 @@ export class MemoryCore implements CorePort {
     }
     if (project.autonomy.merge === "human") {
       const approved = this.approvals.some(
-        (a) =>
-          a.runId === runId &&
-          a.decision === "approve" &&
-          a.byKind === "human" &&
-          a.commitSha === run.headSha,
+        (a) => a.runId === runId && a.status === "approved" && a.headSha === run.headSha,
       );
       if (!approved) {
-        throw new CoreError(
-          "invalid_state",
-          "merge requires a human approval of the current commit",
-        );
+        throw new CoreError("invalid_state", "merge requires an approval of the current commit");
       }
     }
     this.merged.set(runId, now());

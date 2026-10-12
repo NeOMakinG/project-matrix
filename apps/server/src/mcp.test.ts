@@ -28,7 +28,7 @@ describe("MCP server", () => {
         "list_tickets",
         "create_ticket",
         "start_run",
-        "approve_run",
+        "decide_approval",
         "merge_run",
         "deploy_project",
         "set_autonomy",

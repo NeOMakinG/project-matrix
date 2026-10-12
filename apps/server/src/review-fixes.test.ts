@@ -77,51 +77,60 @@ describe("P1: key minting can't escalate", () => {
 });
 
 describe("P2: approval, merge and deploy gates", () => {
-  test("approval is bound to the head commit; a new commit voids it", async () => {
+  test("an approval is bound to the head commit it was requested for", async () => {
     const ctx = await setup();
     const runId = await readyRun(ctx);
     const reviewer = human(ctx, ["runs:approve", "merge"]);
-    const approve = (sha: string) =>
-      ctx.call(reviewer, "POST", `/v1/runs/${runId}/approval`, {
-        decision: "approve",
-        commitSha: sha,
-      });
+    const decide = (id: string, decision: "approved" | "rejected") =>
+      ctx.call(reviewer, "POST", `/v1/approvals/${id}/decision`, { decision });
 
-    expect((await approve(OTHER_SHA)).status).toBe(409);
-    expect((await approve(SHA)).status).toBe(200);
-    ctx.core.setHead(runId, OTHER_SHA);
+    const stale = ctx.core.requestApproval(runId);
+    ctx.core.setHead(runId, OTHER_SHA); // a new commit lands after the request
+    expect((await decide(stale.id, "approved")).status).toBe(409);
     expect((await ctx.call(reviewer, "POST", `/v1/runs/${runId}/merge`)).status).toBe(409);
-    expect((await approve(OTHER_SHA)).status).toBe(200);
+
+    const fresh = ctx.core.requestApproval(runId);
+    expect((await decide(fresh.id, "approved")).status).toBe(200);
+    expect((await decide(fresh.id, "rejected")).status).toBe(409); // already decided
     expect((await ctx.call(reviewer, "POST", `/v1/runs/${runId}/merge`)).status).toBe(200);
     expect((await ctx.call(reviewer, "POST", `/v1/runs/${runId}/merge`)).status).toBe(409);
   });
 
-  test("a key can't approve its own run, and human mode rejects agent approvals", async () => {
+  test("requester, reconcilers and the run owner can't decide; human phases need a human key", async () => {
     const ctx = await setup();
-    const agent = ctx.key(["runs:start", "runs:approve"]);
+    const owner = ctx.key(["runs:start", "runs:approve"]);
     const ticket = await ctx.core.createTicket(ctx.project.id, { title: "t", body: "" });
-    const started = await ctx.json<{ id: string }>(
-      await ctx.call(agent, "POST", "/v1/runs", {
+    const started = await ctx.json<{ id: string; ownerId: string }>(
+      await ctx.call(owner, "POST", "/v1/runs", {
         projectId: ctx.project.id,
         ticketId: ticket.id,
         phase: "qa",
       }),
     );
+    expect(started.ownerId).toMatch(/^key:/);
     ctx.core.setHead(started.id, SHA);
     await ctx.core.setAutonomy(ctx.project.id, "merge", "gated");
-    const self = await ctx.call(agent, "POST", `/v1/runs/${started.id}/approval`, {
-      decision: "approve",
-      commitSha: SHA,
-    });
-    expect(self.status).toBe(403);
+    const approval = ctx.core.requestApproval(started.id);
+    const decide = (token: string) =>
+      ctx.call(token, "POST", `/v1/approvals/${approval.id}/decision`, { decision: "approved" });
+
+    expect((await decide(owner)).status).toBe(403); // run owner
+
+    const requested = ctx.core.requestApproval(
+      started.id,
+      "merge",
+      `key:${ctx.key(["read"]).split("_")[1]}`,
+    );
+    await expect(
+      ctx.core.decideApproval(requested.id, "approved", requested.requestedBy),
+    ).rejects.toThrow(/requested/);
+    await expect(
+      ctx.core.decideApproval(approval.id, "approved", "reconciler:other"),
+    ).rejects.toThrow(/requested/);
 
     await ctx.core.setAutonomy(ctx.project.id, "merge", "human");
-    const otherAgent = ctx.key(["runs:approve"]);
-    const agentApproval = await ctx.call(otherAgent, "POST", `/v1/runs/${started.id}/approval`, {
-      decision: "approve",
-      commitSha: SHA,
-    });
-    expect(agentApproval.status).toBe(403);
+    expect((await decide(ctx.key(["runs:approve"]))).status).toBe(403); // agent key, human phase
+    expect((await decide(human(ctx, ["runs:approve"]))).status).toBe(200);
   });
 
   test("gated merge needs passing receipts; failed and cancelled runs are never mergeable", async () => {
