@@ -24,7 +24,14 @@ export function dedupe(items: WatchItem[]): WatchItem[] {
   const seenUrl = new Set<string>();
   const seenTitle = new Set<string>();
   const out: WatchItem[] = [];
+  const advisories = new Set<string>();
   for (const item of [...items].sort((a, b) => a.id.localeCompare(b.id))) {
+    // One advisory URL covers many packages: dedupe advisories by advisory id + package only.
+    if (item.source === "osv") {
+      if (!advisories.has(item.id)) out.push(item);
+      advisories.add(item.id);
+      continue;
+    }
     const u = normalizeUrl(item.url);
     const t = titleKey(item.title);
     const duplicate = seenUrl.has(u) || seenTitle.has(t);

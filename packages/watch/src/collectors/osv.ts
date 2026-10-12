@@ -1,4 +1,4 @@
-import type { HttpOptions } from "../http.js";
+import { assertPublicUrl, type HttpOptions } from "../http.js";
 import type { Dependency, WatchItem } from "../types.js";
 
 const OSV_ECOSYSTEM = { npm: "npm", crates: "crates.io", pypi: "PyPI" } as const;
@@ -19,7 +19,9 @@ export async function collectOsv(deps: Dependency[], http: HttpOptions = {}): Pr
   const pinned = deps.filter((d) => d.resolved);
   if (!pinned.length) return [];
   const f = http.fetch ?? fetch;
-  const res = await f("https://api.osv.dev/v1/querybatch", {
+  const endpoint = "https://api.osv.dev/v1/querybatch";
+  await assertPublicUrl(endpoint, http.resolve);
+  const res = await f(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

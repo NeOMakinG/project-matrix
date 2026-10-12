@@ -42,6 +42,7 @@ class FakeTickets implements TicketStore {
   }
 }
 
+const publicDns = async () => ["93.184.216.34"];
 const json = (v: unknown) => new Response(JSON.stringify(v), { status: 200 });
 const recent = new Date(Date.now() - 86_400_000).toISOString();
 
@@ -124,7 +125,7 @@ describe("runWatch", () => {
       context,
       gateway,
       tickets,
-      http: { fetch },
+      http: { fetch, resolve: publicDns },
       sources: { trending: false, feeds: false, arxiv: false },
     });
     expect(first.errors).toEqual([]);
@@ -147,7 +148,7 @@ describe("runWatch", () => {
       context,
       gateway,
       tickets,
-      http: { fetch },
+      http: { fetch, resolve: publicDns },
       sources: { trending: false, feeds: false, arxiv: false },
     });
     expect(second.fresh).toBe(0);
