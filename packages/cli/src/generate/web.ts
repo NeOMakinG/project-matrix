@@ -1,5 +1,6 @@
 import type { MatrixConfig } from "@matrix/config";
 import type { Files } from "./docs";
+import { html, jsxText } from "./escape";
 import { pick } from "./versions";
 
 type React = Extract<NonNullable<MatrixConfig["frontend"]>, { framework: "react" }>;
@@ -43,8 +44,8 @@ export function webFiles(c: MatrixConfig, fe: React, pkgName: string): Files {
   const home = `function Home() {
   return (
     <main${tailwind ? ' className="mx-auto max-w-2xl p-8"' : ""}>
-      <h1>${c.business.name}</h1>
-      <p>${c.business.valueProposition.replace(/[{}<>]/g, "")}</p>
+      <h1>${jsxText(c.business.name)}</h1>
+      <p>${jsxText(c.business.valueProposition)}</p>
     </main>
   );
 }`;
@@ -125,7 +126,7 @@ export default defineConfig({
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${c.business.name}</title>
+    <title>${html(c.business.name)}</title>
   </head>
   <body>
     <div id="root"></div>

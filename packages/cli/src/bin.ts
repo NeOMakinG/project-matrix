@@ -14,6 +14,7 @@ Options:
   --yes              accept recommended answers for anything not answered
   --existing         onboard an existing repo in [dir]: infer answers, no scaffold
   --no-scaffold      only write config, ADRs, CONTEXT.md, graph and backlog
+  --force            replace existing generated files (never follows symlinks)
   --json             machine-readable output`;
 
 async function readAnswers(path: string | undefined): Promise<Answers> {
@@ -29,6 +30,7 @@ async function main(argv: string[]): Promise<number> {
       yes: { type: "boolean", default: false },
       existing: { type: "boolean", default: false },
       "no-scaffold": { type: "boolean", default: false },
+      force: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
     },
@@ -63,6 +65,7 @@ async function main(argv: string[]): Promise<number> {
     outDir,
     acceptRecommended: values.yes,
     scaffold: !values.existing && !values["no-scaffold"],
+    force: values.force,
     ...(values.existing ? { existingRepo: outDir } : {}),
   });
 
@@ -82,6 +85,12 @@ async function main(argv: string[]): Promise<number> {
       console.error("The answers contradict each other:");
       for (const c of result.contradictions)
         console.error(`  [${c.id}] ${c.message} (re-answer: ${c.questions.join(", ")})`);
+      return 2;
+    case "conflicts":
+      console.error(
+        "These files already exist. Re-run with --force to replace them, or use --existing:",
+      );
+      for (const f of result.files) console.error(`  ${f}`);
       return 2;
     case "invalid":
       console.error("The answers don't produce a valid matrix.config:");

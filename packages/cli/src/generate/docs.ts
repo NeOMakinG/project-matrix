@@ -1,5 +1,6 @@
 import type { MatrixConfig } from "@matrix/config";
 import type { DecisionRecord } from "@matrix/packs";
+import { md } from "./escape";
 
 export type Files = Record<string, string>;
 
@@ -20,9 +21,11 @@ export default config;
 `;
 }
 
-export function adrFiles(ds: DecisionRecord[], date: string): Files {
-  const files: Files = {};
-  files["docs/adr/0001-record-architecture-decisions.md"] = `# 1. Record architecture decisions
+export const adrPath = (n: number, topic: string, dir = "docs/adr") =>
+  `${dir}/${pad(n)}-${slug(topic)}.md`;
+
+export function recordAdr(n: number, date: string): string {
+  return `# ${n}. Record architecture decisions
 
 - Status: accepted
 - Date: ${date}
@@ -35,18 +38,19 @@ Humans and agents both change this codebase. Decisions must be written down wher
 
 Significant decisions are recorded as ADRs in \`docs/adr/\` using MADR. An ADR may declare machine-checkable rules in a \`matrix-rules\` block; \`matrix check\` enforces them and every violation names its ADR.
 `;
-  ds.forEach((d, i) => {
-    const n = i + 2;
-    const title = `Use ${d.decision} for ${d.topic}`;
-    const rules =
-      d.rules.length > 0
-        ? `\n## Rules\n\n\`\`\`matrix-rules\n${JSON.stringify(d.rules, null, 2)}\n\`\`\`\n`
-        : "";
-    const alternatives =
-      d.alternatives.length > 0
-        ? d.alternatives.map((a) => `- ${a}`).join("\n")
-        : "- (none recorded)";
-    files[`docs/adr/${pad(n)}-${slug(d.topic)}.md`] = `# ${n}. ${title}
+}
+
+export function renderAdr(d: DecisionRecord, n: number, date: string): string {
+  const title = `Use ${md(d.decision)} for ${d.topic}`;
+  const rules =
+    d.rules.length > 0
+      ? `\n## Rules\n\n\`\`\`matrix-rules\n${JSON.stringify(d.rules, null, 2)}\n\`\`\`\n`
+      : "";
+  const alternatives =
+    d.alternatives.length > 0
+      ? d.alternatives.map((a) => `- ${a}`).join("\n")
+      : "- (none recorded)";
+  return `# ${n}. ${title}
 
 - Status: accepted
 - Date: ${date}
@@ -58,33 +62,40 @@ ${d.context}
 
 ## Considered options
 
-- **${d.decision}** (chosen)
+- **${md(d.decision)}** (chosen)
 ${alternatives}
 
 ## Decision outcome
 
-Chosen option: **${d.decision}**.${d.rationale ? ` ${d.rationale}` : ""}
+Chosen option: **${md(d.decision)}**.${d.rationale ? ` ${d.rationale}` : ""}
 ${d.consequences ? `\n## Consequences\n\n${d.consequences}\n` : ""}${rules}`;
+}
+
+/** Fresh ADR set numbered from 1 (used for new projects and tests). */
+export function adrFiles(ds: DecisionRecord[], date: string): Files {
+  const files: Files = { [adrPath(1, "record architecture decisions")]: recordAdr(1, date) };
+  ds.forEach((d, i) => {
+    files[adrPath(i + 2, d.topic)] = renderAdr(d, i + 2, date);
   });
   return files;
 }
 
 export function contextFile(c: MatrixConfig): string {
-  const personas = c.product.personas.map((p) => `- **${p.name}**: ${p.goal}`).join("\n");
+  const personas = c.product.personas.map((p) => `- **${md(p.name)}**: ${md(p.goal)}`).join("\n");
   const features = c.product.coreFeatures
-    .map((f) => `- **${f}**${c.product.mvpScope.includes(f) ? " (MVP)" : ""}`)
+    .map((f) => `- **${md(f)}**${c.product.mvpScope.includes(f) ? " (MVP)" : ""}`)
     .join("\n");
-  return `# ${c.business.name}
+  return `# ${md(c.business.name)}
 
-${c.business.problem}
+${md(c.business.problem)}
 
 ## Business
 
-- **Customer:** ${c.business.targetCustomer}
-- **Value:** ${c.business.valueProposition}
+- **Customer:** ${md(c.business.targetCustomer)}
+- **Value:** ${md(c.business.valueProposition)}
 - **Pricing:** ${c.business.pricing}
 - **Distribution:** ${c.business.distribution.join(", ")}
-- **Success metrics:** ${c.business.successMetrics.join(", ")}
+- **Success metrics:** ${c.business.successMetrics.map(md).join(", ")}
 
 ## Personas
 
@@ -102,7 +113,11 @@ interface GraphNode {
   label: string;
 }
 
-export function productGraph(c: MatrixConfig, ds: DecisionRecord[]): string {
+export function productGraph(
+  c: MatrixConfig,
+  ds: DecisionRecord[],
+  numbers: Map<string, number> = new Map(ds.map((d, i) => [d.questionId, i + 2])),
+): string {
   const nodes: GraphNode[] = [{ id: "goal:problem", kind: "goal", label: c.business.problem }];
   const edges: { from: string; to: string; kind: string }[] = [];
   for (const m of c.business.successMetrics) {
@@ -119,7 +134,7 @@ export function productGraph(c: MatrixConfig, ds: DecisionRecord[]): string {
   }
   ds.forEach((d, i) => {
     nodes.push({
-      id: `adr:${String(i + 2).padStart(4, "0")}`,
+      id: `adr:${pad(numbers.get(d.questionId) ?? i + 2)}`,
       kind: "decision",
       label: `${d.topic}: ${d.decision}`,
     });

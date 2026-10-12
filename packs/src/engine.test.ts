@@ -100,3 +100,38 @@ describe("contradictions", () => {
     expect(findContradictions(answers).filter((c) => c.severity === "error")).toEqual([]);
   });
 });
+
+describe("every branch of the design tree builds a valid config", () => {
+  test("each select/confirm option, with recommendations elsewhere, is valid or a reported contradiction", () => {
+    const failures: string[] = [];
+    for (const q of defaultPacks.flatMap((p) => p.questions)) {
+      const values: (string | boolean)[] =
+        q.kind === "confirm"
+          ? [true, false]
+          : q.kind === "select"
+            ? (q.options ?? []).map((o) => o.value)
+            : [];
+      for (const v of values) {
+        const given = { ...sampleAnswers, [q.id]: v };
+        if (q.id === "frontend.framework" && v === "other") given["frontend.name"] = "svelte";
+        const { answers, missing } = resolve(defaultPacks, given, { acceptRecommended: true });
+        if (missing.length > 0) continue;
+        if (findContradictions(answers).some((c) => c.severity === "error")) continue;
+        const built = buildConfig(defaultPacks, answers);
+        if (!built.ok) failures.push(`${q.id}=${String(v)}: ${JSON.stringify(built.issues)}`);
+      }
+    }
+    expect(failures).toEqual([]);
+  });
+
+  test("figma off yields a valid config with designFirst false", () => {
+    const { answers } = resolve(
+      defaultPacks,
+      { ...sampleAnswers, "agents.figmaMcp": false },
+      { acceptRecommended: true },
+    );
+    const built = buildConfig(defaultPacks, answers);
+    expect(built.ok).toBe(true);
+    if (built.ok) expect(built.config.agents.designFirst).toBe(false);
+  });
+});

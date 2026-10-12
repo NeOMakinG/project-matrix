@@ -22,3 +22,19 @@ test("create, link, ready and update round-trip through markdown files", async (
   expect(again?.body).toContain("Spike done.");
   expect(await store.list({ labels: ["setup"] })).toHaveLength(1);
 });
+
+test("ids stay monotonic after a ticket file is deleted, and parallel creates never collide", async () => {
+  const { rm, readdir } = await import("node:fs/promises");
+  const dir = await mkdtemp(join(tmpdir(), "tickets-"));
+  const store = new MarkdownTicketStore(dir);
+  const a = await store.create({ title: "A", body: "" });
+  const b = await store.create({ title: "B", body: "" });
+  const file = (await readdir(dir)).find((f) => f.startsWith(b.id));
+  await rm(join(dir, file as string));
+  const c = await store.create({ title: "C", body: "" });
+  expect([a.id, b.id, c.id]).toEqual(["T-0001", "T-0002", "T-0003"]);
+  const many = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => store.create({ title: `P${i}`, body: "" })),
+  );
+  expect(new Set(many.map((t) => t.id)).size).toBe(8);
+});

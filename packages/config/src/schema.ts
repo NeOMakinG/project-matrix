@@ -125,14 +125,20 @@ export const processConfig = z.object({
   budgets: z.object({ dailyUsd: z.number().positive(), perTicketUsd: z.number().positive() }),
 });
 
-export const agentCapabilities = z.object({
-  browserControl: z.boolean(),
-  emulators: z.array(z.enum(["android", "ios"])).default([]),
-  figmaMcp: z.boolean(),
-  designFirst: z.boolean(),
-  extraClis: z.array(z.string()).default([]),
-  workspace: z.enum(["orca", "native"]),
-});
+export const agentCapabilities = z
+  .object({
+    browserControl: z.boolean(),
+    emulators: z.array(z.enum(["android", "ios"])).default([]),
+    figmaMcp: z.boolean(),
+    /** Only meaningful with the Figma MCP; defaults to false when Figma is off. */
+    designFirst: z.boolean().default(false),
+    extraClis: z.array(z.string()).default([]),
+    workspace: z.enum(["orca", "native"]),
+  })
+  .refine((a) => !a.designFirst || a.figmaMcp, {
+    message: "designFirst requires figmaMcp",
+    path: ["designFirst"],
+  });
 
 export const design = z.object({
   artDirection: z.string().min(1),

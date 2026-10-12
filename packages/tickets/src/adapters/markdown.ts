@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   LinkType,
@@ -82,9 +82,31 @@ export class MarkdownTicketStore implements TicketStore {
     return p ? parse(await readFile(p, "utf8")) : null;
   }
 
+  /**
+   * Reserves the next id atomically. Ids are monotonic: they never reuse a number, even after a
+   * ticket file is deleted, because every reservation leaves a marker in `.ids/`.
+   */
+  private async reserveId(): Promise<string> {
+    const idsDir = join(this.dir, ".ids");
+    await mkdir(idsDir, { recursive: true });
+    const numbers = [...(await this.files()), ...(await readdir(idsDir))]
+      .map((f) => /^T-(\d{4,})/.exec(f)?.[1])
+      .filter((n): n is string => n !== undefined)
+      .map(Number);
+    for (let n = Math.max(0, ...numbers) + 1; ; n++) {
+      const id = `T-${String(n).padStart(4, "0")}`;
+      try {
+        const handle = await open(join(idsDir, id), "wx");
+        await handle.close();
+        return id;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+    }
+  }
+
   async create(input: NewTicket): Promise<Ticket> {
-    const n = (await this.files()).length + 1;
-    const id = `T-${String(n).padStart(4, "0")}`;
+    const id = await this.reserveId();
     const at = this.now().toISOString();
     const ticket: Ticket = {
       id,
@@ -98,7 +120,9 @@ export class MarkdownTicketStore implements TicketStore {
       ...(input.priority !== undefined ? { priority: input.priority } : {}),
       ...(input.parent !== undefined ? { parent: input.parent } : {}),
     };
-    await writeFile(join(this.dir, `${id}-${slug(input.title)}.md`), serialize(ticket));
+    await writeFile(join(this.dir, `${id}-${slug(input.title)}.md`), serialize(ticket), {
+      flag: "wx",
+    });
     return ticket;
   }
 
