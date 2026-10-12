@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Pill } from "@/components/ui/pill";
 import { cn } from "@/lib/cn";
 import type { AnswerValue, RoundQuestion } from "./engine";
@@ -31,7 +32,7 @@ export function QuestionField({
       className="border-border-subtle border-b pb-5 last:border-0 last:pb-0"
     >
       <div className="flex items-center gap-2">
-        <Pill tone="blue">{question.packTitle}</Pill>
+        <Pill tone="blue">{question.pack}</Pill>
         <span className="font-mono text-caption text-fg-muted">{question.id}</span>
       </div>
       <h3 id={promptId} className="mt-2 text-heading font-semibold text-fg">
@@ -68,13 +69,14 @@ function Input({
       return (
         <div role="radiogroup" aria-labelledby={promptId} className="grid gap-2">
           {question.options.map((o) => (
-            <label key={o.value} className={choiceClass(value === o.value)}>
+            <label key={o.id} className={choiceClass(value === o.id)}>
               <input
                 type="radio"
+                value={o.id}
                 name={question.id}
                 className="sr-only"
-                checked={value === o.value}
-                onChange={() => onChange(o.value)}
+                checked={value === o.id}
+                onChange={() => onChange(o.id)}
               />
               <span className="flex items-center gap-2 text-body text-fg">
                 {o.label}
@@ -84,8 +86,8 @@ function Input({
                   </Pill>
                 ) : null}
               </span>
-              {o.rationale ? (
-                <span className="mt-0.5 block text-caption text-fg-secondary">{o.rationale}</span>
+              {o.description ? (
+                <span className="mt-0.5 block text-caption text-fg-secondary">{o.description}</span>
               ) : null}
             </label>
           ))}
@@ -96,21 +98,20 @@ function Input({
       return (
         <div role="group" aria-labelledby={promptId} className="flex flex-wrap gap-2">
           {question.options.map((o) => {
-            const checked = selected.includes(o.value);
+            const checked = selected.includes(o.id);
             return (
               <label
-                key={o.value}
+                key={o.id}
                 className={cn(choiceClass(checked), "py-1.5")}
-                title={o.rationale}
+                title={o.description}
               >
                 <input
                   type="checkbox"
+                  value={o.id}
                   className="sr-only"
                   checked={checked}
                   onChange={() =>
-                    onChange(
-                      checked ? selected.filter((v) => v !== o.value) : [...selected, o.value],
-                    )
+                    onChange(checked ? selected.filter((v) => v !== o.id) : [...selected, o.id])
                   }
                 />
                 <span className="text-body text-fg">
@@ -158,23 +159,7 @@ function Input({
         />
       );
     case "list":
-      return (
-        <textarea
-          aria-labelledby={promptId}
-          rows={3}
-          className={inputClass}
-          placeholder="One per line"
-          value={Array.isArray(value) ? value.join("\n") : ""}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split("\n")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
-        />
-      );
+      return <ListInput promptId={promptId} value={value} onChange={onChange} />;
     default:
       return (
         <input
@@ -185,4 +170,32 @@ function Input({
         />
       );
   }
+}
+
+/** Keeps the raw text (newlines included) while typing; the answer is the non-empty lines. */
+export function ListInput({
+  promptId,
+  value,
+  onChange,
+}: {
+  promptId: string;
+  value: AnswerValue | undefined;
+  onChange: (value: AnswerValue) => void;
+}) {
+  const [raw, setRaw] = useState(() =>
+    Array.isArray(value) ? value.join("\n") : String(value ?? ""),
+  );
+  return (
+    <textarea
+      aria-labelledby={promptId}
+      rows={3}
+      className={inputClass}
+      placeholder="One per line"
+      value={raw}
+      onChange={(e) => {
+        setRaw(e.target.value);
+        onChange(e.target.value);
+      }}
+    />
+  );
 }

@@ -27,7 +27,7 @@ function freshDb() {
     keys: structuredClone(apiKeys),
     settings: makeSettings() as Record<string, unknown>,
     settingsVersion: 1,
-    initSessions: new Map<string, { projectId: string; answers: Record<string, string> }>(),
+    initSessions: new Map<string, { projectId: string; answers: Record<string, unknown> }>(),
     approvals: structuredClone(approvals),
     decisions: [] as { id: string; decision: string }[],
     logouts: 0,
@@ -61,7 +61,12 @@ function project(id: string | readonly string[] | undefined): ServerProject | un
 const sessionBody = () => ({
   csrfToken: CSRF,
   expiresAt: "2026-10-13T00:00:00Z",
-  key: { id: "k-human", name: "valentin laptop", kind: "human" },
+  key: {
+    id: "k-human",
+    name: "valentin laptop",
+    kind: "human",
+    scope: { projects: "*", actions: ["admin"] },
+  },
 });
 
 export const sessionHandlers = [
@@ -256,7 +261,7 @@ export const projectHandlers = [
     if (denied) return denied;
     const s = db.initSessions.get(String(params.id));
     if (!s) return err(404, "not_found", "No such session");
-    const body = (await request.json()) as { answers: Record<string, string> };
+    const body = (await request.json()) as { answers: Record<string, unknown> };
     s.answers = { ...s.answers, ...body.answers };
     return HttpResponse.json({
       id: String(params.id),

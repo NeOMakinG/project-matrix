@@ -1,82 +1,60 @@
-import {
-  type Answers,
-  type AnswerValue,
-  buildConfigInput,
-  type Contradiction,
-  decisions,
-  defaultPacks,
-  findContradictions,
-  nextRound,
-  type Question,
-  recommendedFor,
-} from "@matrix/packs";
+import type { components } from "@matrix/sdk";
+import { z } from "zod";
+import type { InitProgress } from "@/api/view";
 
-export type { Answers, AnswerValue, Contradiction };
+export type AnswerValue = string | number | boolean | string[];
+export type Answers = Record<string, AnswerValue>;
+export type Contradiction = components["schemas"]["Contradiction"];
+export type RoundQuestion = InitProgress["round"][number];
 
-export interface RoundQuestion {
-  id: string;
-  packTitle: string;
-  prompt: string;
-  kind: Question["kind"];
-  rationale: string;
-  options: { value: string; label: string; rationale: string; recommended: boolean }[];
-  recommended: AnswerValue | undefined;
+export const roundQuestionSchema: z.ZodType<RoundQuestion> = z.object({
+  id: z.string(),
+  pack: z.string(),
+  kind: z.enum(["select", "multiselect", "text", "list", "confirm", "number"]),
+  prompt: z.string(),
+  rationale: z.string(),
+  recommended: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]),
+  options: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      description: z.string(),
+      recommended: z.boolean(),
+    }),
+  ),
+  dependsOn: z.array(z.string()),
+});
+
+export function isAnswerValue(value: unknown): value is AnswerValue {
+  return (
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value)) ||
+    (Array.isArray(value) && value.every((item) => typeof item === "string"))
+  );
 }
 
-const packTitle = new Map(defaultPacks.map((p) => [p.id, p.title]));
-
-/**
- * The next round, computed with the same engine the server validates answers
- * with: every question that can be answered now, `when` conditions honoured,
- * the recommended answer resolved against earlier answers.
- */
-export function buildRound(answers: Answers): RoundQuestion[] {
-  return nextRound(defaultPacks, answers).map((q) => {
-    const recommended = recommendedFor(q, answers);
-    const recommendedValues = Array.isArray(recommended)
-      ? recommended
-      : [String(recommended ?? "")];
-    return {
-      id: q.id,
-      packTitle: packTitle.get(q.pack) ?? q.pack,
-      prompt: q.prompt,
-      kind: q.kind,
-      rationale: q.rationale ?? "",
-      options: (q.options ?? []).map((o) => ({
-        value: o.value,
-        label: o.label,
-        rationale: o.rationale ?? "",
-        recommended: recommendedValues.includes(o.value),
-      })),
-      recommended,
-    };
-  });
-}
-
-/** Draft answers for a round: the recommended answer wherever there is one. */
 export function defaultDraft(round: RoundQuestion[]): Answers {
   const draft: Answers = {};
-  for (const q of round)
-    if (q.recommended !== undefined && q.recommended !== "") draft[q.id] = q.recommended;
+  for (const question of round)
+    if (question.recommended !== null && question.recommended !== "")
+      draft[question.id] = question.recommended;
   return draft;
 }
 
-export function isAnswered(q: RoundQuestion, value: AnswerValue | undefined): boolean {
+export function submittedValue(question: RoundQuestion, value: AnswerValue): AnswerValue {
+  return question.kind === "list" && typeof value === "string"
+    ? value
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+    : value;
+}
+
+export function isAnswered(question: RoundQuestion, value: AnswerValue | undefined): boolean {
   if (value === undefined) return false;
-  if (q.kind === "confirm" || q.kind === "number") return value !== "";
-  if (Array.isArray(value)) return q.kind === "multiselect" || value.length > 0;
+  if (question.kind === "confirm") return typeof value === "boolean";
+  if (question.kind === "number") return typeof value === "number" && Number.isFinite(value);
+  if (Array.isArray(value)) return question.kind === "multiselect" || value.length > 0;
   return String(value).trim() !== "";
-}
-
-export function contradictions(answers: Answers): Contradiction[] {
-  return findContradictions(answers);
-}
-
-/** Live preview of matrix.config.ts and the ADR titles the answers would produce. */
-export function preview(answers: Answers): { config: string; adrs: string[] } {
-  const config = buildConfigInput(defaultPacks, answers);
-  return {
-    config: `import { defineConfig } from "@matrix/config";\n\nexport default defineConfig(${JSON.stringify(config, null, 2)});\n`,
-    adrs: decisions(defaultPacks, answers).map((d) => `${d.topic}: ${d.decision}`),
-  };
 }

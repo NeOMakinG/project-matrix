@@ -1,59 +1,37 @@
-import { sampleAnswers } from "@matrix/packs";
 import { describe, expect, it } from "vitest";
-import { buildRound, contradictions, defaultDraft, isAnswered, preview } from "./engine";
+import { defaultDraft, isAnswered, type RoundQuestion, submittedValue } from "./engine";
 
-describe("init engine (same packs the server validates with)", () => {
-  it("first round asks every answerable business question at once", () => {
-    const round = buildRound({});
-    expect(round.length).toBeGreaterThan(1);
-    expect(
-      round.every((q) => q.packTitle === round[0]?.packTitle || q.id.startsWith("business.")),
-    ).toBe(true);
-    expect(round.map((q) => q.id)).toContain("business.name");
-  });
+const question: RoundQuestion = {
+  id: "server.question",
+  pack: "Server pack",
+  kind: "select",
+  prompt: "Server prompt",
+  rationale: "Server rationale",
+  recommended: "new-option",
+  dependsOn: [],
+  options: [
+    { id: "new-option", label: "New option", description: "Server description", recommended: true },
+  ],
+};
 
-  it("honours when conditions: React questions only appear for a web UI", () => {
-    const all = (answers: Record<string, unknown>) => buildRound(answers as never).map((q) => q.id);
-    const noWeb = all({
-      ...sampleAnswers,
-      "platforms.targets": ["api"],
-      "frontend.framework": undefined,
+describe("server question presentation", () => {
+  it("accepts server-defined recommendations without knowing a client pack", () => {
+    expect(defaultDraft([question])).toEqual({ "server.question": "new-option" });
+    expect(defaultDraft([{ ...question, recommended: false }])).toEqual({
+      "server.question": false,
     });
-    expect(noWeb.some((id) => id.startsWith("frontend."))).toBe(false);
+    expect(defaultDraft([{ ...question, recommended: null }])).toEqual({});
   });
-
-  it("preselects the recommended answer and keeps alternatives", () => {
-    const answers = { ...sampleAnswers };
-    delete answers["process.tickets"];
-    const round = buildRound(answers);
-    const tickets = round.find((q) => q.id === "process.tickets");
-    expect(tickets?.options.find((o) => o.recommended)?.value).toBe("beads");
-    expect((tickets?.options.length ?? 0) > 1).toBe(true);
-    expect(defaultDraft(round)["process.tickets"]).toBe("beads");
+  it("parses lists only at submission", () => {
+    const raw = "first\n\nsecond\n";
+    expect(submittedValue({ ...question, kind: "list" }, raw)).toEqual(["first", "second"]);
+    expect(submittedValue({ ...question, kind: "text" }, raw)).toBe(raw);
   });
-
-  it("flags contradictions", () => {
-    const found = contradictions({
-      ...sampleAnswers,
-      "backend.kind": "none",
-      "backend.auth": "better-auth",
-    });
-    expect(found.map((c) => c.id)).toContain("self-hosted-auth-without-backend");
-    expect(contradictions(sampleAnswers).filter((c) => c.severity === "error")).toEqual([]);
-  });
-
-  it("previews matrix.config.ts and ADR titles", () => {
-    const { config, adrs } = preview(sampleAnswers);
-    expect(config).toContain("defineConfig(");
-    expect(adrs.length).toBeGreaterThan(0);
-  });
-
-  it("knows when a question still needs an answer", () => {
-    const [q] = buildRound({});
-    if (!q) throw new Error("round");
-    expect(isAnswered(q, undefined)).toBe(false);
-    expect(isAnswered({ ...q, kind: "text" }, "  ")).toBe(false);
-    expect(isAnswered({ ...q, kind: "confirm" }, false)).toBe(true);
-    expect(isAnswered({ ...q, kind: "multiselect" }, [])).toBe(true);
+  it("allows false and zero, but rejects non-finite numbers and empty lists", () => {
+    expect(isAnswered({ ...question, kind: "confirm" }, false)).toBe(true);
+    expect(isAnswered({ ...question, kind: "number" }, 0)).toBe(true);
+    expect(isAnswered({ ...question, kind: "number" }, Number.NaN)).toBe(false);
+    expect(isAnswered({ ...question, kind: "list" }, [])).toBe(false);
+    expect(isAnswered({ ...question, kind: "multiselect" }, [])).toBe(true);
   });
 });

@@ -322,9 +322,86 @@
                 },
                 "value": {
                   "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "pack": {
+                  "type": "string"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": ["select", "multiselect", "text", "list", "confirm", "number"]
+                },
+                "rationale": {
+                  "type": "string"
+                },
+                "recommended": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "recommended": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": ["id", "label", "description", "recommended"]
+                  }
+                },
+                "dependsOn": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
-              "required": ["questionId", "label", "value"]
+              "required": [
+                "questionId",
+                "label",
+                "value",
+                "id",
+                "pack",
+                "prompt",
+                "kind",
+                "rationale",
+                "recommended",
+                "options",
+                "dependsOn"
+              ]
             }
           },
           "question": {

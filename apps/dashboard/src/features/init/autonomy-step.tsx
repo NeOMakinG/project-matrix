@@ -1,6 +1,7 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { endpoints } from "@/api/endpoints";
+import { ApiError } from "@/api/http";
 import {
   ALL_PHASES,
   AUTONOMY_LABEL,
@@ -31,6 +32,20 @@ export function initialAutonomy(answers: Answers): Record<ServerPhase, AutonomyM
   ) as Record<ServerPhase, AutonomyMode>;
 }
 
+export async function saveAutonomy(
+  projectId: string,
+  next: Record<ServerPhase, AutonomyMode>,
+  etag: string | null,
+) {
+  if (!etag)
+    throw new ApiError(
+      428,
+      "etag_missing",
+      "The project response has no ETag; autonomy was not submitted.",
+    );
+  return endpoints.setAutonomyPolicy(projectId, next, etag);
+}
+
 const LABEL_TO_MODE = Object.fromEntries(
   AUTONOMY_MODES.map((m) => [AUTONOMY_LABEL[m], m]),
 ) as Record<string, AutonomyMode>;
@@ -46,9 +61,25 @@ export function AutonomyStep({
 }) {
   const client = useQueryClient();
   const [modes, setModes] = useState(() => initialAutonomy(answers));
+  const [etag, setEtag] = useState<string | null | undefined>(undefined);
+  const version = useQuery({
+    queryKey: ["projects", projectId, "init-policy-version"],
+    queryFn: () => endpoints.projectWithEtag(projectId),
+    staleTime: Infinity,
+  });
+  const load = useMutation({
+    mutationFn: () => endpoints.projectWithEtag(projectId),
+    onSuccess: (response) => {
+      setEtag(response.etag);
+    },
+  });
   const save = useMutation({
     mutationFn: async () => {
-      for (const phase of ALL_PHASES) await endpoints.setAutonomy(projectId, phase, modes[phase]);
+      return saveAutonomy(
+        projectId,
+        modes,
+        etag === undefined ? (version.data?.etag ?? null) : etag,
+      );
     },
     onSuccess: () => {
       void client.invalidateQueries({ queryKey: ["projects", projectId] });
@@ -83,13 +114,24 @@ export function AutonomyStep({
         </ul>
         {save.isError ? (
           <p role="alert" className="mt-3 text-caption text-danger">
-            Couldn't save autonomy: {save.error.message}
+            {save.error instanceof ApiError && save.error.status === 412
+              ? "Autonomy changed on the server. Reload its version, review your choices, then explicitly retry."
+              : `Couldn't confirm autonomy was saved: ${save.error.message}`}
           </p>
+        ) : null}
+        {save.error instanceof ApiError && save.error.status === 412 ? (
+          <Button disabled={load.isPending} onClick={() => load.mutate()}>
+            Reload project version
+          </Button>
+        ) : null}
+        {load.isError ? <p role="alert">Couldn't reload project: {load.error.message}</p> : null}
+        {version.isError ? (
+          <p role="alert">Couldn't load project version: {version.error.message}</p>
         ) : null}
         <Button
           className="mt-4"
           variant="primary"
-          disabled={save.isPending}
+          disabled={save.isPending || version.isPending || version.isError || load.isPending}
           onClick={() => save.mutate()}
         >
           {save.isPending ? "Saving…" : "Save autonomy and continue"}

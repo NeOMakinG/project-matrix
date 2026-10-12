@@ -1,9 +1,10 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { delay, HttpResponse, http } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { endpoints } from "@/api/endpoints";
-import { ApiError, currentCsrfToken } from "@/api/http";
+import { ApiError, currentCsrfToken, toApiError } from "@/api/http";
+import { queries } from "@/api/queries";
 import { saveSettings } from "@/features/settings/settings-page";
 import { mockDb } from "@/mocks/handlers";
 import { renderRoute } from "./render";
@@ -13,12 +14,40 @@ describe("auth", () => {
   it("redirects to sign-in without a session and returns after signing in", async () => {
     mockDb().signedIn = false;
     const user = userEvent.setup();
-    const { router } = renderRoute("/p/ledgerly/monitor");
+    const { router, queryClient } = renderRoute("/p/ledgerly/monitor");
+    await act(async () => {
+      await router.load();
+    });
     expect(await screen.findByRole("heading", { name: "Sign in to matrix" })).toBeInTheDocument();
     await user.type(screen.getByLabelText("API key"), "mx_live_demo");
+    const returned = new Promise<void>((resolve) => {
+      const unsubscribe = router.subscribe("onResolved", () => {
+        if (router.state.location.pathname === "/p/ledgerly/monitor") {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
     await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await act(async () => {
+      await returned;
+      await queryClient.ensureQueryData(queries.monitor("ledgerly"));
+    });
     expect(await screen.findByText("Duplicate invoice on retry")).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/p/ledgerly/monitor");
+  });
+
+  it("removes unauthorized listeners when a rendered router unmounts", async () => {
+    const view = renderRoute("/");
+    await screen.findByRole("heading", { name: "Factory overview" });
+    const navigate = vi.spyOn(view.router, "navigate");
+    try {
+      view.unmount();
+      await toApiError(new Response("", { status: 401 }));
+      expect(navigate).not.toHaveBeenCalled();
+    } finally {
+      navigate.mockRestore();
+    }
   });
 });
 
@@ -102,21 +131,21 @@ describe("screens", () => {
     expect(screen.getByRole("heading", { name: "Product name?" })).toBeInTheDocument();
 
     // Text questions have no recommendation: submitting flags them.
-    await user.click(screen.getByRole("button", { name: /^Confirm \d+ answers$/ }));
+    await user.click(screen.getByRole("button", { name: /^Confirm \d+ answers?$/ }));
     expect((await screen.findAllByText("This question needs an answer.")).length).toBeGreaterThan(
       0,
     );
     for (const input of screen.getAllByRole("textbox")) {
       if ((input as HTMLInputElement).value === "") await user.type(input, "Answer");
     }
-    await user.click(screen.getByRole("button", { name: /^Confirm \d+ answers$/ }));
+    await user.click(screen.getByRole("button", { name: /^Confirm \d+ answers?$/ }));
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Product name?" })).not.toBeInTheDocument(),
     );
     expect(Object.keys(mockDb().initSessions.get("init_1")?.answers ?? {})).toContain(
       "business.name",
     );
-    expect(screen.getByLabelText("matrix.config.ts preview")).toHaveTextContent('"name": "Answer"');
+    expect(screen.getByLabelText("matrix.config.ts preview")).toHaveTextContent("react-vite");
   });
 
   it("knowledge lists ADRs and rule violations", async () => {

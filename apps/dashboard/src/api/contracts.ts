@@ -20,25 +20,35 @@ export const verificationSchema = z.object({
 });
 export type Verification = z.infer<typeof verificationSchema>;
 
-/** POST /v1/init/{id}/finalize — proposed; not implemented by the server yet. */
-export const finalizeSchema = z.object({
-  projectId: z.string(),
-  configPath: z.string(),
-  adrs: z.array(z.object({ id: z.string(), title: z.string(), path: z.string() })),
-  tickets: z.array(z.string()),
-});
-export type FinalizeResult = z.infer<typeof finalizeSchema>;
-
 /** POST /auth/login and GET /auth/session (server PR #2): cookie session + CSRF token. */
 export const sessionSchema = z.object({
   csrfToken: z.string().min(1),
   expiresAt: z.string(),
   key: z
-    .object({ id: z.string(), name: z.string(), kind: z.enum(["human", "agent"]) })
+    .object({
+      id: z.string(),
+      name: z.string(),
+      kind: z.enum(["human", "agent"]),
+      scope: z
+        .object({
+          projects: z.union([z.literal("*"), z.array(z.string())]),
+          actions: z.array(z.string()),
+        })
+        .optional(),
+    })
     .passthrough()
     .nullable(),
 });
 export type Session = z.infer<typeof sessionSchema>;
+
+export function canManageProject(session: Session | undefined, projectId?: string): boolean {
+  const scope = session?.key?.scope;
+  return (
+    session?.key?.kind === "human" &&
+    !!scope?.actions.includes("admin") &&
+    (scope.projects === "*" || (projectId !== undefined && scope.projects.includes(projectId)))
+  );
+}
 
 /** Settings keys the dashboard reads inside the free-form `Settings` object. */
 export const dashboardSettingsSchema = z.object({

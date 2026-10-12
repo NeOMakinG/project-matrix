@@ -1,8 +1,11 @@
 import { useForm } from "@tanstack/react-form";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { useRef } from "react";
 import { z } from "zod";
+import { canManageProject } from "@/api/contracts";
 import { endpoints } from "@/api/endpoints";
+import { queries } from "@/api/queries";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -22,10 +25,24 @@ export const newProjectSchema = z.object({
 export function NewProjectPage() {
   const navigate = useNavigate();
   const client = useQueryClient();
+  const auth = useQuery(queries.session());
+  const permitted = canManageProject(auth.data);
+  // One idempotency key per distinct submission: a retry (double click, network
+  // error) replays the same key, so the server returns the first project instead
+  // of creating a duplicate. Changing the form starts a new key.
+  const attempt = useRef<{ body: string; key: string } | null>(null);
+  const keyFor = (input: z.infer<typeof newProjectSchema>) => {
+    const body = JSON.stringify(input);
+    if (attempt.current?.body !== body)
+      attempt.current = { body, key: `new-project-${crypto.randomUUID()}` };
+    return attempt.current.key;
+  };
   const create = useMutation({
     mutationFn: async (input: z.infer<typeof newProjectSchema>) => {
-      const project = await endpoints.createProject(input);
-      const session = await endpoints.startInit(project.id);
+      if (!permitted) throw new Error("Project creation requires global admin permission.");
+      const key = keyFor(input);
+      const project = await endpoints.createProject(input, `${key}:project`);
+      const session = await endpoints.startInit(project.id, `${key}:init`);
       return { project, session };
     },
     onSuccess: ({ project, session }) => {
@@ -41,7 +58,7 @@ export function NewProjectPage() {
     defaultValues: { name: "", description: "", workspace: "orca" as "orca" | "native" },
     validators: { onSubmit: newProjectSchema },
     onSubmit: async ({ value }) => {
-      await create.mutateAsync(newProjectSchema.parse(value));
+      await create.mutateAsync(newProjectSchema.parse(value)).catch(() => undefined);
     },
   });
 
@@ -52,6 +69,9 @@ export function NewProjectPage() {
         subtitle="Name it, then the init interview asks about the business, stack, hosting, design and process."
       />
       <Card className="max-w-xl px-5 py-5">
+        {!auth.isPending && !permitted ? (
+          <p role="alert">Project creation requires global admin permission from your session.</p>
+        ) : null}
         <form
           className="space-y-4"
           onSubmit={(e) => {
@@ -137,7 +157,7 @@ export function NewProjectPage() {
           ) : null}
           <form.Subscribe selector={(s) => s.isSubmitting}>
             {(submitting) => (
-              <Button type="submit" variant="primary" disabled={submitting}>
+              <Button type="submit" variant="primary" disabled={submitting || !permitted}>
                 Create and start the interview
               </Button>
             )}
