@@ -1,14 +1,14 @@
 import { z } from "@hono/zod-openapi";
-import type { RunEvent } from "@matrix/core";
 import { streamSSE } from "hono/streaming";
 import type { KeyStore } from "../auth/keys.js";
 import type { Operations } from "../ops.js";
+import type { LoggedEvent, RunEventLog } from "../run-event-log.js";
 import { type App, IdParam, route } from "./route.js";
 import * as S from "./schemas.js";
 
 const MAX_QUEUED_EVENTS = 1000;
 
-export function runRoutes(app: App, ops: Operations, keys: KeyStore) {
+export function runRoutes(app: App, ops: Operations, keys: KeyStore, events: RunEventLog) {
   app.openapi(
     route({
       method: "get",
@@ -137,29 +137,45 @@ export function runRoutes(app: App, ops: Operations, keys: KeyStore) {
     const runId = c.req.param("id");
     const principal = c.var.principal;
     await ops.authorizeRunStream(principal, runId);
+    // Browsers send Last-Event-ID on reconnect; `?lastEventId=` covers manual resumes.
+    const resumeFrom = c.req.header("last-event-id") ?? c.req.query("lastEventId");
+    const lastId = resumeFrom && /^\d{1,15}$/.test(resumeFrom) ? Number(resumeFrom) : undefined;
     return streamSSE(c, async (stream) => {
-      const queue: RunEvent[] = [];
+      const queue: LoggedEvent[] = [];
       let closed: string | undefined;
       let wake: (() => void) | undefined;
       const close = (reason: string) => {
         closed ??= reason;
         wake?.();
       };
-      const unsubscribe = ops.core.subscribe(runId, (event) => {
+      const subscription = events.open(runId, lastId, (entry) => {
         if (queue.length >= MAX_QUEUED_EVENTS) return close("overflow");
-        queue.push(event);
+        queue.push(entry);
         wake?.();
       });
+      queue.unshift(...subscription.backlog);
+      const unsubscribe = subscription.close;
       const stopRevoke = keys.onRevoke((id) => {
         if (id === principal.key.id) close("revoked");
       });
       stream.onAbort(() => close("aborted"));
       try {
-        await stream.writeSSE({ event: "ready", data: JSON.stringify({ runId }) });
+        await stream.writeSSE({
+          event: "ready",
+          data: JSON.stringify({
+            runId,
+            resumed: lastId !== undefined,
+            missed: subscription.missed,
+          }),
+        });
         while (!closed && !stream.aborted) {
-          const event = queue.shift();
-          if (event) {
-            await stream.writeSSE({ event: event.kind, data: JSON.stringify(event) });
+          const entry = queue.shift();
+          if (entry) {
+            await stream.writeSSE({
+              id: String(entry.id),
+              event: entry.event.kind,
+              data: JSON.stringify(entry.event),
+            });
             continue;
           }
           await new Promise<void>((resolve) => {
