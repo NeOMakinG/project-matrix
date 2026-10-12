@@ -9,7 +9,18 @@ import {
   adaptTickets,
 } from "./adapters";
 import { dashboardSettingsSchema, sessionSchema, verificationSchema } from "./contracts";
-import { ApiError, apiUrl, pathOf, setCsrfToken, toApiError, unwrap, v1, withCsrf } from "./http";
+import {
+  ApiError,
+  apiUrl,
+  currentSessionGeneration,
+  nextSessionGeneration,
+  pathOf,
+  setCsrfTokenFor,
+  toApiError,
+  unwrap,
+  v1,
+  withCsrf,
+} from "./http";
 import {
   ALL_PHASES,
   type AutonomyMode,
@@ -35,22 +46,27 @@ async function contract<T extends z.ZodType>(
 export const endpoints = {
   // --- dashboard session (server /auth/*) ---
   async session() {
+    const generation = currentSessionGeneration();
     const session = await contract(sessionSchema, "/auth/session");
-    setCsrfToken(session.csrfToken);
+    if (!setCsrfTokenFor(generation, session.csrfToken))
+      throw new ApiError(409, "stale_session", "Session changed");
     return session;
   },
   async signIn(token: string) {
+    const generation = nextSessionGeneration();
     const session = await contract(sessionSchema, "/auth/login", {
       method: "POST",
       body: JSON.stringify({ token }),
     });
-    setCsrfToken(session.csrfToken);
+    if (!setCsrfTokenFor(generation, session.csrfToken))
+      throw new ApiError(409, "stale_session", "Session changed");
     return session;
   },
+  /** Resolves only once the server confirmed the logout (or the session was already gone). */
   async signOut() {
     const res = await fetch(apiUrl("/auth/logout"), withCsrf({ method: "POST" }));
-    setCsrfToken(null);
     if (!res.ok && res.status !== 401) throw await toApiError(res);
+    setCsrfTokenFor(nextSessionGeneration(), null);
   },
 
   // --- read models ---

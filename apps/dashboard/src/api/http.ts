@@ -29,10 +29,32 @@ export function pathOf(template: string, params: Record<string, string>): string
 
 const CSRF_COOKIE = "matrix_csrf";
 let csrfToken: string | null = null;
+let sessionGeneration = 0;
+
+/**
+ * Every sign-in, sign-out and session lookup is tagged with the generation it
+ * started in. A response from an older generation (a slow lookup racing a new
+ * login) must not overwrite the current CSRF token.
+ */
+export function nextSessionGeneration(): number {
+  sessionGeneration += 1;
+  return sessionGeneration;
+}
+
+export function currentSessionGeneration(): number {
+  return sessionGeneration;
+}
+
+/** Applies the token only if no newer sign-in or sign-out started meanwhile. */
+export function setCsrfTokenFor(generation: number, token: string | null): boolean {
+  if (generation !== sessionGeneration) return false;
+  csrfToken = token;
+  return true;
+}
 
 /** Set from the session response; falls back to the double-submit cookie. */
 export function setCsrfToken(token: string | null): void {
-  csrfToken = token;
+  setCsrfTokenFor(nextSessionGeneration(), token);
 }
 
 export function currentCsrfToken(): string | null {
