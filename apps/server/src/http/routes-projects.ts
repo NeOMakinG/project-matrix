@@ -69,9 +69,9 @@ export function projectRoutes(app: App, ops: Operations) {
       response: S.Project,
     }),
     async (c) => {
-      const project = await ops.getProject(c.var.principal, c.req.valid("param").projectId);
-      c.header("etag", autonomyEtag(project));
-      return c.json(project);
+      const snapshot = await ops.getProjectPolicy(c.var.principal, c.req.valid("param").projectId);
+      c.header("etag", autonomyEtag(snapshot));
+      return c.json(snapshot.project);
     },
   );
 
@@ -104,14 +104,15 @@ export function projectRoutes(app: App, ops: Operations) {
       response: S.Project,
     }),
     async (c) => {
-      const project = await ops.setAutonomyPolicy(
+      const snapshot = await ops.setAutonomyPolicy(
         c.var.principal,
         c.req.valid("param").projectId,
         c.req.valid("json").autonomy,
         c.req.header("if-match"),
       );
-      c.header("etag", autonomyEtag(project));
-      return c.json(project);
+      if (!snapshot) throw new Error("project disappeared after policy save");
+      c.header("etag", autonomyEtag(snapshot));
+      return c.json(snapshot.project);
     },
   );
 

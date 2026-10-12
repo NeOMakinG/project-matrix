@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { PrivateState } from "../private-state.js";
+import type { PrivateStateOwner } from "../state-owner.js";
 import type { SourceSecrets } from "../webhooks.js";
 
 export type WebhookSource = keyof SourceSecrets;
@@ -10,23 +11,18 @@ export type WebhookSource = keyof SourceSecrets;
  */
 export class WebhookSecretStore {
   readonly projects: Record<string, SourceSecrets>;
+  private readonly state: PrivateState<Record<string, SourceSecrets>>;
 
-  constructor(private readonly file?: string) {
-    this.projects =
-      file && existsSync(file)
-        ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, SourceSecrets>)
-        : {};
+  constructor(file?: string, owner?: PrivateStateOwner) {
+    this.state = new PrivateState(file, owner);
+    this.projects = this.state.load({});
   }
 
   /** Issues (or rotates) a secret; the value is returned once and never listed. */
   issue(projectId: string, source: WebhookSource): string {
     const secret = randomBytes(32).toString("hex");
     this.projects[projectId] = { ...this.projects[projectId], [source]: secret };
-    if (this.file) {
-      const tmp = `${this.file}.tmp`;
-      writeFileSync(tmp, JSON.stringify(this.projects), { mode: 0o600 });
-      renameSync(tmp, this.file);
-    }
+    this.state.save(this.projects);
     return secret;
   }
 

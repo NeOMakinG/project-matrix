@@ -3,6 +3,8 @@ import type { TicketStore } from "@matrix/tickets";
 import { BeadsStore } from "@matrix/tickets/adapters/beads";
 import { GitHubStore } from "@matrix/tickets/adapters/github";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
+import type { PrivateStateOwner } from "../state-owner.js";
+import { publishOwnedFile } from "./owned-files.js";
 
 export type TicketSystem = "beads" | "markdown" | "github";
 
@@ -25,10 +27,14 @@ export function ticketStoreFor(
   repoPath: string,
   settings: TicketSettings,
   binaries: TicketBinaries = {},
+  owner?: PrivateStateOwner,
 ): TicketStore {
   switch (settings.kind) {
     case "markdown":
-      return new MarkdownTicketStore(join(repoPath, ".matrix", "tickets"), { root: repoPath });
+      return new MarkdownTicketStore(join(repoPath, ".matrix", "tickets"), {
+        root: repoPath,
+        ...(owner ? { publish: (input) => publishOwnedFile({ ...input, owner }) } : {}),
+      });
     case "beads":
       return new BeadsStore({ cwd: repoPath, ...(binaries.bd ? { bdBinary: binaries.bd } : {}) });
     case "github":

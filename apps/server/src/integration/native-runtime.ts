@@ -1,7 +1,18 @@
 import { execFile } from "node:child_process";
+import { availableParallelism, freemem, loadavg } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import type { MergePort, PhaseContext, QaDriver, Receipt, Runner, RunnerId } from "@matrix/core";
+import {
+  FactoryToolingError,
+  type MergePort,
+  type PhaseContext,
+  type QaDriver,
+  type Receipt,
+  type Runner,
+  type RunnerId,
+  type Sandbox,
+} from "@matrix/core";
+import { architectureGates } from "@matrix/rules";
 import { createRunner } from "@matrix/runners";
 import {
   CredentialBroker,
@@ -9,8 +20,10 @@ import {
   LLM_PORT,
   PodmanSandbox,
   RUN_TOKEN_PLACEHOLDER,
+  requiredStackTools,
   resolveCredential,
   runSecretGate,
+  validateImageCapabilities,
 } from "@matrix/sandbox";
 import {
   NativeWorkspace,
@@ -18,9 +31,19 @@ import {
   TrustedWorktrees,
   WorktreeGitPort,
 } from "@matrix/workspace";
+import type { PrivateStateOwner } from "../state-owner.js";
+import { derivedGraphHandover } from "./derived-graph.js";
+import { redactNativeDiagnostic } from "./native-diagnostics.js";
 import type { Runtime } from "./runtime.js";
+import { scanCommittedHistory } from "./secret-scan.js";
+import { scanSourceSnapshot } from "./source-scan.js";
 
 const exec = promisify(execFile);
+
+function assertHostCapacity(): void {
+  if (freemem() < 4 * 1024 ** 3 || (loadavg()[0] ?? Infinity) >= availableParallelism())
+    throw new Error("host resource check refused a heavy Matrix task");
+}
 
 export interface NativeRuntimeOptions {
   workspace: "native" | "orca";
@@ -34,32 +57,139 @@ export interface NativeRuntimeOptions {
   gitleaksBinary?: string;
   /** Orca runtime environment (e.g. the bosgame `orca serve` pairing). */
   orcaEnvironment?: string;
+  stateOwner?: PrivateStateOwner;
 }
 
 /**
  * A Runner that builds a fresh CLI runner per run, bound to that run's broker grant: the container
  * only ever sees a per-run token, the broker swaps it for the real gateway key outside.
  */
-function sandboxedRunner(id: RunnerId, sandbox: PodmanSandbox): Runner {
+export const NATIVE_SOURCE_PATHS = [
+  "src",
+  "apps",
+  "packages",
+  "tests",
+  "test",
+  "cmd",
+  "internal",
+  "migrations",
+  "index.ts",
+  "package.json",
+  "bun.lock",
+  "bun.lockb",
+  "tsconfig.json",
+  "tsconfig.app.json",
+  "tsconfig.node.json",
+  "vite.config.ts",
+  "vitest.config.ts",
+  "biome.json",
+  "eslint.config.js",
+  "go.mod",
+  "go.sum",
+  "sqlc.yaml",
+  "sqlc.yml",
+  "Cargo.toml",
+  "Cargo.lock",
+];
+
+function sandboxedRunner(
+  id: RunnerId,
+  sandbox: PodmanSandbox,
+  git: WorktreeGitPort,
+  opts: NativeRuntimeOptions,
+  gatewayKey: () => Promise<string>,
+): Runner {
   const local = `http://127.0.0.1:${LLM_PORT}`;
   return {
     id,
-    run: (req, onEvent, signal) =>
-      createRunner(id, {
+    run: async (req, onEvent, callerSignal) => {
+      const signal = opts.stateOwner
+        ? AbortSignal.any([callerSignal, opts.stateOwner.signal])
+        : callerSignal;
+      opts.stateOwner?.assertOwned();
+      if (!req.model.endsWith("-sol")) throw new Error("native model calls are restricted to SOL");
+      assertHostCapacity();
+      await validateImageCapabilities(
+        sandbox,
+        req.workdir,
+        await requiredStackTools(req.workdir, [id]),
+        signal,
+      );
+      const expectedHead = req.phase === "implement" ? await git.headSha(req.workdir) : undefined;
+      const result = await createRunner(id, {
         gateway: {
           anthropicBaseUrl: local,
           openaiBaseUrl: `${local}/v1`,
           apiKey: RUN_TOKEN_PLACEHOLDER,
         },
-        executor: sandbox.lineExecutor({ runId: req.runId, network: "gateway" }),
+        executor: sandbox.lineExecutor({
+          runId: req.runId,
+          projectId: req.projectId,
+          ticketId: req.ticketId,
+          network: "gateway",
+        }),
         skipPermissions: true,
-        baseEnv: {},
-      }).run(req, onEvent, signal),
+        baseEnv: { CODEX_HOME: "/home/agent" },
+      }).run(
+        {
+          ...req,
+          env: {},
+          readOnly: req.phase !== "implement" || req.readOnly === true,
+          prompt:
+            req.phase === "implement"
+              ? `${req.prompt}\n\nContainer git metadata is intentionally unavailable. Do not commit or push. Edit only approved source files: ${NATIVE_SOURCE_PATHS.join(", ")}. Do not edit .matrix/graph: the host deterministically regenerates it before scanning and committing your source snapshot.`
+              : req.prompt,
+        },
+        onEvent,
+        signal,
+      );
+      if (req.phase !== "implement" || result.status !== "ok") return result;
+      if (req.readOnly || signal.aborted) {
+        const summary = `implementation handover refused: ${req.readOnly ? "read-only request" : "ownership or caller cancellation"}`;
+        const receipt: Receipt = { kind: "log", ok: false, summary };
+        return {
+          ...result,
+          status: "failed",
+          summary,
+          receipts: [...result.receipts, receipt],
+        };
+      }
+      let secrets: string[] | undefined;
+      try {
+        secrets = [await gatewayKey()];
+        const committed = await git.commitImplementation(req.workdir, {
+          expectedHead: expectedHead as string,
+          approvedPaths: NATIVE_SOURCE_PATHS,
+          message: `feat: Matrix ticket ${req.ticketId}`,
+          signal,
+          derivedGraph: derivedGraphHandover(req.workdir, signal, opts.stateOwner),
+          scan: (source, binding) =>
+            gatewayKey().then((key) =>
+              scanSourceSnapshot(source, [key], opts.gitleaksBinary, binding),
+            ),
+        });
+        return { ...result, receipts: [...result.receipts, committed.receipt] };
+      } catch (error) {
+        const reason = secrets
+          ? redactNativeDiagnostic(secrets)(
+              error instanceof Error ? error.message : "non-Error handover failure",
+            ).slice(0, 2048)
+          : "gateway credential resolution failed before handover";
+        const summary = `host-mediated implementation commit refused: ${reason}`;
+        const receipt: Receipt = { kind: "log", ok: false, summary };
+        return {
+          ...result,
+          status: "failed",
+          summary,
+          receipts: [...result.receipts, receipt],
+        };
+      }
+    },
   };
 }
 
 /** QA receipts from the project's own check commands, run in the sandbox with no network. */
-function sandboxQa(sandbox: PodmanSandbox): QaDriver {
+function sandboxQa(sandbox: Sandbox): QaDriver {
   return {
     async run(ctx: PhaseContext): Promise<Receipt[]> {
       const receipts: Receipt[] = [];
@@ -98,6 +228,12 @@ function localMerge(opts: NativeRuntimeOptions, gatewayKey: () => Promise<string
         return { ok: false, summary: "approved head and requested head differ; refusing to merge" };
       }
       const oldBase = await git("rev-parse", `refs/heads/${base}`);
+      const history = await scanCommittedHistory(
+        repo,
+        `${oldBase}..${request.headSha}`,
+        opts.gitleaksBinary,
+      );
+      if (!history.ok) return { ok: false, summary: history.summary };
       try {
         await git("merge-base", "--is-ancestor", oldBase, request.headSha);
       } catch {
@@ -139,6 +275,31 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
     ...(opts.podmanBinary ? { podmanBinary: opts.podmanBinary } : {}),
   });
   const trusted = new TrustedWorktrees(join(opts.dataDir, "worktrees.json"));
+  const checkedSandbox: Sandbox = {
+    kind: "podman",
+    exec: (spec, signal) => {
+      assertHostCapacity();
+      return (async () => {
+        const abort = signal ?? new AbortController().signal;
+        try {
+          await validateImageCapabilities(
+            sandbox,
+            spec.workdir,
+            await requiredStackTools(
+              spec.workdir,
+              /^[a-z][a-z0-9_-]*$/.test(spec.cmd[0] ?? "") ? [spec.cmd[0] as string] : [],
+            ),
+            abort,
+          );
+        } catch (error) {
+          throw new FactoryToolingError(
+            `native check tooling preflight failed: ${error instanceof Error ? error.message : "unknown"}`,
+          );
+        }
+        return sandbox.exec(spec, signal);
+      })();
+    },
+  };
   const workspace =
     opts.workspace === "orca"
       ? new OrcaWorkspace({
@@ -152,19 +313,45 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
         });
   let key: string | undefined;
   const gatewayKey = async () => (key ??= await resolveCredential(opts.gatewayKey));
+  const git = new WorktreeGitPort({ trusted });
   return {
     kind: opts.workspace,
     broker,
     workspace,
-    git: new WorktreeGitPort({ trusted }),
+    git,
     deps: {
-      runners: {
-        "claude-code": sandboxedRunner("claude-code", sandbox),
-        codex: sandboxedRunner("codex", sandbox),
-        opencode: sandboxedRunner("opencode", sandbox),
+      architecture: async (ctx) => {
+        const receipts = await architectureGates(ctx.workdir, {
+          rulesFrom: ctx.project.baseBranch,
+        });
+        if (
+          receipts.some(
+            (receipt) =>
+              !receipt.ok &&
+              typeof receipt.data === "object" &&
+              receipt.data !== null &&
+              "stale" in receipt.data &&
+              Array.isArray(receipt.data.stale),
+          )
+        )
+          throw new FactoryToolingError(
+            "host-derived code graph is stale; factory regeneration must be repaired",
+            receipts,
+          );
+        return [
+          ...receipts,
+          await scanCommittedHistory(
+            ctx.project.repoPath,
+            `${ctx.project.baseBranch}..${await git.headSha(ctx.workdir)}`,
+            opts.gitleaksBinary,
+          ),
+        ];
       },
-      sandbox,
-      qa: sandboxQa(sandbox),
+      runners: {
+        codex: sandboxedRunner("codex", sandbox, git, opts, gatewayKey),
+      },
+      sandbox: checkedSandbox,
+      qa: sandboxQa(checkedSandbox),
       merge: localMerge(opts, gatewayKey),
     },
   };

@@ -1,17 +1,21 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { serve } from "@hono/node-server";
 import { type CredentialSource, resolveCredential } from "@matrix/sandbox";
 import { hashToken, KeyStore } from "./auth/keys.js";
 import { createServer } from "./http/app.js";
 import { createFactory } from "./integration/factory.js";
 import { parseRuntimeKind } from "./integration/runtime.js";
+import { PrivateStateOwner } from "./state-owner.js";
 
 const env = process.env;
 // Comma-separated bind addresses, e.g. "127.0.0.1,100.x.y.z" (loopback + Tailscale only).
 const hosts = (env.MATRIX_HOSTS ?? env.MATRIX_HOST ?? "127.0.0.1").split(",").map((h) => h.trim());
 const port = Number(env.MATRIX_PORT ?? 8740);
 
-const keys = new KeyStore();
+const dataDir = env.MATRIX_DATA_DIR ?? `${env.HOME ?? "."}/.matrix`;
+const stateOwner = new PrivateStateOwner(dataDir);
+const keys = new KeyStore(join(stateOwner.directory, "keys.json"), stateOwner);
 // The bootstrap admin token is hashed in memory and never written anywhere.
 const bootstrap = env.MATRIX_BOOTSTRAP_TOKEN ? hashToken(env.MATRIX_BOOTSTRAP_TOKEN) : null;
 if (env.MATRIX_BOOTSTRAP_TOKEN && !bootstrap) {
@@ -31,6 +35,8 @@ if (bootstrap) {
 }
 
 const runtime = parseRuntimeKind(env.MATRIX_RUNTIME);
+if (runtime !== "fake" && !env.MATRIX_DATABASE_URL)
+  throw new Error("MATRIX_DATABASE_URL is required for a persistent native/orca server");
 // The gateway key is read from a file (e.g. the Hermes config) or the environment; containers never see it.
 const gatewayKey: CredentialSource | undefined = env.MATRIX_GATEWAY_KEY_FILE
   ? {
@@ -45,6 +51,7 @@ const gatewayKey: CredentialSource | undefined = env.MATRIX_GATEWAY_KEY_FILE
 const gatewayKeyValue = gatewayKey ? await resolveCredential(gatewayKey) : undefined;
 
 const factory = await createFactory({
+  stateOwner,
   runtime,
   ...(runtime !== "fake" && env.MATRIX_GATEWAY_URL && gatewayKey
     ? {
@@ -63,7 +70,7 @@ const factory = await createFactory({
     ...(env.MATRIX_GH ? { gh: env.MATRIX_GH } : {}),
   },
   ...(env.MATRIX_DATABASE_URL ? { databaseUrl: env.MATRIX_DATABASE_URL } : {}),
-  dataDir: env.MATRIX_DATA_DIR ?? `${env.HOME ?? "."}/.matrix`,
+  dataDir,
   host: env.MATRIX_NODE_NAME ?? "localhost",
   ...(env.MATRIX_GATEWAY_URL && gatewayKeyValue
     ? {
@@ -81,9 +88,10 @@ if (!env.MATRIX_DATABASE_URL) {
   console.warn("MATRIX_DATABASE_URL not set: using the in-memory store (state is lost on restart)");
 }
 
-const { app } = createServer({
+const control = createServer({
   core: factory.core,
   keys,
+  stateDir: dataDir,
   ...(env.MATRIX_AUDIT_FILE ? { auditFile: env.MATRIX_AUDIT_FILE } : {}),
   replayLogFile: env.MATRIX_REPLAY_LOG ?? `${env.HOME ?? "."}/.matrix/replay.log`,
   ...(env.MATRIX_DASHBOARD_DIR ? { dashboardDir: env.MATRIX_DASHBOARD_DIR } : {}),
@@ -110,7 +118,7 @@ const { app } = createServer({
 });
 
 for (const hostname of hosts) {
-  serve({ fetch: app.fetch, hostname, port }, (info) => {
+  serve({ fetch: control.app.fetch, hostname, port }, (info) => {
     console.log(
       `matrix-server listening on http://${info.address}:${info.port} (runtime ${factory.runtime})`,
     );
@@ -119,7 +127,9 @@ for (const hostname of hosts) {
 factory.start();
 
 const shutdown = async () => {
+  await control.close();
   await factory.stop();
+  await stateOwner.close();
   process.exit(0);
 };
 process.on("SIGTERM", shutdown);

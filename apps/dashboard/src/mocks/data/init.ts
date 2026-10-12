@@ -60,19 +60,77 @@ const QUESTIONS: Question[] = [
   },
 ];
 
-const BASE_ANSWERED = [
-  { questionId: "stack.web.framework", label: "Web framework", value: "React 19 + Vite" },
-  { questionId: "stack.web.router", label: "Routing", value: "TanStack Router (typed routes)" },
-  { questionId: "stack.web.styling", label: "Styling", value: "Tailwind v4 + shadcn/ui" },
+const BASE_ANSWERED: InitProgress["answered"] = [
+  {
+    questionId: "stack.web.framework",
+    label: "Web framework",
+    value: "React 19 + Vite",
+    id: "stack.web.framework",
+    pack: "Stack",
+    prompt: "Web framework",
+    kind: "select",
+    rationale: "",
+    recommended: "react-vite",
+    options: [{ id: "react-vite", label: "React 19 + Vite", description: "", recommended: true }],
+    dependsOn: [],
+  },
+  {
+    questionId: "stack.web.router",
+    label: "Routing",
+    value: "TanStack Router (typed routes)",
+    id: "stack.web.router",
+    pack: "Stack",
+    prompt: "Routing",
+    kind: "select",
+    rationale: "",
+    recommended: "tanstack-router",
+    options: [
+      {
+        id: "tanstack-router",
+        label: "TanStack Router (typed routes)",
+        description: "",
+        recommended: true,
+      },
+    ],
+    dependsOn: [],
+  },
+  {
+    questionId: "stack.web.styling",
+    label: "Styling",
+    value: "Tailwind v4 + shadcn/ui",
+    id: "stack.web.styling",
+    pack: "Stack",
+    prompt: "Styling",
+    kind: "select",
+    rationale: "",
+    recommended: "tailwind-shadcn",
+    options: [
+      {
+        id: "tailwind-shadcn",
+        label: "Tailwind v4 + shadcn/ui",
+        description: "",
+        recommended: true,
+      },
+    ],
+    dependsOn: [],
+  },
 ];
 
 export function makeProgress(answers: Record<string, string>): InitProgress {
-  const answered = [
+  const answered: InitProgress["answered"] = [
     ...BASE_ANSWERED,
-    ...QUESTIONS.filter((q) => answers[q.id]).map((q) => ({
+    ...QUESTIONS.filter((q) => answers[q.id]).map<InitProgress["answered"][number]>((q) => ({
       questionId: q.id,
       label: q.prompt,
       value: q.options.find((o) => o.id === answers[q.id])?.label ?? String(answers[q.id]),
+      id: q.id,
+      pack: q.pack,
+      prompt: q.prompt,
+      kind: "select",
+      rationale: q.rationale,
+      recommended: q.options.find((option) => option.recommended)?.id ?? null,
+      options: q.options,
+      dependsOn: [],
     })),
   ];
   const question = QUESTIONS.find((q) => !answers[q.id]) ?? null;

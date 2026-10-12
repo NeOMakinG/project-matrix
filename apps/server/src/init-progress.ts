@@ -25,7 +25,7 @@ export interface InitProgress {
     total: number;
     state: "done" | "active" | "todo";
   }[];
-  answered: { questionId: string; label: string; value: string }[];
+  answered: (RoundQuestion & { questionId: string; label: string; value: string })[];
   question: {
     id: string;
     pack: string;
@@ -132,6 +132,31 @@ const display = (q: Question, value: AnswerValue): string => {
   return labels.join(", ");
 };
 
+function describeQuestion(question: Question, answers: Answers): RoundQuestion {
+  const recommended = recommendedFor(question, answers);
+  const values =
+    recommended === undefined
+      ? []
+      : Array.isArray(recommended)
+        ? recommended
+        : [String(recommended)];
+  return {
+    id: question.id,
+    pack: question.pack,
+    kind: question.kind,
+    prompt: question.prompt,
+    rationale: question.rationale ?? "",
+    recommended: recommended ?? null,
+    options: (question.options ?? []).map((option) => ({
+      id: option.value,
+      label: option.label,
+      description: option.rationale ?? "",
+      recommended: values.includes(option.value),
+    })),
+    dependsOn: question.dependsOn ?? [],
+  };
+}
+
 /** Interview state for the dashboard: pack progress, the current question and live previews. */
 export function initProgress(
   rawAnswers: Record<string, unknown>,
@@ -152,6 +177,7 @@ export function initProgress(
   const answered = questions
     .filter((q) => q.id in answers && isActive(q, answers))
     .map((q) => ({
+      ...describeQuestion(q, answers),
       questionId: q.id,
       label: q.prompt,
       value: display(q, answers[q.id] as AnswerValue),
@@ -190,25 +216,7 @@ export function initProgress(
     status: { label: "proposed", tone: "blue" as const },
   }));
 
-  const round: RoundQuestion[] = nextRound(packs, answers).map((q) => {
-    const rec = recommendedFor(q, answers);
-    const recValues = rec === undefined ? [] : Array.isArray(rec) ? rec : [String(rec)];
-    return {
-      id: q.id,
-      pack: q.pack,
-      kind: q.kind,
-      prompt: q.prompt,
-      rationale: q.rationale ?? "",
-      recommended: rec ?? null,
-      options: (q.options ?? []).map((o) => ({
-        id: o.value,
-        label: o.label,
-        description: o.rationale ?? "",
-        recommended: recValues.includes(o.value),
-      })),
-      dependsOn: q.dependsOn ?? [],
-    };
-  });
+  const round = nextRound(packs, answers).map((question) => describeQuestion(question, answers));
 
   return {
     round,

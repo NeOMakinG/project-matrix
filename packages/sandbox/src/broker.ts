@@ -35,7 +35,7 @@ const STRIPPED_HEADERS = new Set([
 ]);
 
 export interface BrokerOptions {
-  /** Upstream model gateway, e.g. CLIProxyAPI. */
+  /** HTTP(S) origin or custom mount, optionally ending in `/v1/`. Client API paths retain `/v1`. */
   gatewayUrl: string;
   gatewayKey: CredentialSource;
   llmRoutes?: Array<{ method: string; path: RegExp }>;
@@ -102,11 +102,33 @@ function deny(res: http.ServerResponse, code: number, message: string) {
  */
 export class CredentialBroker {
   readonly #options: BrokerOptions;
+  readonly #upstream: URL;
+  readonly #mountPrefix: string;
   #key: string | undefined;
   readonly #grants = new Map<string, Grant>();
 
   constructor(options: BrokerOptions) {
     this.#options = options;
+    this.#upstream = new URL(options.gatewayUrl);
+    const base = /^https?:\/\/[^/?#]*(\/[^?#]*)?$/i.exec(options.gatewayUrl);
+    const rawPath = base?.[1] ?? "/";
+    const segments = rawPath.replace(/^\//, "").replace(/\/$/, "").split("/").filter(Boolean);
+    if (
+      !base ||
+      !["http:", "https:"].includes(this.#upstream.protocol) ||
+      this.#upstream.username ||
+      this.#upstream.password ||
+      /[\\\s?#]/.test(options.gatewayUrl) ||
+      !/^\/(?:[a-zA-Z0-9._~-]+(?:\/[a-zA-Z0-9._~-]+)*\/?)?$/.test(rawPath) ||
+      segments.some(
+        (segment, index) =>
+          segment === "." ||
+          segment === ".." ||
+          (/^v\d+$/i.test(segment) && !(segment === "v1" && index === segments.length - 1)),
+      )
+    )
+      throw new Error("unsupported gateway base; use an HTTP(S) origin or unescaped mount[/v1]");
+    this.#mountPrefix = rawPath.replace(/\/$/, "").replace(/\/v1$/, "");
   }
 
   async #gatewayKey(): Promise<string> {
@@ -181,10 +203,9 @@ export class CredentialBroker {
 
   #llmServer(token: string, key: string): http.Server {
     const routes = this.#options.llmRoutes ?? DEFAULT_LLM_ROUTES;
-    const upstream = new URL(this.#options.gatewayUrl);
+    const upstream = this.#upstream;
     const client = upstream.protocol === "https:" ? https : http;
     const maxBody = this.#options.maxBodyBytes ?? 32 * 1024 * 1024;
-    const basePath = upstream.pathname.replace(/\/$/, "");
     const server = http.createServer((req, res) => {
       const method = req.method ?? "GET";
       const path = (req.url ?? "/").split("?")[0] ?? "/";
@@ -217,10 +238,15 @@ export class CredentialBroker {
           hostname: upstream.hostname,
           port: upstream.port,
           method,
-          path: `${basePath}${req.url ?? "/"}`,
+          path: `${this.#mountPrefix}${req.url ?? "/"}`,
           headers,
         },
         (upstreamRes) => {
+          if ((upstreamRes.statusCode ?? 502) >= 300 && (upstreamRes.statusCode ?? 502) < 400) {
+            upstreamRes.resume();
+            deny(res, 502, "gateway redirects are not allowed");
+            return;
+          }
           res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
           upstreamRes.pipe(res);
         },

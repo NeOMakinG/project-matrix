@@ -100,8 +100,8 @@ export function newProjectConfig(input: {
     baseBranch: "main",
     host: input.host,
     models: {
-      implement: { runner: "claude-code", model: "claude-fable-5-1" },
-      review: { runner: "codex", model: "gpt-6.1-sol" },
+      implement: { runner: "codex", model: "gpt-6.1-sol" },
+      review: { runner: "codex", model: "gpt-6-sol" },
     },
     reviewerFallbacks: [],
     autonomy: { default: "human" },

@@ -402,7 +402,28 @@ export const InitProgress = z
         state: z.enum(["done", "active", "todo"]),
       }),
     ),
-    answered: z.array(z.object({ questionId: z.string(), label: z.string(), value: z.string() })),
+    answered: z.array(
+      z.object({
+        questionId: z.string(),
+        label: z.string(),
+        value: z.string(),
+        id: z.string(),
+        pack: z.string(),
+        prompt: z.string(),
+        kind: z.enum(["select", "multiselect", "text", "list", "confirm", "number"]),
+        rationale: z.string(),
+        recommended: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]),
+        options: z.array(
+          z.object({
+            id: z.string(),
+            label: z.string(),
+            description: z.string(),
+            recommended: z.boolean(),
+          }),
+        ),
+        dependsOn: z.array(z.string()),
+      }),
+    ),
     question: z
       .object({
         id: z.string(),

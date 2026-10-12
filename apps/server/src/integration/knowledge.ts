@@ -33,8 +33,8 @@ export const repoKnowledge: KnowledgePort = {
     };
   },
 
-  async checks(repoPath): Promise<CheckResult> {
-    const receipts = await architectureGates(repoPath);
+  async checks(repoPath, baseBranch): Promise<CheckResult> {
+    const receipts = await architectureGates(repoPath, baseBranch ? { rulesFrom: baseBranch } : {});
     const rules = receipts.find(
       (r) =>
         r.kind === "adr-check" && Array.isArray((r.data as { violations?: unknown })?.violations),
@@ -51,7 +51,7 @@ export const repoKnowledge: KnowledgePort = {
     const drift = receipts.find((r) => r !== rules && r.kind === "adr-check" && !r.ok);
     if (drift) {
       violations.push({
-        level: "warn",
+        level: "error",
         adr: "graph",
         location: ".matrix/graph",
         message: drift.summary,

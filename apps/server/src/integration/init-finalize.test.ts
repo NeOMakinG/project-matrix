@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sampleAnswers } from "@matrix/packs";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createServer } from "../http/app.js";
 import { createFactory, type Factory } from "./factory.js";
 
@@ -49,6 +49,67 @@ async function boot() {
 }
 
 describe("init interview finalize", () => {
+  test("refuses existing files and symlink targets without touching them", async () => {
+    const { factory: current, call, json, project, session } = await boot();
+    const repo = (await current.store.getProject(project.id))!.repoPath;
+    await call("POST", `/v1/init/${session.id}/answers`, { answers: sampleAnswers });
+    writeFileSync(join(repo, "README.md"), "owner content\n");
+    const refused = await json<{ result: { status: string } }>(
+      call("POST", `/v1/init/${session.id}/finalize`, { acceptRecommended: true }),
+    );
+    expect(refused.result.status).toBe("invalid");
+    expect(readFileSync(join(repo, "README.md"), "utf8")).toBe("owner content\n");
+    expect(existsSync(join(repo, "matrix.config.ts"))).toBe(false);
+    const external = mkdtempSync(join(tmpdir(), "matrix-no-follow-"));
+    const config = (await current.store.getProject(project.id))!;
+    const link = join(repo, "outside");
+    symlinkSync(external, link);
+    await current.store.upsertProject({ ...config, repoPath: link });
+    expect(
+      (await call("POST", `/v1/init/${session.id}/finalize`, { acceptRecommended: true })).status,
+    ).toBe(403);
+    expect(existsSync(join(external, "matrix.config.ts"))).toBe(false);
+  }, 60_000);
+
+  test("unsupported stack is explicit and leaves the target repo untouched", async () => {
+    const { factory: current, call, json, project, session } = await boot();
+    await call("POST", `/v1/init/${session.id}/answers`, {
+      answers: { ...sampleAnswers, "frontend.framework": "other", "frontend.name": "svelte" },
+    });
+    const result = await json<{ result: { status: string; issues: { path: string }[] } }>(
+      call("POST", `/v1/init/${session.id}/finalize`, { acceptRecommended: true }),
+    );
+    expect(result.result.status).toBe("invalid");
+    expect(result.result.issues.some((issue) => issue.path === "stack")).toBe(true);
+    expect(
+      existsSync(join((await current.store.getProject(project.id))!.repoPath, "matrix.config.ts")),
+    ).toBe(false);
+  }, 60_000);
+
+  test("a partial finalize failure resumes its durable generation plan without overwrites", async () => {
+    const { factory: current, call, json, project, session } = await boot();
+    await call("POST", `/v1/init/${session.id}/answers`, { answers: sampleAnswers });
+    const fault = vi
+      .spyOn(current.store, "saveInitializedProject")
+      .mockRejectedValueOnce(new Error("injected store failure"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      expect(
+        (await call("POST", `/v1/init/${session.id}/finalize`, { acceptRecommended: true })).status,
+      ).toBe(500);
+    } finally {
+      consoleError.mockRestore();
+      fault.mockRestore();
+    }
+    const repo = (await current.store.getProject(project.id))!.repoPath;
+    const before = readFileSync(join(repo, "matrix.config.ts"), "utf8");
+    const retried = await json<{ state: string; result: { status: string } }>(
+      call("POST", `/v1/init/${session.id}/finalize`, { acceptRecommended: true }),
+    );
+    expect(retried).toMatchObject({ state: "completed", result: { status: "ok" } });
+    expect(readFileSync(join(repo, "matrix.config.ts"), "utf8")).toBe(before);
+  }, 60_000);
+
   test("progress returns the full round with kinds, options, recommendations and contradictions", async () => {
     const { call, json, session } = await boot();
     const progress = await json<{

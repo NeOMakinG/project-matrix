@@ -3864,6 +3864,20 @@ export interface components {
         questionId: string;
         label: string;
         value: string;
+        id: string;
+        pack: string;
+        prompt: string;
+        /** @enum {string} */
+        kind: "select" | "multiselect" | "text" | "list" | "confirm" | "number";
+        rationale: string;
+        recommended: string | number | boolean | string[] | null;
+        options: {
+          id: string;
+          label: string;
+          description: string;
+          recommended: boolean;
+        }[];
+        dependsOn: string[];
       }[];
       question: {
         id: string;

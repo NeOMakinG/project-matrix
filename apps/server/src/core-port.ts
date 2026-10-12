@@ -7,6 +7,7 @@ import type {
   RunStatus,
 } from "@matrix/core";
 import type { NewTicket, Ticket, TicketPatch, TicketQuery } from "@matrix/tickets";
+import type { PrivateStateOwner } from "./state-owner.js";
 
 export interface Project {
   id: string;
@@ -193,8 +194,10 @@ export interface CheckResult {
 }
 
 export interface CorePort {
+  readonly stateOwner?: PrivateStateOwner | undefined;
   listProjects(): Promise<Project[]>;
   getProject(id: string): Promise<Project | null>;
+  getProjectPolicy(id: string): Promise<{ project: Project; version: string } | null>;
   createProject(input: {
     name: string;
     description: string;
@@ -203,12 +206,13 @@ export interface CorePort {
     /** Check commands run by the checks and QA phases (the init interview sets these later). */
     checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
   }): Promise<Project>;
-  setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode): Promise<Project>;
+  setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode, actor: Actor): Promise<Project>;
   /** Sets several phases in one write (all or nothing). */
   setAutonomyPolicy(
     projectId: string,
     policy: Partial<Record<Phase, AutonomyMode>>,
     actor: Actor,
+    expected?: string,
   ): Promise<Project>;
 
   listTickets(projectId: string, query?: TicketQuery): Promise<Ticket[]>;
