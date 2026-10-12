@@ -3,6 +3,7 @@ export const name = "@matrix/sandbox";
 export * from "./broker.js";
 export * from "./bwrap.js";
 export * from "./credentials.js";
+export * from "./ip.js";
 export * from "./launch.js";
 export * from "./podman.js";
 export * from "./process.js";

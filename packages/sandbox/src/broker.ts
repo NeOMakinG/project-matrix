@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
@@ -7,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { NetworkPolicy } from "@matrix/core";
 import { type CredentialSource, resolveCredential } from "./credentials.js";
+import { isPrivateAddress } from "./ip.js";
 
 /** Routes a sandbox may call on the model gateway. Everything else is answered 403 and never forwarded. */
 export const DEFAULT_LLM_ROUTES: Array<{ method: string; path: RegExp }> = [
@@ -45,6 +47,8 @@ export interface GrantRequest {
   network: NetworkPolicy;
   allowHosts?: string[];
   allowPorts?: number[];
+  /** Allow tunnels to private, loopback, link-local or tailnet addresses. Off by default. */
+  allowPrivate?: boolean;
 }
 
 /** A per-run grant: its own socket directory, mounted only into that run's sandbox. */
@@ -133,7 +137,11 @@ export class CredentialBroker {
     const servers: Array<http.Server> = [this.#llmServer(token, key)];
     await listen(servers[0] as http.Server, join(socketDir, "llm.sock"));
     if (request.network === "allowlist") {
-      const egress = this.#egressServer(request.allowHosts ?? [], request.allowPorts ?? [443]);
+      const egress = this.#egressServer(
+        request.allowHosts ?? [],
+        request.allowPorts ?? [443],
+        request.allowPrivate ?? false,
+      );
       servers.push(egress);
       await listen(egress, join(socketDir, "egress.sock"));
     }
@@ -223,12 +231,12 @@ export class CredentialBroker {
     return server;
   }
 
-  #egressServer(allowHosts: string[], allowPorts: number[]): http.Server {
+  #egressServer(allowHosts: string[], allowPorts: number[], allowPrivate: boolean): http.Server {
     const server = http.createServer((req, res) => {
       deny(res, 403, "only HTTPS CONNECT tunnels are allowed");
       req.resume();
     });
-    server.on("connect", (req, clientSocket: net.Socket, head: Buffer) => {
+    server.on("connect", async (req, clientSocket: net.Socket, head: Buffer) => {
       const target = req.url ?? "";
       const match = /^\[?([^\]]+?)\]?:(\d+)$/.exec(target);
       const host = match?.[1];
@@ -237,7 +245,23 @@ export class CredentialBroker {
         clientSocket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         return;
       }
-      const upstream = net.connect(port, host, () => {
+      // Resolve once, check every address, then connect to the checked IP (no DNS rebinding).
+      let address: string;
+      try {
+        const resolved = await lookup(host, { all: true, verbatim: true });
+        if (
+          resolved.length === 0 ||
+          (!allowPrivate && resolved.some((r) => isPrivateAddress(r.address)))
+        ) {
+          clientSocket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+          return;
+        }
+        address = (resolved[0] as { address: string }).address;
+      } catch {
+        clientSocket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+        return;
+      }
+      const upstream = net.connect(port, address, () => {
         clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
         if (head.length > 0) upstream.write(head);
         upstream.pipe(clientSocket);

@@ -3,6 +3,7 @@ import net from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { CredentialBroker, hostAllowed } from "./broker";
+import { isPrivateAddress } from "./ip";
 
 const REAL_KEY = "real-gateway-key-abcdef123456";
 const cleanups: Array<() => Promise<void>> = [];
@@ -142,6 +143,7 @@ describe("egress socket", () => {
       network: "allowlist",
       allowHosts: ["127.0.0.1"],
       allowPorts: [port],
+      allowPrivate: true,
     });
     const sock = join(grant.socketDir ?? "", "egress.sock");
     expect(await connect(sock, `127.0.0.1:${port}`)).toContain("200");
@@ -156,4 +158,45 @@ test("hostAllowed handles wildcards without matching lookalikes", () => {
   expect(hostAllowed("github.com", ["*.github.com"])).toBe(false);
   expect(hostAllowed("evilgithub.com", ["*.github.com"])).toBe(false);
   expect(hostAllowed("registry.npmjs.org.evil.com", ["registry.npmjs.org"])).toBe(false);
+});
+
+test("allowlisted names that resolve to private addresses are refused", async () => {
+  const up = await upstream();
+  const grant = await (await broker(up.url)).grant({
+    runId: "run-6",
+    network: "allowlist",
+    allowHosts: ["localhost"],
+    allowPorts: [443],
+  });
+  const reply = await new Promise<string>((resolve, reject) => {
+    const s = net.connect(join(grant.socketDir ?? "", "egress.sock"), () =>
+      s.write("CONNECT localhost:443 HTTP/1.1\r\nHost: localhost:443\r\n\r\n"),
+    );
+    s.on("data", (c) => {
+      s.destroy();
+      resolve(c.toString().split("\r\n")[0] ?? "");
+    });
+    s.on("error", reject);
+  });
+  expect(reply).toContain("403");
+});
+
+test("private address classification", () => {
+  for (const ip of [
+    "127.0.0.1",
+    "10.1.2.3",
+    "100.90.255.43",
+    "169.254.169.254",
+    "172.20.0.1",
+    "192.168.1.1",
+    "::1",
+    "fd7a:115c:a1e0::1",
+    "fe80::1",
+    "::ffff:127.0.0.1",
+    "0.0.0.0",
+  ]) {
+    expect(isPrivateAddress(ip), ip).toBe(true);
+  }
+  for (const ip of ["1.1.1.1", "104.16.1.1", "2606:4700::1111"])
+    expect(isPrivateAddress(ip), ip).toBe(false);
 });
