@@ -32,19 +32,16 @@ export async function registryInfo(
 ): Promise<RegistryInfo | null> {
   const name = encodeURIComponent(dep.name).replace("%40", "@");
   if (dep.ecosystem === "npm") {
-    const d = await getJson<{
-      "dist-tags"?: { latest?: string };
-      time?: Record<string, string>;
-      repository?: { url?: string } | string;
-    }>(`https://registry.npmjs.org/${name}`, http);
-    const latest = d["dist-tags"]?.latest;
-    if (!latest) return null;
+    // The full packument can be many MB; `/latest` is the small manifest of the latest dist-tag.
+    const d = await getJson<{ version?: string; repository?: { url?: string } | string }>(
+      `https://registry.npmjs.org/${name}/latest`,
+      http,
+    );
+    if (!d.version) return null;
     const repo = typeof d.repository === "string" ? d.repository : d.repository?.url;
-    const publishedAt = d.time?.[latest];
     return {
-      latest,
+      latest: d.version,
       url: `https://www.npmjs.com/package/${dep.name}`,
-      ...(publishedAt ? { publishedAt } : {}),
       ...(repo ? { repository: repo } : {}),
     };
   }

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { dedupe } from "./dedupe.js";
 import { fenced, inert, proposalTicket, safeUrl } from "./digest.js";
 import { assertPublicUrl, BlockedUrlError, getText, isBlockedAddress } from "./http.js";
+import { fetchTransport } from "./transport.js";
 import type { Fetch, ScoredItem } from "./types.js";
 
 const dns = (map: Record<string, string[]>) => async (host: string) =>
@@ -58,7 +59,7 @@ describe("SSRF guard", () => {
       });
     };
     await expect(
-      getText("https://example.com/feed", { fetch, resolve: dns({}) }),
+      getText("https://example.com/feed", { transport: fetchTransport(fetch), resolve: dns({}) }),
     ).rejects.toBeInstanceOf(BlockedUrlError);
     expect(calls).toEqual(["https://example.com/feed"]);
   });
@@ -68,11 +69,19 @@ describe("SSRF guard", () => {
     const loop: Fetch = async () =>
       new Response("", { status: 301, headers: { location: `https://example.com/${++n}` } });
     await expect(
-      getText("https://example.com/0", { fetch: loop, resolve: dns({}), maxRedirects: 2 }),
+      getText("https://example.com/0", {
+        transport: fetchTransport(loop),
+        resolve: dns({}),
+        maxRedirects: 2,
+      }),
     ).rejects.toThrow(/301/);
     const big: Fetch = async () => new Response("x".repeat(5000));
     await expect(
-      getText("https://example.com/big", { fetch: big, resolve: dns({}), maxBytes: 1000 }),
+      getText("https://example.com/big", {
+        transport: fetchTransport(big),
+        resolve: dns({}),
+        maxBytes: 1000,
+      }),
     ).rejects.toThrow(/exceeds/);
   });
 });

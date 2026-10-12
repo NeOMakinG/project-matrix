@@ -1,5 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { safeJoin, writeFileSafe } from "@matrix/safe-fs";
 import type { TicketStore } from "@matrix/tickets";
 import { collectArxiv, collectFeeds } from "./collectors/feeds.js";
 import { collectGithubReleases, collectGithubTrending, githubRepo } from "./collectors/github.js";
@@ -111,7 +110,7 @@ export async function runWatch(opts: WatchOptions): Promise<WatchResult> {
       summary: i.summary.trim(),
     })),
   );
-  const seenStore = new SeenStore(join(opts.root, ".matrix", "watch", "seen.json"));
+  const seenStore = new SeenStore(opts.root);
   const seen = await seenStore.load();
   const fresh = opts.includeSeen ? unique : unique.filter((i) => !seen.has(i.id));
   const scored = await scoreItems(fresh, ctx, opts.gateway);
@@ -130,10 +129,8 @@ export async function runWatch(opts: WatchOptions): Promise<WatchResult> {
   };
   if (opts.dryRun) return result;
 
-  const dir = join(opts.root, ".matrix", "watch");
-  await mkdir(dir, { recursive: true });
-  result.digestPath = join(dir, `digest-${week}.md`);
-  await writeFile(result.digestPath, digest);
+  result.digestPath = safeJoin(opts.root, ".matrix", "watch", `digest-${week}.md`);
+  await writeFileSafe(opts.root, result.digestPath, digest);
   if (opts.tickets) result.tickets = await fileProposals(opts.tickets, scored, minRelevance);
   for (const i of fresh) seen.add(i.id);
   await seenStore.save(seen);

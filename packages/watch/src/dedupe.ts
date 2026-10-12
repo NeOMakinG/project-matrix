@@ -1,5 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFileSafe, safeJoin, writeFileSafe } from "@matrix/safe-fs";
 import type { WatchItem } from "./types.js";
 
 export function normalizeUrl(url: string): string {
@@ -42,22 +41,23 @@ export function dedupe(items: WatchItem[]): WatchItem[] {
   return out;
 }
 
-/** Remembers item ids across runs so a weekly digest only shows what is new. */
+/** Remembers item ids across runs so a weekly digest only shows what is new. Writes never follow symlinks. */
 export class SeenStore {
-  constructor(private readonly path: string) {}
+  readonly path: string;
+  constructor(private readonly root: string) {
+    this.path = safeJoin(root, ".matrix", "watch", "seen.json");
+  }
 
   async load(): Promise<Set<string>> {
-    try {
-      return new Set(JSON.parse(await readFile(this.path, "utf8")) as string[]);
-    } catch {
-      return new Set();
-    }
+    const raw = await readFileSafe(this.root, this.path);
+    if (raw === null) return new Set();
+    const parsed = JSON.parse(raw) as unknown;
+    return new Set(
+      Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === "string") : [],
+    );
   }
 
   async save(ids: Set<string>): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.tmp`;
-    await writeFile(tmp, `${JSON.stringify([...ids].sort(), null, 0)}\n`);
-    await rename(tmp, this.path);
+    await writeFileSafe(this.root, this.path, `${JSON.stringify([...ids].sort())}\n`);
   }
 }

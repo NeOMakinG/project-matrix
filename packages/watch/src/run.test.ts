@@ -7,6 +7,7 @@ import { fileProposals } from "./digest.js";
 import { completeJson } from "./llm.js";
 import { runWatch } from "./run.js";
 import { heuristicScore, scoreItems } from "./score.js";
+import { fetchTransport } from "./transport.js";
 import { type Fetch, ScoreBatchSchema, type WatchItem } from "./types.js";
 
 class FakeTickets implements TicketStore {
@@ -52,13 +53,11 @@ function router(model: (body: string) => string): { fetch: Fetch; calls: string[
     calls.push(url);
     if (url.startsWith("https://registry.npmjs.org/zod")) {
       return json({
-        "dist-tags": { latest: "5.0.0" },
-        time: { "5.0.0": recent },
+        version: "5.0.0",
         repository: { url: "git+https://github.com/colinhacks/zod.git" },
       });
     }
-    if (url.startsWith("https://registry.npmjs.org/"))
-      return json({ "dist-tags": { latest: "1.0.0" } });
+    if (url.startsWith("https://registry.npmjs.org/")) return json({ version: "1.0.0" });
     if (url.startsWith("https://api.github.com/repos/colinhacks/zod/releases")) {
       return json([
         {
@@ -125,7 +124,7 @@ describe("runWatch", () => {
       context,
       gateway,
       tickets,
-      http: { fetch, resolve: publicDns },
+      http: { transport: fetchTransport(fetch), resolve: publicDns },
       sources: { trending: false, feeds: false, arxiv: false },
     });
     expect(first.errors).toEqual([]);
@@ -148,7 +147,7 @@ describe("runWatch", () => {
       context,
       gateway,
       tickets,
-      http: { fetch, resolve: publicDns },
+      http: { transport: fetchTransport(fetch), resolve: publicDns },
       sources: { trending: false, feeds: false, arxiv: false },
     });
     expect(second.fresh).toBe(0);

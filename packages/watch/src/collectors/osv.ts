@@ -1,4 +1,4 @@
-import { assertPublicUrl, type HttpOptions } from "../http.js";
+import { type HttpOptions, postJson } from "../http.js";
 import type { Dependency, WatchItem } from "../types.js";
 
 const OSV_ECOSYSTEM = { npm: "npm", crates: "crates.io", pypi: "PyPI" } as const;
@@ -18,21 +18,16 @@ function severity(v: OsvVuln): WatchItem["severity"] {
 export async function collectOsv(deps: Dependency[], http: HttpOptions = {}): Promise<WatchItem[]> {
   const pinned = deps.filter((d) => d.resolved);
   if (!pinned.length) return [];
-  const f = http.fetch ?? fetch;
-  const endpoint = "https://api.osv.dev/v1/querybatch";
-  await assertPublicUrl(endpoint, http.resolve);
-  const res = await f(endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+  const data = await postJson<{ results: { vulns?: OsvVuln[] }[] }>(
+    "https://api.osv.dev/v1/querybatch",
+    {
       queries: pinned.map((d) => ({
         package: { name: d.name, ecosystem: OSV_ECOSYSTEM[d.ecosystem] },
         version: d.resolved,
       })),
-    }),
-  });
-  if (!res.ok) throw new Error(`osv querybatch -> ${res.status}`);
-  const data = (await res.json()) as { results: { vulns?: OsvVuln[] }[] };
+    },
+    http,
+  );
   const out: WatchItem[] = [];
   data.results.forEach((result, i) => {
     const dep = pinned[i]!;
