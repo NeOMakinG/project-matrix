@@ -351,3 +351,94 @@ describe("git port trusts only host-recorded gitdirs (round 2 PoC)", () => {
     expect(existsSync(pwned)).toBe(false);
   });
 });
+
+describe("round 3: submodules and nested repos", () => {
+  const sh = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd })
+      .toString()
+      .trim();
+
+  async function plantRepo(dir: string, pwned: string): Promise<void> {
+    sh(dir, "init", "-q");
+    await writeFile(join(dir, "f"), "x");
+    sh(dir, "add", "f");
+    sh(dir, "commit", "-qm", "planted");
+    await writeFile(join(dir, ".gitattributes"), "* filter=evil\n");
+    sh(dir, "config", "filter.evil.clean", `touch ${pwned}`);
+    sh(dir, "config", "filter.evil.process", `touch ${pwned}`);
+    await writeFile(join(dir, "f"), "dirty");
+  }
+
+  test("PoC: planted repo at a gitlink path never runs host-side", async () => {
+    const repoPath = await repo();
+    sh(
+      repoPath,
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sh(repoPath, "rev-parse", "HEAD")},sub`,
+    );
+    sh(repoPath, "commit", "-qm", "add submodule");
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const { workdir } = await ws.prepare({
+      projectId: "p",
+      ticketId: "S",
+      repoPath,
+      branch: "matrix/s",
+      baseBranch: "main",
+    });
+    const pwned = join(await mkdtemp(join(tmpdir(), "matrix-pwn-")), "pwned");
+    const { mkdir: md } = await import("node:fs/promises");
+    await md(join(workdir, "sub"), { recursive: true });
+    await plantRepo(join(workdir, "sub"), pwned);
+    const port = new WorktreeGitPort({ trusted: ws.trusted });
+    await expect(port.isClean(workdir)).rejects.toThrow(/tampering/);
+    await expect(port.treeState(workdir)).rejects.toThrow(/tampering/);
+    expect(existsSync(pwned)).toBe(false);
+  });
+
+  test("nested repo without a gitlink is refused too", async () => {
+    const repoPath = await repo();
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const { workdir } = await ws.prepare({
+      projectId: "p",
+      ticketId: "N",
+      repoPath,
+      branch: "matrix/n",
+      baseBranch: "main",
+    });
+    const pwned = join(await mkdtemp(join(tmpdir(), "matrix-pwn-")), "pwned");
+    const { mkdir: md } = await import("node:fs/promises");
+    await md(join(workdir, "deep", "vendor"), { recursive: true });
+    await plantRepo(join(workdir, "deep", "vendor"), pwned);
+    await expect(new WorktreeGitPort({ trusted: ws.trusted }).headSha(workdir)).rejects.toThrow(
+      /nested git/,
+    );
+    expect(existsSync(pwned)).toBe(false);
+  });
+
+  test("cleanForChecks removes gitignored and untracked files, returns HEAD", async () => {
+    const repoPath = await repo();
+    await writeFile(join(repoPath, ".gitignore"), "cache/\n");
+    sh(repoPath, "add", ".gitignore");
+    sh(repoPath, "commit", "-qm", "gi");
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const { workdir } = await ws.prepare({
+      projectId: "p",
+      ticketId: "C",
+      repoPath,
+      branch: "matrix/c",
+      baseBranch: "main",
+    });
+    const { mkdir: md } = await import("node:fs/promises");
+    await md(join(workdir, "cache"));
+    await writeFile(join(workdir, "cache", "poison.json"), "{}");
+    await writeFile(join(workdir, "stray.ts"), "x");
+    const port = new WorktreeGitPort({ trusted: ws.trusted });
+    expect(await port.cleanForChecks(workdir)).toBe(sh(repoPath, "rev-parse", "HEAD"));
+    expect(existsSync(join(workdir, "cache", "poison.json"))).toBe(false);
+    expect(existsSync(join(workdir, "stray.ts"))).toBe(false);
+    await writeFile(join(workdir, "README.md"), "modified tracked");
+    await expect(port.cleanForChecks(workdir)).rejects.toThrow(/uncommitted/);
+  });
+});

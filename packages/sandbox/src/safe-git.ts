@@ -1,4 +1,4 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
@@ -9,6 +9,10 @@ export const SAFE_GIT_CONFIG: Array<[string, string]> = [
   ["core.hooksPath", "/dev/null"],
   ["core.fsmonitor", "false"],
   ["core.attributesFile", "/dev/null"],
+  ["submodule.recurse", "false"],
+  ["status.submoduleSummary", "false"],
+  ["diff.ignoreSubmodules", "all"],
+  ["fetch.recurseSubmodules", "false"],
   ["core.untrackedCache", "false"],
   ["credential.helper", ""],
   ["core.sshCommand", "false"],
@@ -31,6 +35,7 @@ export function safeGitEnv(
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_NO_LAZY_FETCH: "1",
     GIT_TERMINAL_PROMPT: "0",
     GIT_ATTR_NOSYSTEM: "1",
     GIT_CONFIG_COUNT: String(config.length),
@@ -70,4 +75,32 @@ export async function verifyWorktreeLink(workdir: string, expectedGitDir: string
       `worktree ${workdir} .git points to ${target || "nothing"}, expected ${expected}`,
     );
   }
+}
+
+/**
+ * Lists every `.git` entry (file, dir or symlink) below the worktree root, excluding the root's own
+ * `.git`. Agent-planted nested repos or submodules must never be touched by host git.
+ */
+export async function findNestedGitEntries(
+  workdir: string,
+  maxEntries = 500_000,
+): Promise<string[]> {
+  const found: string[] = [];
+  const stack: string[] = [workdir];
+  let seen = 0;
+  while (stack.length > 0) {
+    const dir = stack.pop() as string;
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      seen += 1;
+      if (seen > maxEntries)
+        throw new Error(`worktree ${workdir} has more than ${maxEntries} entries`);
+      const full = join(dir, entry.name);
+      if (entry.name === ".git") {
+        if (dir !== workdir) found.push(full);
+        continue;
+      }
+      if (entry.isDirectory()) stack.push(full);
+    }
+  }
+  return found;
 }

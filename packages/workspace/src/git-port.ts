@@ -3,6 +3,7 @@ import { lstat, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import type { GitPort } from "@matrix/core";
 import {
+  findNestedGitEntries,
   gitLocation,
   hostExecutor,
   type LineExecutor,
@@ -61,6 +62,7 @@ export class WorktreeGitPort implements GitPort {
   async #git(workdir: string, args: string[], withTree = false): Promise<string> {
     const { gitdir } = await this.#trusted.lookup(workdir);
     await verifyWorktreeLink(workdir, gitdir);
+    await this.#preflight(workdir, gitdir);
     const result = await this.#run(
       gitdir,
       [...gitLocation(gitdir, withTree ? workdir : undefined), ...args],
@@ -69,6 +71,27 @@ export class WorktreeGitPort implements GitPort {
     if (result.exitCode !== 0)
       throw new Error(`git ${args[0]} failed: ${result.stderrTail.trim().slice(-300)}`);
     return result.stdout;
+  }
+
+  /** Nested repos or gitlinks would make host git recurse into agent-controlled metadata. */
+  async #preflight(workdir: string, gitdir: string): Promise<void> {
+    const nested = await findNestedGitEntries(workdir);
+    if (nested.length > 0) throw new Error(`tampering: nested git repository at ${nested[0]}`);
+    const staged = await this.#run(gitdir, ["--git-dir", gitdir, "ls-files", "--stage", "-z"]);
+    if (staged.stdout.split("\0").some((e) => e.startsWith("160000 "))) {
+      throw new Error("tampering: gitlinks (submodules) are not supported in agent worktrees");
+    }
+  }
+
+  /**
+   * Makes the worktree exactly the committed tree before checks run: removes untracked and
+   * gitignored files host-side, then requires a clean tree. Returns the checked HEAD SHA.
+   */
+  async cleanForChecks(workdir: string): Promise<string> {
+    await this.#git(workdir, ["clean", "-ffdx", "-q"], true);
+    if (!(await this.isClean(workdir)))
+      throw new Error("worktree has uncommitted changes after clean");
+    return this.headSha(workdir);
   }
 
   async headSha(workdir: string): Promise<string> {
@@ -81,7 +104,13 @@ export class WorktreeGitPort implements GitPort {
   async status(workdir: string): Promise<string> {
     return this.#git(
       workdir,
-      ["status", "--porcelain=v1", "--untracked-files=all", "--no-renames"],
+      [
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--no-renames",
+        "--ignore-submodules=all",
+      ],
       true,
     );
   }
@@ -97,7 +126,7 @@ export class WorktreeGitPort implements GitPort {
     hash.update(
       await this.#git(
         workdir,
-        ["diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv"],
+        ["diff", "HEAD", "--binary", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"],
         true,
       ),
     );
