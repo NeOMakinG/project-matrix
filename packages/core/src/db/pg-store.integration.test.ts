@@ -131,9 +131,15 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     const approval = await store.getPendingApproval(projectId, t.id, "merge");
     expect(approval).toMatchObject({ headSha: "a".repeat(40), requestedBy: h.reconciler.ownerId });
     await expect(
-      h.reconciler.decideApproval(approval!.id, "approved", h.reconciler.ownerId),
+      h.reconciler.decideApproval(approval!.id, "approved", {
+        id: h.reconciler.ownerId,
+        kind: "human",
+      }),
     ).rejects.toThrow();
-    await h.reconciler.decideApproval(approval!.id, "approved", "user:valentin");
+    await h.reconciler.decideApproval(approval!.id, "approved", {
+      id: "user:valentin",
+      kind: "human",
+    });
     await h.drain();
     expect(await store.getWorkflow(projectId, t.id)).toMatchObject({
       phase: "deploy",

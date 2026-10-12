@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createHarness } from "./testing/harness.js";
+import { APPROVER, createHarness } from "./testing/harness.js";
 
 function withCleaner() {
   const h = createHarness();
@@ -22,8 +22,8 @@ describe("cleanForChecks (runtime git port, feature-detected)", () => {
     const t = h.tickets.add("Clean checks");
     h.git.commit(`/tmp/wt/${t.id}-0`, "e".repeat(40));
     await h.drain();
-    // Once at implement handover, once right before checks.
-    expect(calls).toEqual([`/tmp/wt/${t.id}-0`, `/tmp/wt/${t.id}-0`]);
+    // Only right before checks: handover never cleans (it would delete agent work).
+    expect(calls).toEqual([`/tmp/wt/${t.id}-0`]);
     const runs = await h.store.listRuns({ ticketId: t.id });
     for (const phase of ["checks", "review", "qa", "merge"]) {
       expect(runs.find((r) => r.phase === phase)?.headSha).toBe("e".repeat(40));
@@ -31,24 +31,29 @@ describe("cleanForChecks (runtime git port, feature-detected)", () => {
     expect(h.merges[0]?.headSha).toBe("e".repeat(40));
   });
 
-  test("untracked build artifacts are cleaned instead of bouncing the ticket", async () => {
-    const { h } = withCleaner();
+  test("uncommitted agent work at handover fails implement with feedback instead of being cleaned", async () => {
+    const { h, calls } = withCleaner();
     await h.setup();
-    const t = h.tickets.add("Artifacts");
-    let leftArtifacts = false;
+    const t = h.tickets.add("Untracked work");
+    let call = 0;
     h.deps.runners["claude-code"] = {
       id: "claude-code",
       run: async (req) => {
-        if (req.phase === "implement" && !leftArtifacts) {
-          leftArtifacts = true;
-          // Committed work, plus an untracked build directory the implementer left behind.
-          h.git.dirty.set(req.workdir, "?? dist/");
+        if (req.phase === "implement") {
+          if (call++ === 0) h.git.dirty.set(req.workdir, "?? src/new-feature.ts");
+          else h.git.dirty.delete(req.workdir); // the retry commits it
         }
         return { runId: req.runId, status: "ok", summary: "done", receipts: [], costUsd: 0.01 };
       },
     };
     await h.drain();
-    // Implement is retried once (it handed over an untracked file), then checks clean any leftovers.
+    const implement = (await h.store.listRuns({ ticketId: t.id })).filter(
+      (r) => r.phase === "implement",
+    );
+    expect(implement.map((r) => r.status)).toEqual(["failed", "ok"]);
+    expect(implement[0]?.summary).toContain("commit your work");
+    // The untracked file was never deleted at handover: cleaning only happened before checks.
+    expect(calls).toEqual([`/tmp/wt/${t.id}-0`]);
     expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
   });
 
@@ -79,7 +84,7 @@ describe("cleanForChecks (runtime git port, feature-detected)", () => {
     const t = h.tickets.add("Commit mismatch");
     await h.drain();
     const approval = (await h.store.getPendingApproval("pilot", t.id, "merge"))!;
-    await h.reconciler.decideApproval(approval.id, "approved", "user:valentin");
+    await h.reconciler.decideApproval(approval.id, "approved", APPROVER);
     const checks = (await h.store.listRuns({ ticketId: t.id })).find((r) => r.phase === "checks")!;
     await h.store.updateRun(checks.id, { headSha: "9".repeat(40) });
     await h.drain();

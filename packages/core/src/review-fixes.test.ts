@@ -137,10 +137,16 @@ describe("P1-2 approvals are bound to run, commit and a different identity", () 
   test("the requester and other reconcilers cannot approve", async () => {
     const { h, approval } = await waitingForMerge();
     await expect(
-      h.reconciler.decideApproval(approval.id, "approved", h.reconciler.ownerId),
+      h.reconciler.decideApproval(approval.id, "approved", {
+        id: h.reconciler.ownerId,
+        kind: "human",
+      }),
     ).rejects.toThrow();
     await expect(
-      h.reconciler.decideApproval(approval.id, "approved", "reconciler:other"),
+      h.reconciler.decideApproval(approval.id, "approved", {
+        id: "reconciler:other",
+        kind: "human",
+      }),
     ).rejects.toThrow();
   });
 

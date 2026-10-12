@@ -46,6 +46,9 @@ export interface Approver {
   kind: "human" | "agent";
 }
 
+/** Authenticated principal acting on the factory; built by the server, never parsed from a string. */
+export type Actor = Approver;
+
 export type ApprovalStatus = "pending" | "approved" | "rejected";
 
 export interface ApprovalRecord {

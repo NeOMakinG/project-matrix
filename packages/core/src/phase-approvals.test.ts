@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { MemoryStore } from "./store.js";
+import { type Actor, MemoryStore } from "./store.js";
 import { APPROVER, createHarness } from "./testing/harness.js";
 
 /** Drives a human-mode ticket until it waits for the merge approval. */
@@ -84,9 +84,15 @@ describe("approver kind", () => {
     await expect(
       h.reconciler.decideApproval(approval.id, "approved", { id: "key:agent-1", kind: "agent" }),
     ).rejects.toThrow("human approver");
+    // Bare identity strings are rejected outright, even ones that look human.
+    for (const bare of ["key:agent-1", "user:valentin"]) {
+      await expect(
+        h.reconciler.decideApproval(approval.id, "approved", bare as unknown as Actor),
+      ).rejects.toThrow("structured Actor");
+    }
     await expect(
-      h.reconciler.decideApproval(approval.id, "approved", "key:agent-1"),
-    ).rejects.toThrow("human approver");
+      h.reconciler.decideApproval(approval.id, "approved", { id: "", kind: "human" }),
+    ).rejects.toThrow("structured Actor");
     await h.reconciler.decideApproval(approval.id, "approved", APPROVER);
     await h.drain();
     expect(h.merges).toHaveLength(1);
@@ -123,7 +129,7 @@ describe("approver kind", () => {
     const deploy = (await h.store.getPendingApproval("pilot", t.id, "deploy"))!;
     expect(deploy.phase).toBe("deploy");
     await expect(
-      h.reconciler.decideApproval(deploy.id, "approved", "key:agent-1"),
+      h.reconciler.decideApproval(deploy.id, "approved", { id: "key:agent-1", kind: "agent" }),
     ).rejects.toThrow();
     // The approved merge approval cannot be reused for the deploy.
     const w = (await h.store.getWorkflow("pilot", t.id))!;
