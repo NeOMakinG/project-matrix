@@ -1,0 +1,11 @@
+{
+  "name": "project-matrix",
+  "owner": { "name": "NeOMakinG" },
+  "plugins": [
+    {
+      "name": "project-matrix",
+      "source": "./",
+      "description": "Software-factory skills: init interview, Matrix ticket loop, Matrix MCP usage and per-stack quality rules."
+    }
+  ]
+}

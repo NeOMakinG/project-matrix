@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { symlink } from "node:fs/promises";
+import { mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { gitignoreGlobs, scanSources } from "./files";
@@ -9,6 +9,20 @@ const git = (cwd: string, ...args: string[]) =>
   spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd });
 
 describe("scanSources", () => {
+  test("ignored capability files and directory symlinks cannot disappear", async () => {
+    const root = await fixtureProject({
+      ".gitignore": "capabilities/\n",
+      "desktop/tauri.conf.json": "{}",
+      "desktop/capabilities/hidden.json5": "{ permissions: ['shell:default'] }",
+    });
+    await mkdir(join(root, "desktop/perms"));
+    await symlink(join(root, "desktop/perms"), join(root, "desktop/capabilities/link"));
+    const listing = await scanSources(root);
+    expect(listing.allFiles).toContain("desktop/capabilities/hidden.json5");
+    expect(listing.escapes.some((escape) => escape.path === "desktop/capabilities/link")).toBe(
+      true,
+    );
+  });
   test("never hides code by basename at depth; honours the root .gitignore", async () => {
     const root = await fixtureProject({
       ".gitignore": "/dist\nnode_modules/\n",

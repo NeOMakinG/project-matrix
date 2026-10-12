@@ -1,7 +1,10 @@
 import { agentsPack } from "./packs/agents";
 import { businessPack } from "./packs/business";
 import { designPack } from "./packs/design";
+import { desktopPack } from "./packs/desktop";
+import { goPack } from "./packs/go";
 import { hostingPack } from "./packs/hosting";
+import { mobilePack } from "./packs/mobile";
 import { nodePack } from "./packs/node";
 import { observabilityPack } from "./packs/observability";
 import { platformsPack } from "./packs/platforms";
@@ -23,8 +26,12 @@ export const defaultPacks: Pack[] = [
   businessPack,
   productPack,
   platformsPack,
-  reactPack,
+  // Backend first: frontend and mobile recommendations depend on it (tRPC vs OpenAPI).
   nodePack,
+  goPack,
+  reactPack,
+  mobilePack,
+  desktopPack,
   hostingPack,
   observabilityPack,
   qualityPack,

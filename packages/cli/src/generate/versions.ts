@@ -9,7 +9,7 @@ export const versions: Record<string, string> = {
   typescript: "^5.9.0",
   zod: "^4.1.0",
   "@tanstack/react-query": "^5.85.0",
-  "@tanstack/react-router": "^1.130.0",
+  "@tanstack/react-router": "^1.170.0",
   "@tanstack/react-form": "^1.19.0",
   "@tanstack/react-table": "^8.21.0",
   "@trpc/server": "^11.4.0",
@@ -20,7 +20,7 @@ export const versions: Record<string, string> = {
   tailwindcss: "^4.1.0",
   "@tailwindcss/vite": "^4.1.0",
   motion: "^12.23.0",
-  vitest: "^3.2.0",
+  vitest: "^4.1.11",
   "@playwright/test": "^1.55.0",
   "@biomejs/biome": "^2.2.0",
   eslint: "^9.35.0",
@@ -44,7 +44,40 @@ export const versions: Record<string, string> = {
   "@sentry/node": "^10.5.0",
   "@types/node": "^22.10.0",
   "@types/bun": "^1.2.0",
+  next: "^16.4.0",
+  "@tailwindcss/postcss": "^4.1.0",
+  "@tanstack/react-start": "^1.168.0",
+  "@tanstack/router-plugin": "^1.168.0",
+  "vite-tsconfig-paths": "^5.1.0",
+  "@tauri-apps/api": "^2.12.0",
+  "@tauri-apps/cli": "^2.12.0",
+  "@tauri-apps/plugin-updater": "^2.13.0",
+  nativewind: "^4.2.7",
+  tamagui: "^3.0.3",
 };
 
 export const pick = (names: string[]): Record<string, string> =>
   Object.fromEntries(names.map((n) => [n, versions[n] ?? "latest"]));
+
+/**
+ * Expo SDK 57 pins its React Native stack; versions come from expo's bundledNativeModules.json
+ * so `expo install --check` stays green. Bump together with the SDK.
+ */
+export const expoSdk: Record<string, string> = {
+  expo: "~57.0.27",
+  "expo-router": "~57.0.25",
+  "expo-status-bar": "~57.0.1",
+  "expo-linking": "~57.0.12",
+  "expo-constants": "~57.0.21",
+  "expo-updates": "~57.0.25",
+  react: "19.2.3",
+  "react-dom": "19.2.3",
+  "react-native": "0.86.3",
+  "react-native-safe-area-context": "~5.7.0",
+  "react-native-screens": "~4.26.0",
+  "react-native-reanimated": "4.5.1",
+  "react-native-worklets": "0.10.1",
+  "react-native-web": "~0.21.0",
+  "@types/react": "~19.2.18",
+  tailwindcss: "^3.4.17",
+};

@@ -10,3 +10,4 @@ export * from "./report";
 export * from "./safe";
 export * from "./schema";
 export * from "./source";
+export * from "./structural";
