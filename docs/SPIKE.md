@@ -206,9 +206,13 @@ project-matrix/
 - **Secrets.** Mitigation: credentials injected outside containers, secret scanning before every push (reuse the missions gates).
 - **bosgame load** (ComfyUI, Hermes, browsers). Mitigation: per-host concurrency limits and a resource check before heavy runs.
 
-## Open questions for the next round
+## Resolved in round 2 (2026-10-12)
 
-- Postgres in a Podman container on bosgame, or SQLite (libSQL) for the single-host start?
-- Which review lanes by default (correctness, security, architecture/ADR, UX, performance)?
-- First stack templates beyond React web + Node API: Next.js, Expo, Tauri, Go?
-- Where QA runs for web: bosgame browsers or miniforum?
+- **Database:** Postgres in a rootless Podman container on bosgame, Drizzle migrations.
+- **Default review lanes:** correctness + security, architecture/ADR, UX/product, performance. Lanes stay configurable per project.
+- **Stack packs after React web + Node API:** Expo, Next.js / TanStack Start, Tauri, Go backend.
+- **Publishing:** the public repo goes up once the Figma design lands.
+
+## Still open
+
+- Where web QA runs: bosgame browsers or miniforum.
