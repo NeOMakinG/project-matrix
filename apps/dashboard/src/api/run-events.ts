@@ -21,6 +21,9 @@ export function truncateBytes(text: string, max = MAX_MESSAGE_BYTES): string {
   return `${text.slice(0, end)}…`;
 }
 
+/** Frames bigger than this are not even parsed; a placeholder line is logged instead. */
+export const MAX_FRAME_CHARS = 1024 * 1024;
+
 const eventBytes = (e: RunEvent) => byteSize(e.message) + e.at.length + e.kind.length;
 const MAX_RECONNECTS = 8;
 const EVENT_KINDS = ["log", "tool", "file", "cost", "error", "done"] as const;
@@ -109,7 +112,15 @@ export class RunEventStream {
       source.addEventListener(kind, (message) => {
         const raw = message as MessageEvent<string>;
         if (raw.lastEventId) this.lastEventId = raw.lastEventId;
-        const event = parseRunEvent(raw.data);
+        const event =
+          raw.data.length > MAX_FRAME_CHARS
+            ? {
+                runId: this.runId,
+                at: new Date().toISOString(),
+                kind: "error" as const,
+                message: `event ${raw.lastEventId || ""} dropped: ${raw.data.length} characters is over the limit`,
+              }
+            : parseRunEvent(raw.data);
         if (!event || event.runId !== this.runId) return;
         this.attempts = 0;
         if (this.state !== "live") this.state = "live";

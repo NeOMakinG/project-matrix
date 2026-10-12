@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_BUFFERED_BYTES,
   MAX_BUFFERED_EVENTS,
+  MAX_FRAME_CHARS,
   MAX_MESSAGE_BYTES,
   parseRunEvent,
   RunEventStream,
@@ -179,5 +180,12 @@ describe("run event stream", () => {
     t.sources[0]?.fail(true);
     t.timers[0]?.fn();
     expect(t.sources[1]?.url).toBe("http://matrix.test/v1/runs/r1/events?lastEventId=7");
+  });
+
+  it("never parses an oversized frame and logs a placeholder instead", () => {
+    const t = setup("r1");
+    t.sources[0]?.emit("log", "x".repeat(MAX_FRAME_CHARS + 1), "9");
+    const [message] = t.events();
+    expect(message).toMatch(/^event 9 dropped: \d+ characters is over the limit$/);
   });
 });
