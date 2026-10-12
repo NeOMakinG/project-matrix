@@ -1,0 +1,18 @@
+# Quadlet: Postgres 17 for Project Matrix (rootless Podman, loopback only).
+[Unit]
+Description=Project Matrix Postgres 17
+
+[Container]
+Image=docker.io/library/postgres:17
+ContainerName=matrix-postgres
+Volume=matrix-pgdata:/var/lib/postgresql/data
+EnvironmentFile=%h/.config/matrix/postgres.env
+PublishPort=127.0.0.1:55432:5432
+HealthCmd=pg_isready -U matrix -d matrix
+HealthInterval=30s
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
