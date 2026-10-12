@@ -1,16 +1,30 @@
 import type { AutonomyMode, Phase } from "@matrix/core";
 import type { NewTicket, TicketPatch, TicketQuery } from "@matrix/tickets";
 import { type Guard, type GuardedOp, HttpError, type Principal } from "./auth/guard.js";
-import type { Action, KeyBudget, KeyScope, KeyStore } from "./auth/keys.js";
+import {
+  type Action,
+  type KeyBudget,
+  type KeyKind,
+  type KeyScope,
+  type KeyStore,
+  type OpScope,
+  withinLimits,
+} from "./auth/keys.js";
 import type { AuditLog } from "./auth/limits.js";
-import { type ApprovalDecision, CoreError, type CorePort, type Project } from "./core-port.js";
+import {
+  type Actor,
+  type ApprovalDecision,
+  CoreError,
+  type CorePort,
+  type Project,
+} from "./core-port.js";
 
 async function core<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
     if (error instanceof CoreError) {
-      const status = error.code === "not_found" ? 404 : 409;
+      const status = error.code === "not_found" ? 404 : error.code === "forbidden" ? 403 : 409;
       throw new HttpError(status, error.code, error.message);
     }
     throw error;
@@ -26,27 +40,34 @@ export class Operations {
     private readonly audit: AuditLog,
   ) {}
 
+  /**
+   * `target` is a project id, an explicit scope, or omitted. Omitted means factory-wide, which requires
+   * a key covering every project: the safe default for anything not tied to one project.
+   */
   private op(
     p: Principal,
     action: Action,
     path: string,
-    projectId?: string,
+    target?: string | OpScope,
     extra: Partial<GuardedOp> = {},
   ) {
     const mutating = action !== "read";
+    const scope: OpScope =
+      target === undefined
+        ? { kind: "global" }
+        : typeof target === "string"
+          ? { kind: "project", projectId: target }
+          : target;
     return <T>(fn: () => Promise<T>) =>
       this.guard.run(
         p,
-        {
-          action,
-          mutating,
-          method: mutating ? "POST" : "GET",
-          path,
-          ...(projectId ? { projectId } : {}),
-          ...extra,
-        },
+        { action, mutating, method: mutating ? "POST" : "GET", path, target: scope, ...extra },
         () => core(fn),
       );
+  }
+
+  private actor(p: Principal): Actor {
+    return { keyId: p.key.id, kind: p.key.kind };
   }
 
   private async projectOfRun(runId: string): Promise<string> {
@@ -56,7 +77,9 @@ export class Operations {
   }
 
   async listProjects(p: Principal): Promise<Project[]> {
-    const projects = await this.op(p, "read", "/projects")(() => this.core.listProjects());
+    const projects = await this.op(p, "read", "/projects", { kind: "list" })(() =>
+      this.core.listProjects(),
+    );
     const scope = p.key.scope.projects;
     return scope === "*" ? projects : projects.filter((project) => scope.includes(project.id));
   }
@@ -118,7 +141,12 @@ export class Operations {
   }
 
   async listRuns(p: Principal, projectId?: string) {
-    const runs = await this.op(p, "read", "/runs", projectId)(() => this.core.listRuns(projectId));
+    const runs = await this.op(
+      p,
+      "read",
+      "/runs",
+      projectId ?? { kind: "list" },
+    )(() => this.core.listRuns(projectId));
     const scope = p.key.scope.projects;
     return scope === "*" ? runs : runs.filter((run) => scope.includes(run.projectId));
   }
@@ -139,7 +167,7 @@ export class Operations {
 
   startRun(p: Principal, input: { projectId: string; ticketId: string; phase: Phase }) {
     return this.op(p, "runs:start", "/runs", input.projectId, { budget: "runs" })(() =>
-      this.core.startRun(input),
+      this.core.startRun(input, this.actor(p)),
     );
   }
 
@@ -163,14 +191,17 @@ export class Operations {
     )(() => this.core.listReceipts(runId));
   }
 
-  async approve(p: Principal, runId: string, decision: ApprovalDecision, comment?: string) {
-    const projectId = await this.projectOfRun(runId);
+  async approve(
+    p: Principal,
+    input: { runId: string; decision: ApprovalDecision; commitSha: string; comment?: string },
+  ) {
+    const projectId = await this.projectOfRun(input.runId);
     return this.op(
       p,
       "runs:approve",
-      `/runs/${runId}/approval`,
+      `/runs/${input.runId}/approval`,
       projectId,
-    )(() => this.core.approve(runId, decision, p.key.id, comment));
+    )(() => this.core.approve({ ...input, actor: this.actor(p) }));
   }
 
   async merge(p: Principal, runId: string) {
@@ -180,7 +211,7 @@ export class Operations {
       "merge",
       `/runs/${runId}/merge`,
       projectId,
-    )(() => this.core.merge(runId, p.key.id));
+    )(() => this.core.merge(runId, this.actor(p)));
   }
 
   deploy(p: Principal, projectId: string) {
@@ -189,7 +220,7 @@ export class Operations {
       "deploy",
       `/projects/${projectId}/deploy`,
       projectId,
-    )(() => this.core.deploy(projectId, p.key.id));
+    )(() => this.core.deploy(projectId, this.actor(p)));
   }
 
   async authorizeRunStream(p: Principal, runId: string) {
@@ -257,11 +288,38 @@ export class Operations {
     );
   }
 
+  /**
+   * Any admin key may mint keys, but never wider than itself: projects, actions, budgets and rate
+   * limit must all fit inside the creator's own (a project-scoped admin can't mint a global key).
+   */
   createKey(
     p: Principal,
-    input: { name: string; scope: KeyScope; budget?: KeyBudget; ratePerMinute?: number },
+    input: {
+      name: string;
+      scope: KeyScope;
+      kind?: KeyKind;
+      budget?: KeyBudget;
+      ratePerMinute?: number;
+    },
   ) {
-    return this.op(p, "admin", "/keys")(async () => this.keys.create(input));
+    const target: OpScope = input.scope.projects === "*" ? { kind: "global" } : { kind: "list" };
+    return this.op(
+      p,
+      "admin",
+      "/keys",
+      target,
+    )(async () => {
+      const problem = withinLimits(p.key, {
+        scope: input.scope,
+        budget: input.budget ?? {},
+        ratePerMinute: input.ratePerMinute ?? 120,
+      });
+      if (problem) throw new HttpError(403, "forbidden", problem);
+      if (input.kind === "human" && p.key.kind !== "human") {
+        throw new HttpError(403, "forbidden", "only human keys can mint human keys");
+      }
+      return this.keys.create({ ...input, kind: input.kind ?? "agent" });
+    });
   }
 
   revokeKey(p: Principal, id: string) {
