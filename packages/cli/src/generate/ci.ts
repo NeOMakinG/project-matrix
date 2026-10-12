@@ -111,5 +111,7 @@ const tauriJob = (c: MatrixConfig) =>
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd apps/desktop check:rust
 `;

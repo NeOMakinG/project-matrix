@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "@matrix/config";
 import { type Answers, findContradictions, sampleAnswers } from "@matrix/packs";
+import { checkProject } from "@matrix/rules";
 import { describe, expect, test } from "vitest";
 import { runInit } from "./init";
 
@@ -175,6 +176,41 @@ describe("stack-specific details", () => {
       await readFile(join(out, "apps/desktop/src-tauri/tauri.conf.json"), "utf8"),
     );
     expect(conf.productName).toBe(name);
+  });
+});
+
+describe("ADR rules of every stack", () => {
+  test("all rule blocks are valid and enforced, and Go/Tauri rules catch violations", async () => {
+    const out = await fresh();
+    const r = await runInit({
+      answers: {
+        ...sampleAnswers,
+        "platforms.targets": ["web", "ios", "android", "desktop"],
+        "backend.kind": "go",
+      },
+      outDir: out,
+      acceptRecommended: true,
+      scaffold: true,
+    });
+    expect(r.status).toBe("ok");
+    const clean = await checkProject(out);
+    expect(clean.invalid).toEqual([]);
+    expect(clean.failures).toEqual([]);
+    expect(clean.ok).toBe(true);
+
+    await writeFile(
+      join(out, "services/api/internal/httpapi/bad.go"),
+      'package httpapi\n\nimport "github.com/gin-gonic/gin"\n\nfunc f() { _ = gin.New(); log.Println("x") }\n',
+    );
+    await writeFile(
+      join(out, "apps/desktop/src-tauri/capabilities/bad.json"),
+      '{"identifier":"x","windows":["main"],"permissions":["fs:default"]}\n',
+    );
+    const dirty = await checkProject(out);
+    expect(dirty.ok).toBe(false);
+    const files = dirty.violations.map((v) => v.file);
+    expect(files).toContain("services/api/internal/httpapi/bad.go");
+    expect(files).toContain("apps/desktop/src-tauri/capabilities/bad.json");
   });
 });
 

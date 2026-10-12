@@ -72,7 +72,10 @@ export const goPack: Pack = {
         Object.entries(ROUTER_IMPORTS)
           .filter(([k]) => k !== v)
           .map(([k, path]) =>
-            regex(`HTTP routing uses ${v}; ${k} must not be imported.`, `"${path}(/v\\d+)?"`),
+            regex(
+              `HTTP routing uses ${v}; ${k} must not be imported.`,
+              `"${path.replace(/\./g, "\\.")}`,
+            ),
           ),
     }),
     choice({

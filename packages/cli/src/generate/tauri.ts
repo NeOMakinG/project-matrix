@@ -8,6 +8,14 @@ type Desktop = NonNullable<MatrixConfig["desktop"]>;
 const json = (v: unknown) => `${JSON.stringify(v, null, 2)}\n`;
 const crate = (pkg: string) => pkg.replace(/[^a-z0-9_]/g, "_") || "app";
 
+/** First brand colour if it is a plain hex colour (it lands inside SVG markup). */
+const accent = (c: MatrixConfig) =>
+  c.design.brandColors.find((col) => /^#[0-9a-fA-F]{6}$/.test(col)) ?? "#22c55e";
+
+/** Text-only source icon; `bun run icons` renders every PNG/ICNS/ICO size Tauri needs. */
+const appIcon = (color: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img"><title>App icon</title><rect width="1024" height="1024" rx="224" fill="#0f172a"/><circle cx="512" cy="512" r="256" fill="${color}"/></svg>\n`;
+
 /** Tauri v2 desktop app with a React (Vite) UI in apps/desktop. */
 export function tauriFiles(c: MatrixConfig, d: Desktop, pkg: string): Files {
   const name = c.business.name;
@@ -33,8 +41,9 @@ export function tauriFiles(c: MatrixConfig, d: Desktop, pkg: string): Files {
         dev: "vite",
         build: "tsc -p tsconfig.json --noEmit && vite build",
         tauri: "tauri",
+        icons: "tauri icon app-icon.svg",
         typecheck: "tsc -p tsconfig.json --noEmit",
-        "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml",
+        "check:rust": "bun run icons && cargo check --manifest-path src-tauri/Cargo.toml",
         test: "echo 'desktop UI tests run with Playwright against vite dev'",
       },
       dependencies: pick(deps),
@@ -142,7 +151,18 @@ pub fn run() {
           csp: "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'",
         },
       },
-      bundle: { active: true, targets: "all", icon: [], createUpdaterArtifacts: d.updater },
+      bundle: {
+        active: true,
+        targets: "all",
+        icon: [
+          "icons/32x32.png",
+          "icons/128x128.png",
+          "icons/128x128@2x.png",
+          "icons/icon.icns",
+          "icons/icon.ico",
+        ],
+        createUpdaterArtifacts: d.updater,
+      },
       ...(d.updater
         ? {
             plugins: {
@@ -163,6 +183,7 @@ pub fn run() {
       permissions,
     }),
     "apps/desktop/src-tauri/.gitignore": "/target/\n/gen/schemas\n",
+    "apps/desktop/app-icon.svg": appIcon(accent(c)),
   };
   return files;
 }
