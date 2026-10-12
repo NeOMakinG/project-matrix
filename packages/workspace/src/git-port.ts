@@ -98,23 +98,13 @@ export class WorktreeGitPort implements GitPort {
       for (const commit of commits) check(await this.#gitlinks(gitdir, commit), `commit ${commit}`);
     }
     const staged = await this.#run(gitdir, [...loc, "ls-files", "--stage", "-z"]);
-    const indexLinks = new Map<string, string>();
-    for (const e of staged.stdout.split("\0")) {
-      const m = /^160000 ([0-9a-f]+) \d+\t(.+)$/.exec(e);
-      if (m?.[1] && m[2]) indexLinks.set(m[2], m[1]);
-    }
-    check(indexLinks, "the index");
+    check(gitlinkRecords(staged.stdout, "index"), "the index");
   }
 
   async #gitlinks(gitdir: string, rev: string): Promise<Map<string, string>> {
     const tree = await this.#run(gitdir, ["--git-dir", gitdir, "ls-tree", "-r", "-z", rev]);
     if (tree.exitCode !== 0) throw new Error(`git ls-tree ${rev} failed`);
-    const links = new Map<string, string>();
-    for (const e of tree.stdout.split("\0")) {
-      const m = /^160000 commit ([0-9a-f]+)\t(.+)$/.exec(e);
-      if (m?.[1] && m[2]) links.set(m[2], m[1]);
-    }
-    return links;
+    return gitlinkRecords(tree.stdout, "tree");
   }
 
   /**
@@ -203,4 +193,22 @@ export class WorktreeGitPort implements GitPort {
     }
     return hash.digest("hex");
   }
+}
+
+/**
+ * Gitlinks from NUL-terminated `ls-tree -z` ("mode type sha\tpath") or `ls-files --stage -z`
+ * ("mode sha stage\tpath") output. Each record is split at its FIRST tab, so paths may contain
+ * newlines, tabs, spaces or any unicode.
+ */
+export function gitlinkRecords(out: string, format: "tree" | "index"): Map<string, string> {
+  const links = new Map<string, string>();
+  for (const record of out.split("\0")) {
+    const tab = record.indexOf("\t");
+    if (tab <= 0) continue;
+    const meta = record.slice(0, tab).split(" ");
+    if (meta[0] !== "160000") continue;
+    const sha = format === "tree" ? meta[2] : meta[1];
+    if (sha) links.set(record.slice(tab + 1), sha);
+  }
+  return links;
 }

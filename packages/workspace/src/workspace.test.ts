@@ -513,3 +513,43 @@ describe("round 4: committed gitlinks", () => {
     await expect(port.headSha(workdir)).rejects.toThrow(/nested git/);
   });
 });
+
+describe("round 5: gitlink paths with newlines, spaces, unicode", () => {
+  const sh = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd })
+      .toString()
+      .trim();
+  const names = ["evil\nhidden", "with space/lib", "ünï/çødé", "tab\tname"];
+
+  for (const name of names) {
+    test(`detects ${JSON.stringify(name)} in HEAD, range and index`, async () => {
+      const repoPath = await repo();
+      const sha = sh(repoPath, "rev-parse", "HEAD");
+      const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+      const target = {
+        projectId: "p",
+        ticketId: "U",
+        repoPath,
+        branch: "matrix/u",
+        baseBranch: "main",
+      };
+      const { workdir } = await ws.prepare(target);
+      const port = new WorktreeGitPort({ trusted: ws.trusted });
+      sh(workdir, "update-index", "--add", "--cacheinfo", `160000,${sha},${name}`);
+      await expect(port.headSha(workdir)).rejects.toThrow(/gitlink .* in the index/s);
+      sh(workdir, "commit", "-qm", "add");
+      sh(workdir, "update-index", "--force-remove", "--", name);
+      await expect(port.headSha(workdir)).rejects.toThrow(/gitlink .* in HEAD/s);
+      sh(workdir, "commit", "-qm", "remove");
+      await expect(port.headSha(workdir)).rejects.toThrow(/gitlink .* in commit/s);
+    });
+  }
+});
+
+test("gitlinkRecords splits NUL records at the first tab", async () => {
+  const { gitlinkRecords } = await import("./git-port");
+  const tree = `160000 commit ${"a".repeat(40)}\tx\ny\u0000100644 blob ${"b".repeat(40)}\tfile\u0000`;
+  expect([...gitlinkRecords(tree, "tree")]).toEqual([["x\ny", "a".repeat(40)]]);
+  const index = `160000 ${"c".repeat(40)} 0\tp\tq\u0000`;
+  expect([...gitlinkRecords(index, "index")]).toEqual([["p\tq", "c".repeat(40)]]);
+});
