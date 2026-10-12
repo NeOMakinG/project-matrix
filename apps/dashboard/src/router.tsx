@@ -45,6 +45,8 @@ const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()({
       if (error instanceof ApiError && error.status === 401) {
         throw redirect({ to: "/login", search: { redirect: location.href } });
       }
+      // A sign-in or sign-out raced this lookup; the newer session already took effect.
+      if (error instanceof ApiError && error.code === "stale_session") return;
       throw error;
     }
   },
@@ -141,7 +143,7 @@ export function makeRouter(queryClient: QueryClient, history?: RouterHistory) {
   onUnauthorized(() => {
     const { pathname, href } = router.state.location;
     if (pathname === "/login") return;
-    queryClient.removeQueries({ queryKey: queries.session().queryKey });
+    queryClient.clear();
     void router.navigate({ to: "/login", search: { redirect: href } });
   });
   return router;

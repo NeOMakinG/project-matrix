@@ -6,6 +6,25 @@ import type { RunEvent } from "./view";
 export type StreamState = "connecting" | "live" | "reconnecting" | "ended" | "closed";
 
 export const MAX_BUFFERED_EVENTS = 500;
+/** Total UTF-8 size kept in memory for one run's log. */
+export const MAX_BUFFERED_BYTES = 256 * 1024;
+/** A single message longer than this is truncated before it is buffered. */
+export const MAX_MESSAGE_BYTES = 8 * 1024;
+
+const encoder = new TextEncoder();
+const byteSize = (text: string) => encoder.encode(text).length;
+
+export function truncateBytes(text: string, max = MAX_MESSAGE_BYTES): string {
+  if (byteSize(text) <= max) return text;
+  let end = Math.min(text.length, max);
+  while (end > 0 && byteSize(text.slice(0, end)) > max - 3) end -= 1;
+  return `${text.slice(0, end)}…`;
+}
+
+/** Frames bigger than this are not even parsed; a placeholder line is logged instead. */
+export const MAX_FRAME_CHARS = 1024 * 1024;
+
+const eventBytes = (e: RunEvent) => byteSize(e.message) + e.at.length + e.kind.length;
 const MAX_RECONNECTS = 8;
 const EVENT_KINDS = ["log", "tool", "file", "cost", "error", "done"] as const;
 
@@ -45,6 +64,8 @@ const browserSource: SourceFactory | undefined =
 export class RunEventStream {
   private events: RunEvent[] = [];
   private keys = new Set<string>();
+  private bytes = 0;
+  private lastEventId: string | null = null;
   private source: Source | null = null;
   private attempts = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -76,7 +97,12 @@ export class RunEventStream {
 
   private connect(): void {
     if (this.stopped || !this.factory) return;
-    const source = this.factory(apiUrl(pathOf("/v1/runs/{id}/events", { id: this.runId })));
+    // The browser sends Last-Event-ID on its own retries; a fresh source needs the query parameter.
+    const base = apiUrl(pathOf("/v1/runs/{id}/events", { id: this.runId }));
+    const url = this.lastEventId
+      ? `${base}?lastEventId=${encodeURIComponent(this.lastEventId)}`
+      : base;
+    const source = this.factory(url);
     this.source = source;
     source.addEventListener("ready", () => {
       this.attempts = 0;
@@ -84,7 +110,17 @@ export class RunEventStream {
     });
     for (const kind of EVENT_KINDS) {
       source.addEventListener(kind, (message) => {
-        const event = parseRunEvent((message as MessageEvent<string>).data);
+        const raw = message as MessageEvent<string>;
+        if (raw.lastEventId) this.lastEventId = raw.lastEventId;
+        const event =
+          raw.data.length > MAX_FRAME_CHARS
+            ? {
+                runId: this.runId,
+                at: new Date().toISOString(),
+                kind: "error" as const,
+                message: `event ${raw.lastEventId || ""} dropped: ${raw.data.length} characters is over the limit`,
+              }
+            : parseRunEvent(raw.data);
         if (!event || event.runId !== this.runId) return;
         this.attempts = 0;
         if (this.state !== "live") this.state = "live";
@@ -123,18 +159,35 @@ export class RunEventStream {
     this.setState(state);
   }
 
-  private push(event: RunEvent, notify: boolean): void {
-    const key = eventKey(event);
+  private push(incoming: RunEvent, notify: boolean): void {
+    // De-duplicate on the original content, store the truncated message.
+    const key = eventKey(incoming);
     if (this.keys.has(key)) return;
     this.keys.add(key);
+    const event = { ...incoming, message: truncateBytes(incoming.message) };
     this.events = [...this.events, event];
-    if (this.events.length > MAX_BUFFERED_EVENTS) {
-      const dropped = this.events.slice(0, this.events.length - MAX_BUFFERED_EVENTS);
-      this.events = this.events.slice(-MAX_BUFFERED_EVENTS);
-      for (const e of dropped) this.keys.delete(eventKey(e));
+    this.eventKeys.push(key);
+    this.bytes += eventBytes(event);
+    let drop = 0;
+    while (
+      drop < this.events.length - 1 &&
+      (this.events.length - drop > MAX_BUFFERED_EVENTS || this.bytes > MAX_BUFFERED_BYTES)
+    ) {
+      this.bytes -= eventBytes(this.events[drop] as RunEvent);
+      drop += 1;
+    }
+    if (drop) {
+      this.events = this.events.slice(drop);
+      // Keep the keys of recently dropped events so a reconnect replay can't re-add them.
+      this.droppedKeys.push(...this.eventKeys.splice(0, drop));
+      const excess = this.droppedKeys.length - MAX_BUFFERED_EVENTS;
+      if (excess > 0) for (const k of this.droppedKeys.splice(0, excess)) this.keys.delete(k);
     }
     if (notify) this.onChange(this.events, this.state);
   }
+
+  private eventKeys: string[] = [];
+  private droppedKeys: string[] = [];
 
   private setState(state: StreamState): void {
     this.state = state;

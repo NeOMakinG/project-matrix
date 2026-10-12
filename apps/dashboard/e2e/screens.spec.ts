@@ -12,9 +12,10 @@ test("overview lists runs, models and Orca health", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Factory overview" })).toBeVisible();
   await settle(page);
-  await expect(page.getByText("MX-142 Stripe checkout")).toBeVisible();
+  await expect(page.getByRole("link", { name: /MX-142/ })).toBeVisible();
+  await expect(page.getByText("MX-142 merge waiting for your approval")).toBeVisible();
   await expect(page.getByText("Orca runtime")).toBeVisible();
-  await expect(page.getByText("4 of 5 models healthy")).toBeVisible();
+  await expect(page.getByText("3 of 5 models healthy")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/01-overview.png`, fullPage: true });
 });
 
@@ -86,7 +87,7 @@ test("knowledge renders the product graph and ADR rules", async ({ page }) => {
 test("prod monitor shows incidents and verification", async ({ page }) => {
   await page.goto("/p/ledgerly/monitor");
   await settle(page);
-  await expect(page.getByText("#41 Duplicate invoice on retry")).toBeVisible();
+  await expect(page.getByText("Duplicate invoice on retry")).toBeVisible();
   await expect(
     page.getByRole("img", { name: /Error rate before and after deploy d-118/ }),
   ).toBeVisible();
@@ -152,4 +153,14 @@ test("unsafe links from the API are never rendered", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /MX-144/ })).toBeVisible();
   await expect(page.getByRole("link", { name: "Open in Orca" })).toHaveCount(0);
   await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
+});
+
+test("sign out returns to sign-in and a new sign-in starts clean", async ({ page }) => {
+  await page.goto("/");
+  await settle(page);
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByRole("heading", { name: "Sign in to matrix" })).toBeVisible();
+  await page.getByLabel("API key").fill("mx_live_demo");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("heading", { name: "Factory overview" })).toBeVisible();
 });

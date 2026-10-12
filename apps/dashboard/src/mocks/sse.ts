@@ -17,9 +17,9 @@ export const sseHandlers = [
       for (const [i, e] of TAIL.entries()) {
         await delay(800);
         const event = { runId, at: `2026-10-12T11:0${i}:00Z`, ...e };
-        client.send({ event: e.kind, data: JSON.stringify(event) });
+        client.send({ id: String(i + 1), event: e.kind, data: JSON.stringify(event) });
         // duplicate on purpose: the client must de-duplicate
-        if (i === 1) client.send({ event: e.kind, data: JSON.stringify(event) });
+        if (i === 1) client.send({ id: String(i + 1), event: e.kind, data: JSON.stringify(event) });
       }
     },
   ),

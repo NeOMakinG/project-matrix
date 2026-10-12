@@ -1,4 +1,4 @@
-import type { InitProgress } from "@/api/contracts";
+import type { InitProgress } from "@/api/view";
 
 type Question = NonNullable<InitProgress["question"]>;
 

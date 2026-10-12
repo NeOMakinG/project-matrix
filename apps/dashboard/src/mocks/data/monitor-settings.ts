@@ -1,61 +1,18 @@
-import type { Integrations, Monitor } from "@/api/contracts";
+import type { Verification } from "@/api/contracts";
+import type { Integration } from "@/api/view";
 
-export const monitor: Monitor = {
-  environment: "Production · ledgerly.app · last deploy 2h ago",
-  connected: { label: "Sentry + PostHog connected", tone: "green" },
-  stats: [
-    { label: "Error rate (1h)", value: "0.42%", note: "was 1.9% before deploy d-118" },
-    { label: "Open incidents", value: "2", note: "1 auto-fixing · 1 needs triage" },
-    { label: "Auto-fixed (7d)", value: "9", note: "8 verified · 1 reverted" },
-    { label: "p95 latency", value: "312ms", note: "budget 400ms" },
+export const verification: Verification = {
+  deploy: "d-118",
+  ago: "2h ago",
+  series: [1.6, 1.75, 1.9, 1.72, 1.85, 1.8, 1.2, 0.62, 0.5, 0.46, 0.44, 0.42],
+  deployIndex: 5.4,
+  rows: [
+    { label: "Error rate", value: { label: "1.9% → 0.42%", tone: "green" } },
+    { label: "Fix ticket", value: { label: "MX-150 verified · closed", tone: "green" } },
   ],
-  incidents: [
-    {
-      id: "#41",
-      severity: { label: "critical", tone: "red" },
-      title: "Duplicate invoice on retry",
-      cause: "Stripe webhook retried → createInvoice not idempotent",
-      events: 214,
-      users: 38,
-      fixability: 0.86,
-      ticket: { label: "MX-153 · implementing", tone: "blue" },
-    },
-    {
-      id: "#43",
-      severity: { label: "major", tone: "amber" },
-      title: "PDF export timeout",
-      cause: "Large invoices (>200 lines) exceed 10s render",
-      events: 27,
-      users: 6,
-      fixability: 0.61,
-      ticket: { label: "MX-162 · spike", tone: "violet" },
-    },
-    {
-      id: "#42",
-      severity: { label: "minor", tone: "neutral" },
-      title: "Safari date picker",
-      cause: "Third-party widget; no local root cause found",
-      events: 9,
-      users: 4,
-      fixability: 0.18,
-      ticket: { label: "filed for humans", tone: "neutral" },
-    },
-  ],
-  verification: {
-    deploy: "d-118",
-    ago: "2h ago",
-    series: [1.6, 1.75, 1.9, 1.72, 1.85, 1.8, 1.2, 0.62, 0.5, 0.46, 0.44, 0.42],
-    deployIndex: 5.4,
-    rows: [
-      { label: "Error rate", value: { label: "1.9% → 0.42%", tone: "green" } },
-      { label: "Incident #39 events", value: { label: "88 → 0 in 2h", tone: "green" } },
-      { label: "Fix ticket", value: { label: "MX-150 verified · closed", tone: "green" } },
-      { label: "Rollback guard", value: { label: "armed until 18:00", tone: "neutral" } },
-    ],
-  },
 };
 
-export const integrations: Integrations = [
+export const integrations: Integration[] = [
   {
     name: "Tickets",
     detail: "beads · .beads/ in repo · adapter: beads",

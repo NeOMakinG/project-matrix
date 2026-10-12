@@ -1,9 +1,9 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { HttpResponse, http } from "msw";
+import { delay, HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { endpoints } from "@/api/endpoints";
-import { ApiError } from "@/api/http";
+import { ApiError, currentCsrfToken } from "@/api/http";
 import { saveSettings } from "@/features/settings/settings-page";
 import { mockDb } from "@/mocks/handlers";
 import { renderRoute } from "./render";
@@ -17,7 +17,7 @@ describe("auth", () => {
     expect(await screen.findByRole("heading", { name: "Sign in to matrix" })).toBeInTheDocument();
     await user.type(screen.getByLabelText("API key"), "mx_live_demo");
     await user.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(await screen.findByText("#41 Duplicate invoice on retry")).toBeInTheDocument();
+    expect(await screen.findByText("Duplicate invoice on retry")).toBeInTheDocument();
     expect(router.state.location.pathname).toBe("/p/ledgerly/monitor");
   });
 });
@@ -27,8 +27,9 @@ describe("screens", () => {
     renderRoute("/");
     expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeInTheDocument();
     expect(screen.getByText("$38.40")).toBeInTheDocument();
-    expect(screen.getByText("1 waiting (MX-139 merge)")).toBeInTheDocument();
-    expect(await screen.findByText("4 of 5 models healthy")).toBeInTheDocument();
+    expect(screen.getByText("bosgame · orca serve v1.4.2")).toBeInTheDocument();
+    expect(screen.getByText("MX-142 merge waiting for your approval")).toBeInTheDocument();
+    expect(await screen.findByText("3 of 5 models healthy")).toBeInTheDocument();
   });
 
   it("board groups ship phases and filters by type", async () => {
@@ -60,16 +61,14 @@ describe("screens", () => {
     expect(screen.queryByRole("link", { name: /checkout\.png/ })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Approve" }));
     expect(await screen.findByText("approved at 3c1e9a2")).toBeInTheDocument();
-    expect(mockDb().approvals).toEqual([
-      { runId: "r_8f3a2c", decision: "approve", commitSha: "3c1e9a2f6b" },
-    ]);
+    expect(mockDb().decisions).toEqual([{ id: "ap_1", decision: "approved" }]);
   });
 
   it("run with an unsafe workspace link hides Open in Orca", async () => {
     renderRoute("/p/ledgerly/runs/r_bad");
     expect(await screen.findByRole("heading", { name: /MX-144/ })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Open in Orca" })).not.toBeInTheDocument();
-    expect(screen.getByText("Nothing to approve yet: the run has no commit.")).toBeInTheDocument();
+    expect(screen.getByText("No approval is waiting for this run.")).toBeInTheDocument();
   });
 
   it("run detail shows an error state with retry when the API fails", async () => {
@@ -107,7 +106,8 @@ describe("screens", () => {
 
   it("prod monitor shows incidents and verification", async () => {
     renderRoute("/p/ledgerly/monitor");
-    expect(await screen.findByText("#41 Duplicate invoice on retry")).toBeInTheDocument();
+    expect(await screen.findByText("Duplicate invoice on retry")).toBeInTheDocument();
+    expect(screen.getByText("MX-153 · fixing")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: /deploy d-118/ })).toBeInTheDocument();
   });
 });
@@ -153,5 +153,114 @@ describe("settings", () => {
   it("rejects mutations without the CSRF token", async () => {
     const res = await fetch("http://matrix.test/v1/keys", { method: "POST", body: "{}" });
     expect(res.status).toBe(403);
+  });
+});
+
+describe("session cache isolation", () => {
+  it("sign-out calls /auth/logout with CSRF, clears every query and goes to sign-in", async () => {
+    const user = userEvent.setup();
+    const { router, queryClient } = renderRoute("/");
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeInTheDocument();
+    expect(queryClient.getQueryData(["overview"])).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { name: "Sign in to matrix" })).toBeInTheDocument();
+    expect(mockDb().logouts).toBe(1);
+    expect(router.state.location.pathname).toBe("/login");
+    expect(queryClient.getQueryData(["overview"])).toBeUndefined();
+    expect(queryClient.getQueryData(["keys"])).toBeUndefined();
+  });
+
+  it("sign-in drops data cached under a previous identity", async () => {
+    mockDb().signedIn = false;
+    const user = userEvent.setup();
+    const { queryClient } = renderRoute("/login");
+    queryClient.setQueryData(["keys"], [{ id: "someone-elses-key" }]);
+    await user.type(await screen.findByLabelText("API key"), "mx_live_demo");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeInTheDocument();
+    expect(queryClient.getQueryData(["keys"])).toBeUndefined();
+  });
+
+  it("a 401 mid-session clears the cache and asks to sign in again", async () => {
+    const { queryClient, router } = renderRoute("/p/ledgerly/board");
+    expect(await screen.findByRole("region", { name: "Ship column" })).toBeInTheDocument();
+    mockDb().signedIn = false;
+    await queryClient.refetchQueries({ queryKey: ["projects", "ledgerly", "board"] });
+    expect(await screen.findByRole("heading", { name: "Sign in to matrix" })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/login");
+    expect(queryClient.getQueryData(["projects", "ledgerly", "board"])).toBeUndefined();
+  });
+});
+
+describe("session robustness", () => {
+  it("a failed logout keeps you signed in, drops cached data and offers a retry", async () => {
+    server.use(
+      http.post("*/auth/logout", () =>
+        HttpResponse.json(
+          { error: { code: "boom", message: "server unavailable" } },
+          { status: 503 },
+        ),
+      ),
+    );
+    const user = userEvent.setup();
+    const { router, queryClient } = renderRoute("/");
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeInTheDocument();
+    queryClient.setQueryData(["keys"], [{ id: "cached-key" }]);
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(
+      await screen.findByText(/Couldn't sign out, you are still signed in/),
+    ).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe("/");
+    expect(queryClient.getQueryData(["keys"])).toBeUndefined();
+    expect(await screen.findByRole("heading", { name: "Factory overview" })).toBeInTheDocument();
+    expect(mockDb().logouts).toBe(0);
+
+    server.resetHandlers();
+    await user.click(screen.getByRole("button", { name: "Retry sign out" }));
+    expect(await screen.findByRole("heading", { name: "Sign in to matrix" })).toBeInTheDocument();
+    expect(mockDb().logouts).toBe(1);
+  });
+
+  it("a slow session lookup from before a new login cannot overwrite the new CSRF token", async () => {
+    server.use(
+      http.get("*/auth/session", async () => {
+        await delay(40);
+        return HttpResponse.json({
+          csrfToken: "old-token",
+          expiresAt: "2026-10-13T00:00:00Z",
+          key: null,
+        });
+      }),
+      http.post("*/auth/login", () =>
+        HttpResponse.json({ csrfToken: "new-token", expiresAt: "2026-10-13T00:00:00Z", key: null }),
+      ),
+    );
+    const slow = endpoints.session();
+    await endpoints.signIn("mx_live_demo");
+    expect(currentCsrfToken()).toBe("new-token");
+    await expect(slow).rejects.toSatisfy(
+      (e: unknown) => e instanceof ApiError && e.code === "stale_session",
+    );
+    expect(currentCsrfToken()).toBe("new-token");
+  });
+
+  it("a slow login response is ignored after a newer sign-out", async () => {
+    server.use(
+      http.post("*/auth/login", async () => {
+        await delay(40);
+        return HttpResponse.json({
+          csrfToken: "late-token",
+          expiresAt: "2026-10-13T00:00:00Z",
+          key: null,
+        });
+      }),
+    );
+    await endpoints.session();
+    const late = endpoints.signIn("mx_live_demo");
+    await endpoints.signOut();
+    await expect(late).rejects.toSatisfy(
+      (e: unknown) => e instanceof ApiError && e.code === "stale_session",
+    );
+    expect(currentCsrfToken()).not.toBe("late-token");
   });
 });

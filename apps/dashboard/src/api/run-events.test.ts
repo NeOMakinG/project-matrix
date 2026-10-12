@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_BUFFERED_BYTES,
   MAX_BUFFERED_EVENTS,
+  MAX_FRAME_CHARS,
+  MAX_MESSAGE_BYTES,
   parseRunEvent,
   RunEventStream,
   type SourceFactory,
   type StreamState,
+  truncateBytes,
 } from "./run-events";
 
 class FakeSource {
@@ -20,8 +24,11 @@ class FakeSource {
     this.closed = true;
     this.readyState = 2;
   }
-  emit(type: string, data: unknown) {
-    this.listeners.get(type)?.({ data: typeof data === "string" ? data : JSON.stringify(data) });
+  emit(type: string, data: unknown, lastEventId = "") {
+    this.listeners.get(type)?.({
+      data: typeof data === "string" ? data : JSON.stringify(data),
+      lastEventId,
+    } as never);
   }
   fail(closed: boolean) {
     this.readyState = closed ? 2 : 0;
@@ -135,5 +142,50 @@ describe("run event stream", () => {
     const states: StreamState[] = [];
     new RunEventStream("r", (_, s) => states.push(s), undefined).start();
     expect(states).toEqual(["closed"]);
+  });
+
+  it("caps the buffer by bytes, keeping the newest events", () => {
+    const t = setup();
+    const big = "x".repeat(4000);
+    for (let i = 0; i < 200; i++) t.sources[0]?.emit("log", t.ev(`${i}:${big}`));
+    const kept = t.events();
+    const bytes = kept.reduce((n, m) => n + new TextEncoder().encode(m).length, 0);
+    expect(bytes).toBeLessThanOrEqual(MAX_BUFFERED_BYTES);
+    expect(kept.length).toBeLessThan(200);
+    expect(kept.at(-1)?.startsWith("199:")).toBe(true);
+  });
+
+  it("truncates a single oversized message on a UTF-8 boundary", () => {
+    const t = setup();
+    t.sources[0]?.emit("log", t.ev("é".repeat(MAX_MESSAGE_BYTES)));
+    const [message] = t.events();
+    expect(message?.endsWith("…")).toBe(true);
+    expect(new TextEncoder().encode(message ?? "").length).toBeLessThanOrEqual(MAX_MESSAGE_BYTES);
+    expect(truncateBytes("short")).toBe("short");
+  });
+
+  it("does not re-add a dropped event replayed after a reconnect", () => {
+    const t = setup();
+    const big = "y".repeat(4000);
+    for (let i = 0; i < 100; i++) t.sources[0]?.emit("log", t.ev(`${i}:${big}`));
+    const first = t.events()[0];
+    t.sources[0]?.emit("log", t.ev(`0:${big}`));
+    expect(t.events()[0]).toBe(first);
+  });
+
+  it("resumes from the last event id after a manual reconnect", () => {
+    const t = setup("r1");
+    t.sources[0]?.emit("log", t.ev("a"), "6");
+    t.sources[0]?.emit("log", t.ev("b"), "7");
+    t.sources[0]?.fail(true);
+    t.timers[0]?.fn();
+    expect(t.sources[1]?.url).toBe("http://matrix.test/v1/runs/r1/events?lastEventId=7");
+  });
+
+  it("never parses an oversized frame and logs a placeholder instead", () => {
+    const t = setup("r1");
+    t.sources[0]?.emit("log", "x".repeat(MAX_FRAME_CHARS + 1), "9");
+    const [message] = t.events();
+    expect(message).toMatch(/^event 9 dropped: \d+ characters is over the limit$/);
   });
 });

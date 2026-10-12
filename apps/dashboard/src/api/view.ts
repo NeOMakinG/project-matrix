@@ -1,5 +1,5 @@
+import type { components } from "@matrix/sdk";
 import type { PillData, Tone } from "./contracts";
-import type { components } from "./generated/v1";
 
 export type { PillData, Tone };
 export type S = components["schemas"];
@@ -13,6 +13,14 @@ export type ApiKey = S["ApiKey"];
 export type KeyAction = S["KeyScope"]["actions"][number];
 export type AutonomyMode = S["AutonomyMode"];
 export type ServerPhase = S["Phase"];
+export type ServerOverview = S["Overview"];
+export type ModelHealth = S["ModelHealth"];
+export type OrcaRuntime = S["OrcaRuntime"];
+export type Incident = S["Incident"];
+export type Approval = S["Approval"];
+export type InitProgress = S["InitProgress"];
+export type CheckResult = S["CheckResult"];
+export type Integration = S["Integration"];
 
 export const LOOP_PHASES = [
   "spike",
@@ -127,6 +135,8 @@ export interface RunView {
   receipts: ReceiptView[];
   holdout: HoldoutView | null;
   mergeMode: AutonomyMode;
+  approval: { id: string; headSha: string } | null;
+  pullRequestUrl: string | null;
 }
 
 export interface RunEvent {
@@ -163,4 +173,33 @@ export interface SettingsView {
   modelOptions: string[];
   raw: S["Settings"];
   etag: string | null;
+}
+
+export interface OverviewView {
+  stats: {
+    activeRuns: number;
+    queuedRuns: number;
+    costTodayUsd: number;
+    pendingApprovals: number;
+    openIncidents: number;
+  };
+  activeRuns: {
+    id: string;
+    projectId: string;
+    ticketId: string;
+    phase: string;
+    model: string;
+    costUsd: number;
+    status: PillData;
+  }[];
+  projects: {
+    id: string;
+    name: string;
+    workspace: string;
+    summary: string;
+    status: PillData;
+  }[];
+  models: { id: string; note: string; usage: number | null; status: PillData }[];
+  orca: { status: PillData; host: string; version: string; worktrees: string; lastSeen: string };
+  alerts: { kind: PillData; message: string }[];
 }

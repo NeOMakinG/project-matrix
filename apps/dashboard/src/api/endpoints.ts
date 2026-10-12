@@ -2,22 +2,25 @@ import type { z } from "zod";
 import {
   adaptAdrs,
   adaptGraph,
+  adaptOverview,
   adaptProject,
   adaptRun,
   adaptRunSummaries,
   adaptTickets,
 } from "./adapters";
+import { dashboardSettingsSchema, sessionSchema, verificationSchema } from "./contracts";
 import {
-  checksSchema,
-  dashboardSettingsSchema,
-  gatewaySchema,
-  initProgressSchema,
-  integrationsSchema,
-  monitorSchema,
-  overviewSchema,
-  sessionSchema,
-} from "./contracts";
-import { apiUrl, pathOf, setCsrfToken, toApiError, unwrap, v1, withCsrf } from "./http";
+  ApiError,
+  apiUrl,
+  currentSessionGeneration,
+  nextSessionGeneration,
+  pathOf,
+  setCsrfTokenFor,
+  toApiError,
+  unwrap,
+  v1,
+  withCsrf,
+} from "./http";
 import {
   ALL_PHASES,
   type AutonomyMode,
@@ -41,27 +44,61 @@ async function contract<T extends z.ZodType>(
 }
 
 export const endpoints = {
-  // --- session (proposed) ---
+  // --- dashboard session (server /auth/*) ---
   async session() {
-    const s = await contract(sessionSchema, "/v1/session");
-    setCsrfToken(s.csrfToken);
-    return s;
+    const generation = currentSessionGeneration();
+    const session = await contract(sessionSchema, "/auth/session");
+    if (!setCsrfTokenFor(generation, session.csrfToken))
+      throw new ApiError(409, "stale_session", "Session changed");
+    return session;
   },
-  async signIn(apiKey: string) {
-    const s = await contract(sessionSchema, "/v1/session", {
+  async signIn(token: string) {
+    const generation = nextSessionGeneration();
+    const session = await contract(sessionSchema, "/auth/login", {
       method: "POST",
-      body: JSON.stringify({ apiKey }),
+      body: JSON.stringify({ token }),
     });
-    setCsrfToken(s.csrfToken);
-    return s;
+    if (!setCsrfTokenFor(generation, session.csrfToken))
+      throw new ApiError(409, "stale_session", "Session changed");
+    return session;
+  },
+  /** Resolves only once the server confirmed the logout (or the session was already gone). */
+  async signOut() {
+    const res = await fetch(apiUrl("/auth/logout"), withCsrf({ method: "POST" }));
+    if (!res.ok && res.status !== 401) throw await toApiError(res);
+    setCsrfTokenFor(nextSessionGeneration(), null);
   },
 
-  // --- proposed read models ---
-  overview: () => contract(overviewSchema, "/v1/overview"),
-  gateway: () => contract(gatewaySchema, "/v1/gateway"),
-  monitor: (projectId: string) =>
-    contract(monitorSchema, pathOf("/v1/projects/{projectId}/monitor", { projectId })),
-  integrations: () => contract(integrationsSchema, "/v1/integrations"),
+  // --- read models ---
+  async overview() {
+    const [overview, runs, models, orca, approvals, incidents] = await Promise.all([
+      unwrap(v1.GET("/v1/overview")),
+      unwrap(v1.GET("/v1/runs", {})),
+      unwrap(v1.GET("/v1/gateway/health")),
+      unwrap(v1.GET("/v1/orca/runtime")),
+      unwrap(v1.GET("/v1/approvals", { params: { query: { status: "pending" } } })),
+      unwrap(v1.GET("/v1/incidents", { params: { query: { status: "open" } } })),
+    ]);
+    return adaptOverview({ overview, runs, models, orca, approvals, incidents });
+  },
+  async gateway() {
+    const models = await unwrap(v1.GET("/v1/gateway/health"));
+    return { healthy: models.filter((m) => m.status === "ok").length, total: models.length };
+  },
+  async monitor(projectId: string) {
+    const [incidents, verification] = await Promise.all([
+      unwrap(v1.GET("/v1/incidents", { params: { query: { projectId } } })),
+      contract(
+        verificationSchema,
+        pathOf("/v1/projects/{projectId}/verification", { projectId }),
+      ).catch((error: unknown) => {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
+      }),
+    ]);
+    return { incidents, verification };
+  },
+  integrations: () => unwrap(v1.GET("/v1/integrations")),
 
   // --- server v1 ---
   async projects() {
@@ -91,29 +128,22 @@ export const endpoints = {
       unwrap(v1.GET("/v1/runs/{id}", { params: { path: { id: runId } } })),
       unwrap(v1.GET("/v1/runs/{id}/receipts", { params: { path: { id: runId } } })),
     ]);
-    const [project, tickets] = await Promise.all([
-      unwrap(
-        v1.GET("/v1/projects/{projectId}", { params: { path: { projectId: run.projectId } } }),
-      ),
-      unwrap(
-        v1.GET("/v1/projects/{projectId}/tickets", {
-          params: { path: { projectId: run.projectId } },
-        }),
-      ),
-    ]);
-    const ticketTitle = tickets.find((t) => t.id === run.ticketId)?.title;
-    return adaptRun(run, receipts, {
-      ...(ticketTitle ? { ticketTitle } : {}),
-      ...(project.autonomy.merge ? { mergeMode: project.autonomy.merge } : {}),
-    });
+    const project = await unwrap(
+      v1.GET("/v1/projects/{projectId}", { params: { path: { projectId: run.projectId } } }),
+    );
+    return adaptRun(
+      run,
+      receipts,
+      project.autonomy.merge ? { mergeMode: project.autonomy.merge } : {},
+    );
   },
   pauseRun: (runId: string) =>
     unwrap(v1.POST("/v1/runs/{id}/pause", { params: { path: { id: runId } } })),
-  decide: (runId: string, decision: "approve" | "request_changes", commitSha: string) =>
+  decide: (approvalId: string, decision: "approved" | "rejected", note?: string) =>
     unwrap(
-      v1.POST("/v1/runs/{id}/approval", {
-        params: { path: { id: runId } },
-        body: { decision, commitSha },
+      v1.POST("/v1/approvals/{id}/decision", {
+        params: { path: { id: approvalId } },
+        body: { decision, ...(note ? { note } : {}) },
       }),
     ),
 
@@ -121,7 +151,7 @@ export const endpoints = {
     const [adrs, graph, checks] = await Promise.all([
       unwrap(v1.GET("/v1/projects/{projectId}/adrs", { params: { path: { projectId } } })),
       unwrap(v1.GET("/v1/projects/{projectId}/graph", { params: { path: { projectId } } })),
-      contract(checksSchema, pathOf("/v1/projects/{projectId}/checks", { projectId })),
+      unwrap(v1.GET("/v1/projects/{projectId}/checks", { params: { path: { projectId } } })),
     ]);
     const byAdr = new Map<string, { errors: number; warnings: number }>();
     for (const v of checks.violations) {
@@ -139,7 +169,7 @@ export const endpoints = {
   async init(sessionId: string) {
     const [session, progress] = await Promise.all([
       unwrap(v1.GET("/v1/init/{id}", { params: { path: { id: sessionId } } })),
-      contract(initProgressSchema, pathOf("/v1/init/{id}/progress", { id: sessionId })),
+      unwrap(v1.GET("/v1/init/{id}/progress", { params: { path: { id: sessionId } } })),
     ]);
     return { session, progress };
   },

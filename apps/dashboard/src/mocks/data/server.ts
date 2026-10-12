@@ -1,7 +1,12 @@
 import type {
   ApiKey,
+  Approval,
+  Incident,
+  ModelHealth,
+  OrcaRuntime,
   ServerAdr,
   ServerGraph,
+  ServerOverview,
   ServerProject,
   ServerReceipt,
   ServerRun,
@@ -82,7 +87,8 @@ const run = (
   r: Partial<ServerRun> & Pick<ServerRun, "id" | "ticketId" | "phase" | "model">,
 ): ServerRun => ({
   projectId: "ledgerly",
-  startedBy: "reconciler",
+  ownerId: "k1",
+  approval: { state: "none" },
   state: "running",
   runner: "claude-code",
   startedAt: "2026-10-12T10:00:00Z",
@@ -102,6 +108,9 @@ export const runs: ServerRun[] = [
     startedAt: "2026-10-12T10:31:02Z",
     headSha: "3c1e9a2f6b",
     workspaceUrl: "orca://worktree/bosgame/pilot-142",
+    title: "Stripe checkout for annual plans",
+    prUrl: "https://github.com/NeOMakinG/ledgerly/pull/58",
+    approval: { state: "pending", approvalId: "ap_1", phase: "merge" },
   }),
   run({
     id: "r_6c1d90",
@@ -112,6 +121,7 @@ export const runs: ServerRun[] = [
     costUsd: 2.87,
     startedAt: "2026-10-12T09:58:40Z",
     headSha: "9ab01cd",
+    approval: { state: "pending", approvalId: "ap_2", phase: "merge" },
   }),
   run({
     id: "r_9a0f55",
@@ -146,6 +156,7 @@ export const runs: ServerRun[] = [
     costUsd: 0.2,
     startedAt: "2026-10-12T08:00:00Z",
     workspaceUrl: "javascript:alert(1)",
+    prUrl: "http://github.com/x/y/pull/1",
   }),
 ];
 
@@ -304,3 +315,122 @@ export const apiKeys: ApiKey[] = [
     revokedAt: T0,
   },
 ];
+
+export const models: ModelHealth[] = [
+  {
+    model: "claude-fable-5-1",
+    provider: "claude",
+    status: "ok",
+    utilization: 0.23,
+    detail: "sub B",
+  },
+  {
+    model: "claude-opus-5-5",
+    provider: "claude",
+    status: "cooldown",
+    utilization: 1,
+    resetsAt: "2026-10-13T12:00:00Z",
+    detail: "sub A",
+  },
+  { model: "gpt-6.1-sol", provider: "openai", status: "ok", utilization: 0.41 },
+  {
+    model: "GLM-5.3",
+    provider: "zai",
+    status: "throttled",
+    utilization: 0.92,
+    detail: "429 backoff 90s",
+  },
+  { model: "qwen3.6-35b", provider: "local", status: "ok" },
+];
+
+export const orca: OrcaRuntime = {
+  status: "healthy",
+  host: "bosgame",
+  version: "1.4.2",
+  activeWorktrees: 6,
+  lastSeen: "2026-10-12T11:59:00Z",
+};
+
+export const approvals: Approval[] = [
+  {
+    id: "ap_1",
+    projectId: "ledgerly",
+    ticketId: "MX-142",
+    phase: "merge",
+    runId: "r_8f3a2c",
+    headSha: "3c1e9a2f6b",
+    requestedBy: "reconciler",
+    status: "pending",
+    requestedAt: "2026-10-12T11:01:00Z",
+  },
+  {
+    id: "ap_2",
+    projectId: "ledgerly",
+    ticketId: "MX-139",
+    phase: "merge",
+    runId: "r_6c1d90",
+    headSha: "9ab01cd",
+    requestedBy: "reconciler",
+    status: "pending",
+    requestedAt: "2026-10-12T10:40:00Z",
+  },
+];
+
+export const incidents: Incident[] = [
+  {
+    id: "#41",
+    projectId: "ledgerly",
+    source: "sentry",
+    fingerprint: "createInvoice not idempotent on webhook retry",
+    title: "Duplicate invoice on retry",
+    count: 214,
+    firstSeen: "2026-10-12T08:00:00Z",
+    lastSeen: "2026-10-12T11:00:00Z",
+    status: "fixing",
+    fixability: 0.86,
+    ticketId: "MX-153",
+  },
+  {
+    id: "#43",
+    projectId: "ledgerly",
+    source: "posthog",
+    fingerprint: "pdf render > 10s for >200 lines",
+    title: "PDF export timeout",
+    count: 27,
+    firstSeen: "2026-10-12T09:00:00Z",
+    lastSeen: "2026-10-12T10:30:00Z",
+    status: "open",
+    fixability: 0.61,
+  },
+  {
+    id: "#42",
+    projectId: "ledgerly",
+    source: "sentry",
+    fingerprint: "third-party date picker in Safari",
+    title: "Safari date picker",
+    count: 9,
+    firstSeen: "2026-10-11T09:00:00Z",
+    lastSeen: "2026-10-12T07:00:00Z",
+    status: "open",
+    fixability: 0.18,
+  },
+];
+
+export const overviewModel: ServerOverview = {
+  projects: [
+    { id: "ledgerly", name: "ledgerly", workspace: "orca", activeRuns: 4, openIncidents: 2 },
+    {
+      id: "project-matrix",
+      name: "project-matrix",
+      workspace: "orca",
+      activeRuns: 1,
+      openIncidents: 0,
+    },
+    { id: "wayline", name: "wayline", workspace: "native", activeRuns: 0, openIncidents: 0 },
+  ],
+  activeRuns: 5,
+  queuedRuns: 12,
+  costTodayUsd: 38.4,
+  pendingApprovals: 2,
+  openIncidents: 2,
+};

@@ -1,6 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
-import { LayoutDashboard } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { LayoutDashboard, LogOut } from "lucide-react";
+import { endpoints } from "@/api/endpoints";
 import { queries } from "@/api/queries";
 import { PROJECT_SCREENS } from "./nav";
 import { useCurrentProjectId } from "./project-context";
@@ -18,6 +19,20 @@ export function gatewayTone(healthy: number, total: number): "green" | "amber" |
 export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const projectId = useCurrentProjectId();
   const gateway = useQuery(queries.gateway());
+  const client = useQueryClient();
+  const navigate = useNavigate();
+  const signOut = useMutation({
+    mutationFn: endpoints.signOut,
+    // Only a confirmed logout shows the signed-out UI.
+    onSuccess: () => {
+      client.clear();
+      void navigate({ to: "/login", search: {} });
+    },
+    // The session is still valid: stay signed in, but drop cached data anyway.
+    onError: () => {
+      void client.resetQueries({ predicate: (q) => q.queryKey[0] !== "session" });
+    },
+  });
   return (
     <div className="w-60 shrink-0 border-border-subtle border-r bg-surface">
       <aside className="sticky top-0 flex h-screen flex-col px-4 py-5">
@@ -50,15 +65,37 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
         </nav>
 
         <div className="mt-auto rounded-control border border-border-subtle bg-raised px-3 py-3">
-          <div className="font-mono text-caption text-fg-muted">
-            Gateway · {gateway.data?.address ?? "…"}
-          </div>
+          <div className="font-mono text-caption text-fg-muted">Model gateway</div>
           {gateway.data ? (
             <Pill tone={gatewayTone(gateway.data.healthy, gateway.data.total)} className="mt-2">
               {gateway.data.healthy} of {gateway.data.total} models healthy
             </Pill>
           ) : null}
         </div>
+        <button
+          type="button"
+          onClick={() => signOut.mutate()}
+          disabled={signOut.isPending}
+          className="mt-3 flex h-8 items-center gap-2 rounded-control px-2.5 text-body text-fg-secondary hover:bg-hover hover:text-fg"
+        >
+          <LogOut className="size-4 text-fg-muted" />
+          {signOut.isPending ? "Signing out…" : "Sign out"}
+        </button>
+        {signOut.isError ? (
+          <div
+            role="alert"
+            className="mt-2 rounded-control border border-danger/30 bg-danger-dim/40 p-2.5 text-caption text-danger"
+          >
+            Couldn't sign out, you are still signed in. {signOut.error.message}
+            <button
+              type="button"
+              onClick={() => signOut.mutate()}
+              className="mt-1.5 block font-medium text-fg underline-offset-2 hover:underline"
+            >
+              Retry sign out
+            </button>
+          </div>
+        ) : null}
       </aside>
     </div>
   );
