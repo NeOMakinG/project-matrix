@@ -1,11 +1,14 @@
 import { z } from "@hono/zod-openapi";
 import type { RunEvent } from "@matrix/core";
 import { streamSSE } from "hono/streaming";
+import type { KeyStore } from "../auth/keys.js";
 import type { Operations } from "../ops.js";
 import { type App, IdParam, route } from "./route.js";
 import * as S from "./schemas.js";
 
-export function runRoutes(app: App, ops: Operations) {
+const MAX_QUEUED_EVENTS = 1000;
+
+export function runRoutes(app: App, ops: Operations, keys: KeyStore) {
   app.openapi(
     route({
       method: "get",
@@ -89,8 +92,15 @@ export function runRoutes(app: App, ops: Operations) {
       response: S.Approval,
     }),
     async (c) => {
-      const { decision, comment } = c.req.valid("json");
-      return c.json(await ops.approve(c.var.principal, c.req.valid("param").id, decision, comment));
+      const { decision, commitSha, comment } = c.req.valid("json");
+      return c.json(
+        await ops.approve(c.var.principal, {
+          runId: c.req.valid("param").id,
+          decision,
+          commitSha,
+          ...(comment ? { comment } : {}),
+        }),
+      );
     },
   );
 
@@ -107,36 +117,53 @@ export function runRoutes(app: App, ops: Operations) {
   );
 
   // Server-sent events: not described in OpenAPI because the payload is a stream of RunEvent JSON objects.
+  // The stream closes when the key is revoked, and when a slow client lets the queue overflow.
   app.get("/v1/runs/:id/events", async (c) => {
     const runId = c.req.param("id");
-    await ops.authorizeRunStream(c.var.principal, runId);
+    const principal = c.var.principal;
+    await ops.authorizeRunStream(principal, runId);
     return streamSSE(c, async (stream) => {
       const queue: RunEvent[] = [];
+      let closed: string | undefined;
       let wake: (() => void) | undefined;
+      const close = (reason: string) => {
+        closed ??= reason;
+        wake?.();
+      };
       const unsubscribe = ops.core.subscribe(runId, (event) => {
+        if (queue.length >= MAX_QUEUED_EVENTS) return close("overflow");
         queue.push(event);
         wake?.();
       });
-      stream.onAbort(() => {
-        unsubscribe();
-        wake?.();
+      const stopRevoke = keys.onRevoke((id) => {
+        if (id === principal.key.id) close("revoked");
       });
-      await stream.writeSSE({ event: "ready", data: JSON.stringify({ runId }) });
-      while (!stream.aborted) {
-        const event = queue.shift();
-        if (event) {
-          await stream.writeSSE({ event: event.kind, data: JSON.stringify(event) });
-          continue;
+      stream.onAbort(() => close("aborted"));
+      try {
+        await stream.writeSSE({ event: "ready", data: JSON.stringify({ runId }) });
+        while (!closed && !stream.aborted) {
+          const event = queue.shift();
+          if (event) {
+            await stream.writeSSE({ event: event.kind, data: JSON.stringify(event) });
+            continue;
+          }
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            setTimeout(resolve, 15_000);
+          });
+          wake = undefined;
+          if (!keys.isActive(principal.key.id)) close("revoked");
+          if (!closed && queue.length === 0 && !stream.aborted) {
+            await stream.writeSSE({ event: "ping", data: "" });
+          }
         }
-        await new Promise<void>((resolve) => {
-          wake = resolve;
-          setTimeout(resolve, 15_000);
-        });
-        wake = undefined;
-        if (queue.length === 0 && !stream.aborted)
-          await stream.writeSSE({ event: "ping", data: "" });
+        if (closed && closed !== "aborted" && !stream.aborted) {
+          await stream.writeSSE({ event: "close", data: JSON.stringify({ reason: closed }) });
+        }
+      } finally {
+        unsubscribe();
+        stopRevoke();
       }
-      unsubscribe();
     });
   });
 }

@@ -28,6 +28,7 @@ export function createServer(options: ServerOptions) {
     new RateLimiter(options.clock),
     new BudgetTracker(options.clock),
     audit,
+    options.clock,
   );
   const ops = new Operations(options.core, guard, keys, audit);
 
@@ -54,10 +55,13 @@ export function createServer(options: ServerOptions) {
 
   app.get("/healthz", (c) => c.json({ ok: true }));
 
-  hookRoutes(app, options.core, options.secrets ?? {});
+  hookRoutes(app, options.core, options.secrets ?? {}, options.clock);
 
   app.use("/v1/*", async (c, next) => {
-    c.set("principal", guard.authenticate(c.req.header("authorization")));
+    c.set(
+      "principal",
+      guard.authenticate(c.req.header("authorization"), c.req.header("idempotency-key")),
+    );
     await next();
   });
 
@@ -66,7 +70,7 @@ export function createServer(options: ServerOptions) {
   );
 
   projectRoutes(app, ops);
-  runRoutes(app, ops);
+  runRoutes(app, ops, keys);
   adminRoutes(app, ops);
 
   app.openAPIRegistry.registerComponent("securitySchemes", "bearer", {

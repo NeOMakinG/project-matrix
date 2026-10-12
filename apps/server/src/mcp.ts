@@ -3,9 +3,12 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { HttpError, type Principal } from "./auth/guard.js";
+import * as S from "./http/schemas.js";
 import type { Operations } from "./ops.js";
 
 const phase = z.enum(PHASES);
+// Same limits as the REST schemas (http/schemas.ts), so MCP can't send what REST would reject.
+const id = z.string().min(1).max(200);
 const autonomy = z.enum(["human", "gated", "autonomous"]);
 const status = z.enum([
   "open",
@@ -28,10 +31,12 @@ async function result(fn: () => Promise<unknown>): Promise<ToolResult> {
     const value = await fn();
     return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
   } catch (error) {
+    // Only our own errors are shown; anything else is logged and reported generically.
+    if (!(error instanceof HttpError)) console.error("mcp tool error", error);
     const message =
       error instanceof HttpError
         ? `${error.status} ${error.code}: ${error.message}`
-        : String(error);
+        : "500 internal: internal error";
     return { content: [{ type: "text", text: message }], isError: true };
   }
 }
@@ -49,7 +54,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "get_project",
     {
       description: "Get a project with its autonomy settings.",
-      inputSchema: { projectId: z.string() },
+      inputSchema: { projectId: id },
       annotations: { readOnlyHint: true },
     },
     ({ projectId }) => result(() => ops.getProject(p, projectId)),
@@ -59,7 +64,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     {
       description: "List tickets of a project, optionally filtered by status or labels.",
       inputSchema: {
-        projectId: z.string(),
+        projectId: id,
         status: z.array(status).optional(),
         labels: z.array(z.string()).optional(),
       },
@@ -77,23 +82,17 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "create_ticket",
     {
       description: "Create a ticket in the project's ticket system.",
-      inputSchema: {
-        projectId: z.string(),
-        title: z.string().min(1),
-        body: z.string(),
-        labels: z.array(z.string()).optional(),
-        priority: z
-          .union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(4)])
-          .optional(),
-      },
+      inputSchema: { projectId: id, ...S.CreateTicket.shape },
     },
-    ({ projectId, title, body, labels, priority }) =>
+    ({ projectId, title, body, labels, priority, parent, deps }) =>
       result(() =>
         ops.createTicket(p, projectId, {
           title,
           body,
           ...(labels ? { labels } : {}),
           ...(priority === undefined ? {} : { priority }),
+          ...(parent ? { parent } : {}),
+          ...(deps ? { deps } : {}),
         }),
       ),
   );
@@ -101,14 +100,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "update_ticket",
     {
       description: "Update a ticket's status, labels, title or body.",
-      inputSchema: {
-        projectId: z.string(),
-        ticketId: z.string(),
-        status: status.optional(),
-        title: z.string().optional(),
-        body: z.string().optional(),
-        labels: z.array(z.string()).optional(),
-      },
+      inputSchema: { projectId: id, ticketId: id, ...S.UpdateTicket.shape },
     },
     ({ projectId, ticketId, ...patch }) =>
       result(() =>
@@ -124,7 +116,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "list_runs",
     {
       description: "List runs, optionally for one project.",
-      inputSchema: { projectId: z.string().optional() },
+      inputSchema: { projectId: id.optional() },
       annotations: { readOnlyHint: true },
     },
     ({ projectId }) => result(() => ops.listRuns(p, projectId)),
@@ -133,7 +125,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "get_run",
     {
       description: "Get one run with its state and cost.",
-      inputSchema: { runId: z.string() },
+      inputSchema: { runId: id },
       annotations: { readOnlyHint: true },
     },
     ({ runId }) => result(() => ops.getRun(p, runId)),
@@ -142,20 +134,20 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "start_run",
     {
       description: "Start a loop phase for a ticket.",
-      inputSchema: { projectId: z.string(), ticketId: z.string(), phase },
+      inputSchema: { projectId: id, ticketId: id, phase },
     },
     (input) => result(() => ops.startRun(p, input)),
   );
   server.registerTool(
     "pause_run",
-    { description: "Pause a queued or running run.", inputSchema: { runId: z.string() } },
+    { description: "Pause a queued or running run.", inputSchema: { runId: id } },
     ({ runId }) => result(() => ops.pauseRun(p, runId)),
   );
   server.registerTool(
     "cancel_run",
     {
       description: "Cancel a run.",
-      inputSchema: { runId: z.string() },
+      inputSchema: { runId: id },
       annotations: { destructiveHint: true },
     },
     ({ runId }) => result(() => ops.cancelRun(p, runId)),
@@ -164,7 +156,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "list_receipts",
     {
       description: "List the QA, review and test receipts of a run.",
-      inputSchema: { runId: z.string() },
+      inputSchema: { runId: id },
       annotations: { readOnlyHint: true },
     },
     ({ runId }) => result(() => ops.listReceipts(p, runId)),
@@ -174,18 +166,18 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     {
       description: "Approve a run waiting for a human decision, or request changes.",
       inputSchema: {
-        runId: z.string(),
-        decision: z.enum(["approve", "request_changes"]),
-        comment: z.string().optional(),
+        runId: id,
+        ...S.ApprovalInput.shape,
       },
     },
-    ({ runId, decision, comment }) => result(() => ops.approve(p, runId, decision, comment)),
+    ({ runId, decision, commitSha, comment }) =>
+      result(() => ops.approve(p, { runId, decision, commitSha, ...(comment ? { comment } : {}) })),
   );
   server.registerTool(
     "merge_run",
     {
       description: "Merge a run's branch, subject to the project's autonomy setting.",
-      inputSchema: { runId: z.string() },
+      inputSchema: { runId: id },
     },
     ({ runId }) => result(() => ops.merge(p, runId)),
   );
@@ -193,7 +185,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "deploy_project",
     {
       description: "Deploy a project.",
-      inputSchema: { projectId: z.string() },
+      inputSchema: { projectId: id },
       annotations: { destructiveHint: true },
     },
     ({ projectId }) => result(() => ops.deploy(p, projectId)),
@@ -202,7 +194,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "set_autonomy",
     {
       description: "Set the autonomy mode of one loop phase for a project.",
-      inputSchema: { projectId: z.string(), phase, mode: autonomy },
+      inputSchema: { projectId: id, phase, mode: autonomy },
     },
     ({ projectId, phase: ph, mode }) => result(() => ops.setAutonomy(p, projectId, ph, mode)),
   );
@@ -210,7 +202,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "list_adrs",
     {
       description: "List the project's ADRs and their rules.",
-      inputSchema: { projectId: z.string() },
+      inputSchema: { projectId: id },
       annotations: { readOnlyHint: true },
     },
     ({ projectId }) => result(() => ops.listAdrs(p, projectId)),
@@ -219,7 +211,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "get_product_graph",
     {
       description: "Get the product graph: goals, features, ADRs, tickets and modules.",
-      inputSchema: { projectId: z.string() },
+      inputSchema: { projectId: id },
       annotations: { readOnlyHint: true },
     },
     ({ projectId }) => result(() => ops.getGraph(p, projectId)),
@@ -228,7 +220,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "start_init",
     {
       description: "Start an init interview session for a project.",
-      inputSchema: { projectId: z.string() },
+      inputSchema: { projectId: id },
     },
     ({ projectId }) => result(() => ops.startInit(p, projectId)),
   );
@@ -236,7 +228,7 @@ export function buildMcpServer(ops: Operations, p: Principal): McpServer {
     "answer_init",
     {
       description: "Submit answers to an init interview session.",
-      inputSchema: { sessionId: z.string(), answers: z.record(z.string(), z.unknown()) },
+      inputSchema: { sessionId: id, ...S.InitAnswers.shape },
     },
     ({ sessionId, answers }) => result(() => ops.answerInit(p, sessionId, answers)),
   );

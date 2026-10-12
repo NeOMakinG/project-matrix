@@ -18,6 +18,7 @@ if (bootstrap) {
   keys.importHashed({
     ...bootstrap,
     name: "bootstrap-admin",
+    kind: "human",
     scope: { projects: "*", actions: ["admin"] },
     budget: {},
     ratePerMinute: 600,

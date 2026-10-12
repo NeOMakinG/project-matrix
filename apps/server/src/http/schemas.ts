@@ -63,10 +63,10 @@ export const CreateTicket = z
   .object({
     title: z.string().min(1).max(300),
     body: z.string().max(50_000).default(""),
-    labels: z.array(z.string()).optional(),
+    labels: z.array(z.string().max(100)).max(50).optional(),
     priority: Priority.optional(),
-    parent: z.string().optional(),
-    deps: z.array(z.string()).optional(),
+    parent: z.string().max(200).optional(),
+    deps: z.array(z.string().max(200)).max(100).optional(),
   })
   .openapi("CreateTicket");
 
@@ -75,9 +75,9 @@ export const UpdateTicket = z
     title: z.string().min(1).max(300).optional(),
     body: z.string().max(50_000).optional(),
     status: TicketStatus.optional(),
-    labels: z.array(z.string()).optional(),
+    labels: z.array(z.string().max(100)).max(50).optional(),
     priority: Priority.optional(),
-    assignee: z.string().optional(),
+    assignee: z.string().max(200).optional(),
   })
   .openapi("UpdateTicket");
 
@@ -86,6 +86,8 @@ export const Run = z
     id: z.string(),
     projectId: z.string(),
     ticketId: z.string(),
+    startedBy: z.string(),
+    headSha: z.string().optional(),
     phase: Phase,
     state: z.string(),
     runner: z.string(),
@@ -116,6 +118,10 @@ export const Receipt = z
 export const ApprovalInput = z
   .object({
     decision: z.enum(["approve", "request_changes"]),
+    commitSha: z
+      .string()
+      .regex(/^[0-9a-f]{7,64}$/)
+      .openapi({ description: "Head commit being approved; must match the run's current head" }),
     comment: z.string().max(5000).optional(),
   })
   .openapi("ApprovalInput");
@@ -124,8 +130,10 @@ export const Approval = z
   .object({
     runId: z.string(),
     decision: z.enum(["approve", "request_changes"]),
+    commitSha: z.string(),
     comment: z.string().optional(),
     by: z.string(),
+    byKind: z.enum(["human", "agent"]),
     at: z.string(),
   })
   .openapi("Approval");
@@ -160,7 +168,12 @@ export const InitSession = z
   .openapi("InitSession");
 
 export const InitAnswers = z
-  .object({ answers: z.record(z.string(), z.unknown()) })
+  .object({
+    answers: z
+      .record(z.string().max(200), z.unknown())
+      .refine((a) => Object.keys(a).length <= 200, "at most 200 answers per call")
+      .refine((a) => JSON.stringify(a).length <= 100_000, "answers payload too large"),
+  })
   .openapi("InitAnswers");
 
 export const Settings = z.record(z.string(), z.unknown()).openapi("Settings");
@@ -183,6 +196,7 @@ export const ApiKey = z
   .object({
     id: z.string(),
     name: z.string(),
+    kind: z.enum(["human", "agent"]),
     scope: KeyScope,
     budget: KeyBudget,
     ratePerMinute: z.number(),
@@ -194,6 +208,7 @@ export const ApiKey = z
 export const CreateKey = z
   .object({
     name: z.string().min(1).max(100),
+    kind: z.enum(["human", "agent"]).optional(),
     scope: KeyScope,
     budget: KeyBudget.optional(),
     ratePerMinute: z.number().int().min(1).max(10_000).optional(),

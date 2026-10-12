@@ -53,6 +53,7 @@ export function adminRoutes(app: App, ops: Operations) {
         await ops.createKey(c.var.principal, {
           name: body.name,
           scope: body.scope,
+          ...(body.kind ? { kind: body.kind } : {}),
           ...(body.budget ? { budget: body.budget } : {}),
           ...(body.ratePerMinute ? { ratePerMinute: body.ratePerMinute } : {}),
         }),
