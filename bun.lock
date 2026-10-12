@@ -138,6 +138,11 @@
     "packages/qa": {
       "name": "@matrix/qa",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+        "@matrix/sandbox": "workspace:*",
+        "playwright-core": "^1.56.0",
+      },
     },
     "packages/rules": {
       "name": "@matrix/rules",
@@ -158,6 +163,10 @@
     "packages/runners": {
       "name": "@matrix/runners",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+        "@matrix/sandbox": "workspace:*",
+      },
     },
     "packages/safe-fs": {
       "name": "@matrix/safe-fs",
@@ -166,6 +175,9 @@
     "packages/sandbox": {
       "name": "@matrix/sandbox",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+      },
     },
     "packages/sdk": {
       "name": "@matrix/sdk",
@@ -181,6 +193,9 @@
     "packages/tickets": {
       "name": "@matrix/tickets",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/sandbox": "workspace:*",
+      },
     },
     "packages/watch": {
       "name": "@matrix/watch",
@@ -193,6 +208,14 @@
         "@matrix/tickets": "workspace:*",
         "ipaddr.js": "^2.2.0",
         "zod": "^4",
+      },
+    },
+    "packages/workspace": {
+      "name": "@matrix/workspace",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+        "@matrix/sandbox": "workspace:*",
       },
     },
     "packs": {
@@ -386,6 +409,8 @@
     "@matrix/tickets": ["@matrix/tickets@workspace:packages/tickets"],
 
     "@matrix/watch": ["@matrix/watch@workspace:packages/watch"],
+
+    "@matrix/workspace": ["@matrix/workspace@workspace:packages/workspace"],
 
     "@modelcontextprotocol/sdk": ["@modelcontextprotocol/sdk@1.32.1", "", { "dependencies": { "@hono/node-server": "^1.19.9 || ^2.0.5", "ajv": "^8.17.1", "ajv-formats": "^3.0.1", "content-type": "^1.0.5", "cors": "^2.8.5", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "express": "^5.2.1", "express-rate-limit": "^8.2.1", "hono": "^4.11.4", "jose": "^6.1.3", "json-schema-typed": "^8.0.2", "pkce-challenge": "^5.0.0", "raw-body": "^3.0.0", "zod": "^3.25 || ^4.0", "zod-to-json-schema": "^3.25.1" }, "peerDependencies": { "@cfworker/json-schema": "^4.1.1" }, "optionalPeers": ["@cfworker/json-schema"] }, "sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw=="],
 
