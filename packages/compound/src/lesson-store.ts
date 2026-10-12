@@ -1,8 +1,8 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Store } from "@matrix/core";
 import { patchHash } from "./hash.js";
-import { assertNoSymlink, safeJoin } from "./paths.js";
+import { readFileSafe, safeJoin, writeFileSafe } from "./paths.js";
 import type { Proposal } from "./propose.js";
 import {
   CANDIDATE_ID,
@@ -41,12 +41,7 @@ export class LessonStore {
 
   private async write(candidate: Candidate): Promise<Candidate> {
     const valid = CandidateSchema.parse(candidate);
-    const path = this.path(valid.id);
-    await mkdir(this.dir, { recursive: true });
-    await assertNoSymlink(this.root, path);
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(valid, null, 2)}\n`);
-    await rename(tmp, path);
+    await writeFileSafe(this.root, this.path(valid.id), `${JSON.stringify(valid, null, 2)}\n`);
     if (this.index) {
       await this.index.addLesson({
         projectId: valid.projectId,
@@ -59,14 +54,8 @@ export class LessonStore {
   }
 
   async get(id: string): Promise<Candidate | null> {
-    const path = this.path(id);
-    await assertNoSymlink(this.root, path);
-    try {
-      return CandidateSchema.parse(JSON.parse(await readFile(path, "utf8")));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
-    }
+    const raw = await readFileSafe(this.root, this.path(id));
+    return raw === null ? null : CandidateSchema.parse(JSON.parse(raw));
   }
 
   async list(filter: { status?: CandidateStatus[] } = {}): Promise<Candidate[]> {

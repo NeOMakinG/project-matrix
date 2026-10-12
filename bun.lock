@@ -80,6 +80,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@matrix/core": "workspace:*",
+        "@matrix/safe-fs": "workspace:*",
         "@matrix/tickets": "workspace:*",
         "zod": "^4",
       },
@@ -146,6 +147,10 @@
     },
     "packages/runners": {
       "name": "@matrix/runners",
+      "version": "0.0.0",
+    },
+    "packages/safe-fs": {
+      "name": "@matrix/safe-fs",
       "version": "0.0.0",
     },
     "packages/sandbox": {
@@ -342,6 +347,8 @@
     "@matrix/rules": ["@matrix/rules@workspace:packages/rules"],
 
     "@matrix/runners": ["@matrix/runners@workspace:packages/runners"],
+
+    "@matrix/safe-fs": ["@matrix/safe-fs@workspace:packages/safe-fs"],
 
     "@matrix/sandbox": ["@matrix/sandbox@workspace:packages/sandbox"],
 

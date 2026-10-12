@@ -12,6 +12,7 @@
   "dependencies": {
     "@matrix/core": "workspace:*",
     "@matrix/tickets": "workspace:*",
-    "zod": "^4"
+    "zod": "^4",
+    "@matrix/safe-fs": "workspace:*"
   }
 }

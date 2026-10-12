@@ -1,9 +1,11 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { lstat, mkdir, readdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import { z } from "zod";
-import { canonical, sha256 } from "./hash.js";
-import { assertNoSymlink, isInside, safeJoin } from "./paths.js";
-import { CandidateIdSchema, type Evaluation, EvaluationSchema } from "./types.js";
+import type { ReplayCase } from "./evaluate.js";
+import { canonical } from "./hash.js";
+import { isInsideReal, readFileSafe, safeJoin, writeFileSafe } from "./paths.js";
+import { CandidateIdSchema, type Evaluation, EvaluationSchema, PhaseSchema } from "./types.js";
 
 export const PromotionSchema = z.object({
   candidateId: CandidateIdSchema,
@@ -24,9 +26,19 @@ export const ApprovalSchema = z.object({
 });
 export type Approval = z.infer<typeof ApprovalSchema>;
 
+export const ReplayCaseSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9._:-]{1,120}$/),
+  ticketId: z.string().min(1),
+  phase: PhaseSchema,
+  input: z.string().min(1),
+  expectedP1: z.array(z.string()),
+});
+
+const PROJECT_ID = /^[A-Za-z0-9._-]{1,80}$/;
+
 /**
- * Where evaluation verdicts, promotions and approvals live. It must be owned by the host (or the core
- * store), never by the repository the agents edit; otherwise an agent could write its own verdict.
+ * Where evaluation verdicts, promotions, approvals and the authoritative replay-case history live. It
+ * must be owned by the host, never by the repository agents edit.
  */
 export interface EvalLedger {
   recordEvaluation(evaluation: Evaluation): Promise<void>;
@@ -36,45 +48,75 @@ export interface EvalLedger {
   getPromotion(candidateId: string, candidateHash: string): Promise<Promotion | null>;
   recordApproval(approval: Approval): Promise<void>;
   getApproval(candidateId: string, candidateHash: string): Promise<Approval | null>;
+  /** Adds past cases to the project's replay history (dedup by id). Only the host calls this. */
+  recordCaseHistory(projectId: string, cases: ReplayCase[]): Promise<void>;
+  caseHistory(projectId: string): Promise<ReplayCase[]>;
 }
 
 export class LedgerError extends Error {}
 
-const sealed = <T>(record: T) => ({ record, digest: sha256(canonical(record)) });
+/** Loads the host-held HMAC key, creating a random 32-byte key (mode 0600) on first use. */
+export async function loadOrCreateLedgerKey(path: string): Promise<Buffer> {
+  const base = dirname(path);
+  const existing = await readFileSafe(base, path);
+  if (existing) {
+    const key = Buffer.from(existing.trim(), "hex");
+    if (key.length !== 32) throw new LedgerError(`${path} is not a 32-byte hex key`);
+    return key;
+  }
+  const key = randomBytes(32);
+  await writeFileSafe(base, path, `${key.toString("hex")}\n`, { mode: 0o600 });
+  return key;
+}
 
-/** File ledger in a host-owned directory. Refuses to live inside any of `forbiddenRoots` (the repos). */
+/**
+ * File ledger in a host-owned directory. Records are sealed with an HMAC under a host-held key, so a
+ * process that can write ledger files but not read the key cannot forge them. Placement is checked on
+ * real paths, so a symlinked ancestor pointing into a repo is refused.
+ */
 export class FileEvalLedger implements EvalLedger {
-  constructor(
+  private constructor(
     private readonly dir: string,
-    forbiddenRoots: string[],
-  ) {
+    private readonly key: Buffer,
+  ) {}
+
+  static async open(dir: string, forbiddenRoots: string[], key: Buffer): Promise<FileEvalLedger> {
+    if (key.length < 32) throw new LedgerError("ledger key must be at least 32 bytes");
     for (const root of forbiddenRoots) {
-      if (isInside(root, dir)) throw new LedgerError(`ledger ${dir} must not be inside ${root}`);
+      if (await isInsideReal(root, dir))
+        throw new LedgerError(`ledger ${dir} must not be inside ${root}`);
+      if (await isInsideReal(dir, root))
+        throw new LedgerError(`ledger ${dir} must not contain ${root}`);
     }
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    if ((await lstat(dir)).isSymbolicLink()) throw new LedgerError(`ledger ${dir} is a symlink`);
+    return new FileEvalLedger(dir, key);
+  }
+
+  private mac(record: unknown): string {
+    return createHmac("sha256", this.key).update(canonical(record)).digest("hex");
   }
 
   private async write(parts: string[], record: unknown) {
-    const path = safeJoin(this.dir, ...parts);
-    await mkdir(join(path, ".."), { recursive: true });
-    await assertNoSymlink(this.dir, path);
-    const tmp = `${path}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(sealed(record), null, 2)}\n`, { mode: 0o600 });
-    await rename(tmp, path);
+    const body = { record, mac: this.mac(record) };
+    await writeFileSafe(
+      this.dir,
+      safeJoin(this.dir, ...parts),
+      `${JSON.stringify(body, null, 2)}\n`,
+      { mode: 0o600 },
+    );
   }
 
   private async read<T>(parts: string[], schema: z.ZodType<T>): Promise<T | null> {
     const path = safeJoin(this.dir, ...parts);
-    await assertNoSymlink(this.dir, path);
-    let raw: string;
-    try {
-      raw = await readFile(path, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw error;
+    const raw = await readFileSafe(this.dir, path);
+    if (raw === null) return null;
+    const { record, mac } = JSON.parse(raw) as { record: unknown; mac?: string };
+    const expected = Buffer.from(this.mac(record), "hex");
+    const actual = Buffer.from(typeof mac === "string" ? mac : "", "hex");
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      throw new LedgerError(`${path} is not sealed by this ledger`);
     }
-    const { record, digest } = JSON.parse(raw) as { record: unknown; digest: string };
-    if (sha256(canonical(record)) !== digest)
-      throw new LedgerError(`${path} was modified outside the ledger`);
     return schema.parse(record);
   }
 
@@ -129,5 +171,17 @@ export class FileEvalLedger implements EvalLedger {
       ["approvals", CandidateIdSchema.parse(candidateId), `${candidateHash}.json`],
       ApprovalSchema,
     );
+  }
+  async recordCaseHistory(projectId: string, cases: ReplayCase[]) {
+    if (!PROJECT_ID.test(projectId)) throw new LedgerError(`invalid project id ${projectId}`);
+    const merged = new Map((await this.caseHistory(projectId)).map((c) => [c.id, c]));
+    for (const c of z.array(ReplayCaseSchema).parse(cases))
+      if (!merged.has(c.id)) merged.set(c.id, c);
+    const list = [...merged.values()].sort((a, b) => a.id.localeCompare(b.id));
+    await this.write(["cases", `${projectId}.json`], list);
+  }
+  async caseHistory(projectId: string) {
+    if (!PROJECT_ID.test(projectId)) throw new LedgerError(`invalid project id ${projectId}`);
+    return (await this.read(["cases", `${projectId}.json`], z.array(ReplayCaseSchema))) ?? [];
   }
 }

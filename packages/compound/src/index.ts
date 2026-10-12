@@ -11,4 +11,5 @@ export * from "./promote.js";
 export * from "./propose.js";
 export * from "./runner-executor.js";
 export * from "./sample.js";
+export * from "./select.js";
 export * from "./types.js";

@@ -64,6 +64,8 @@ export const MetricsSchema = z.object({
   loopbacks: z.number().nonnegative(),
   p1Caught: z.number().nonnegative(),
   p1Expected: z.number().nonnegative(),
+  /** P1 findings that matched no expected finding (penalises "flag everything"). */
+  p1FalsePositives: z.number().nonnegative(),
   holdoutSatisfaction: z.number().min(0).max(1),
   costUsd: z.number().nonnegative(),
 });

@@ -14,7 +14,7 @@ import {
 import { expect, test } from "vitest";
 import { createCompoundHandler } from "./handler.js";
 import { LessonStore } from "./lesson-store.js";
-import { runnerExecutor } from "./runner-executor.js";
+import { matchFindings, runnerExecutor } from "./runner-executor.js";
 import { sampleCases } from "./sample.js";
 import { cases } from "./testkit.test-helpers.js";
 import type { Candidate } from "./types.js";
@@ -147,7 +147,7 @@ test("sampleCases is stratified, deterministic, deduplicated and excludes eviden
   const history = [
     ...cases(5),
     {
-      id: "case-dup",
+      id: "zz-dup",
       ticketId: "T-9",
       phase: "review" as const,
       input: "review diff 0",
@@ -156,12 +156,12 @@ test("sampleCases is stratified, deterministic, deduplicated and excludes eviden
     { id: "spike-1", ticketId: "S-1", phase: "spike" as const, input: "plan a", expectedP1: [] },
     { id: "spike-2", ticketId: "S-2", phase: "spike" as const, input: "plan b", expectedP1: [] },
   ];
-  const opts = { perPhase: 2, seed: "s1", excludeTickets: ["T-4"] };
+  const opts = { perPhase: 2, seed: "s1", excludeTickets: ["H-review-4"] };
   const a = sampleCases(history, opts);
   expect(a).toEqual(sampleCases([...history].reverse(), opts));
   expect(a.filter((c) => c.phase === "review")).toHaveLength(2);
   expect(a.filter((c) => c.phase === "spike")).toHaveLength(2);
-  expect(a.some((c) => c.id === "case-dup" || c.ticketId === "T-4")).toBe(false);
+  expect(a.some((c) => c.id === "zz-dup" || c.ticketId === "H-review-4")).toBe(false);
   const variants = new Set(
     ["s1", "s2", "s3", "s4", "s5", "s6"].map((seed) =>
       sampleCases(history, { ...opts, seed })
@@ -170,4 +170,17 @@ test("sampleCases is stratified, deterministic, deduplicated and excludes eviden
     ),
   );
   expect(variants.size).toBeGreaterThan(1);
+});
+
+test("matchFindings is one-to-one and counts false positives", () => {
+  const expected = ["duplicate checkout session on retry", "missing auth check on invoice export"];
+  const one = ["checkout session duplicate on retry and missing auth check on invoice export"];
+  expect(matchFindings(expected, one, 0.2)).toEqual({ caught: 1, falsePositives: 0 });
+  const spam = [
+    "duplicate checkout session on retry",
+    "x",
+    "y",
+    "missing auth check on invoice export",
+  ];
+  expect(matchFindings(expected, spam, 0.34)).toEqual({ caught: 2, falsePositives: 2 });
 });

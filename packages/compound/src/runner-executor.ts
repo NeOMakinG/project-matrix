@@ -1,4 +1,10 @@
-import { parseFindings, type Runner, type RunnerId, type Workspace } from "@matrix/core";
+import {
+  isTrustedHoldout,
+  parseFindings,
+  type Runner,
+  type RunnerId,
+  type Workspace,
+} from "@matrix/core";
 import type { ReplayCase, ReplayExecutor } from "./evaluate.js";
 import { similarity } from "./propose.js";
 import type { Candidate, Metrics } from "./types.js";
@@ -14,6 +20,33 @@ export function candidateInstruction(candidate: Candidate): string {
     case "adr-rule":
       return `Architecture rule${p.rule.adr ? ` (${p.rule.adr})` : ""}: ${p.rule.message}`;
   }
+}
+
+/**
+ * One-to-one greedy matching of expected P1s to reported P1s (best similarity first). Each reported
+ * finding can satisfy at most one expectation; unmatched reports count as false positives.
+ */
+export function matchFindings(
+  expected: string[],
+  reported: string[],
+  threshold: number,
+): { caught: number; falsePositives: number } {
+  const pairs: { e: number; r: number; s: number }[] = [];
+  expected.forEach((exp, e) =>
+    reported.forEach((rep, r) => {
+      const s = similarity(exp, rep);
+      if (s >= threshold) pairs.push({ e, r, s });
+    }),
+  );
+  pairs.sort((a, b) => b.s - a.s || a.e - b.e || a.r - b.r);
+  const usedE = new Set<number>();
+  const usedR = new Set<number>();
+  for (const p of pairs) {
+    if (usedE.has(p.e) || usedR.has(p.r)) continue;
+    usedE.add(p.e);
+    usedR.add(p.r);
+  }
+  return { caught: usedE.size, falsePositives: reported.length - usedR.size };
 }
 
 export interface RunnerExecutorOptions {
@@ -76,17 +109,21 @@ export function runnerExecutor(opts: RunnerExecutorOptions): ReplayExecutor {
         }
         const p1 = findings.filter((f) => f.severity === "P1");
         const threshold = opts.matchThreshold ?? 0.34;
-        const caught = replay.expectedP1.filter((exp) =>
-          p1.some((f) => similarity(exp, `${f.title} ${f.detail ?? ""}`) >= threshold),
-        ).length;
-        const holdout = result.receipts.find((r) => r.kind === "holdout")?.data as
+        const { caught, falsePositives } = matchFindings(
+          replay.expectedP1,
+          p1.map((f) => `${f.title} ${f.detail ?? ""}`),
+          threshold,
+        );
+        // Only holdout scores produced by core's judge count; runner-supplied receipts are ignored.
+        const holdout = result.receipts.find(isTrustedHoldout)?.data as
           | { satisfaction?: number }
           | undefined;
         return {
           loopbacks: result.status === "ok" && parsed ? 0 : 1,
           p1Caught: caught,
           p1Expected: replay.expectedP1.length,
-          holdoutSatisfaction: holdout?.satisfaction ?? (result.status === "ok" ? 1 : 0),
+          p1FalsePositives: falsePositives,
+          holdoutSatisfaction: typeof holdout?.satisfaction === "number" ? holdout.satisfaction : 1,
           costUsd: result.costUsd ?? 0,
         };
       } finally {

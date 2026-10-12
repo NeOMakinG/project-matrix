@@ -3,7 +3,7 @@ import { candidateHash, canonical, caseSetHash, sha256 } from "./hash.js";
 import type { Candidate, Evaluation, Metrics } from "./types.js";
 
 /** Bump when scoring or execution semantics change: older evaluations then stop counting for promotion. */
-export const HARNESS_VERSION = "replay-v2";
+export const HARNESS_VERSION = "replay-v3";
 /** Hard floor on replayed cases; a policy can ask for more, never fewer. */
 export const MIN_CASES = 3;
 
@@ -24,6 +24,9 @@ export interface ReplayExecutor {
 
 export interface EvalPolicy {
   minSamples: number;
+  /** Cases drawn per phase from the ledger's history, and the overall cap. */
+  perPhase: number;
+  maxCases: number;
   minGain: number;
   maxRegression: number;
   weights: { p1: number; holdout: number; loopback: number; cost: number };
@@ -31,6 +34,8 @@ export interface EvalPolicy {
 
 export const DEFAULT_POLICY: EvalPolicy = {
   minSamples: MIN_CASES,
+  perPhase: 4,
+  maxCases: 16,
   minGain: 0.05,
   maxRegression: 0.02,
   weights: { p1: 0.5, holdout: 0.4, loopback: 0.15, cost: 0.05 },
@@ -40,6 +45,7 @@ const ZERO: Metrics = {
   loopbacks: 0,
   p1Caught: 0,
   p1Expected: 0,
+  p1FalsePositives: 0,
   holdoutSatisfaction: 0,
   costUsd: 0,
 };
@@ -51,6 +57,7 @@ export function sumMetrics(list: Metrics[]): Metrics {
       loopbacks: acc.loopbacks + m.loopbacks,
       p1Caught: acc.p1Caught + m.p1Caught,
       p1Expected: acc.p1Expected + m.p1Expected,
+      p1FalsePositives: acc.p1FalsePositives + m.p1FalsePositives,
       holdoutSatisfaction: acc.holdoutSatisfaction + m.holdoutSatisfaction,
       costUsd: acc.costUsd + m.costUsd,
     }),
@@ -59,12 +66,20 @@ export function sumMetrics(list: Metrics[]): Metrics {
   return { ...total, holdoutSatisfaction: total.holdoutSatisfaction / list.length };
 }
 
+/** F1 of P1 findings: recall alone would reward flagging everything as P1. */
+export function p1F1(m: Metrics): number {
+  if (m.p1Expected === 0 && m.p1FalsePositives === 0) return 1;
+  const recall = m.p1Expected > 0 ? m.p1Caught / m.p1Expected : 1;
+  const flagged = m.p1Caught + m.p1FalsePositives;
+  const precision = flagged > 0 ? m.p1Caught / flagged : m.p1Expected > 0 ? 0 : 1;
+  return recall + precision > 0 ? (2 * recall * precision) / (recall + precision) : 0;
+}
+
 export function score(m: Metrics, samples: number, policy: EvalPolicy = DEFAULT_POLICY): number {
   const n = Math.max(samples, 1);
-  const recall = m.p1Expected > 0 ? m.p1Caught / m.p1Expected : 1;
   const w = policy.weights;
   return (
-    w.p1 * recall +
+    w.p1 * p1F1(m) +
     w.holdout * m.holdoutSatisfaction -
     w.loopback * (m.loopbacks / n) -
     w.cost * (m.costUsd / n)
