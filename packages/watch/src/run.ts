@@ -105,7 +105,11 @@ export async function runWatch(opts: WatchOptions): Promise<WatchResult> {
     await attempt("trending", () => collectGithubTrending(opts.languages!, http));
 
   const unique = dedupe(
-    items.map((i) => ({ ...i, title: i.title.replace(/\s+/g, " ").trim(), summary: i.summary.trim() })),
+    items.map((i) => ({
+      ...i,
+      title: i.title.replace(/\s+/g, " ").trim(),
+      summary: i.summary.trim(),
+    })),
   );
   const seenStore = new SeenStore(join(opts.root, ".matrix", "watch", "seen.json"));
   const seen = await seenStore.load();
