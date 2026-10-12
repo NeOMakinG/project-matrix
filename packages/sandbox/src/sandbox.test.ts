@@ -158,7 +158,7 @@ describe("secret gate", () => {
   test("clean repo passes", async () => {
     const repo = await repoWith("hello");
     const result = await runSecretGate({
-      repoPath: repo,
+      gitDir: join(repo, ".git"),
       secretValues: [secret],
       skipGitleaks: !hasGitleaks,
     });
@@ -174,7 +174,7 @@ describe("secret gate", () => {
     ]) {
       const repo = await repoWith(`x=${encoded}\n`, true);
       const result = await runSecretGate({
-        repoPath: repo,
+        gitDir: join(repo, ".git"),
         secretValues: [secret],
         skipGitleaks: true,
       });
@@ -186,7 +186,7 @@ describe("secret gate", () => {
 
   test.runIf(hasGitleaks)("gitleaks catches a planted token pattern", async () => {
     const repo = await repoWith(`token = "ghp_${"A1b2C3d4E5".repeat(4).slice(0, 36)}"\n`);
-    const result = await runSecretGate({ repoPath: repo });
+    const result = await runSecretGate({ gitDir: join(repo, ".git") });
     expect(result.ok).toBe(false);
     expect(result.findings.some((f) => f.source === "gitleaks")).toBe(true);
   });
@@ -204,4 +204,68 @@ test("run token placeholder is replaced at launch", () => {
     "mxr_abc",
   );
   expect(env.ANTHROPIC_API_KEY).toBe("mxr_abc");
+});
+
+describe("secret gate hardening", () => {
+  const secret = { name: "gateway", value: "sk-matrix-test-1234567890abcdef" };
+  const git = (dir: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd: dir })
+      .toString()
+      .trim();
+
+  test("repo allowlists and ignore files cannot silence gitleaks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "matrix-gl-"));
+    git(dir, "init", "-q");
+    const token = `ghp_${"A1b2C3d4E5".repeat(4).slice(0, 36)}`;
+    await writeFile(join(dir, "a.txt"), `token = "${token}"\n`);
+    await writeFile(join(dir, ".gitleaks.toml"), '[allowlist]\npaths = [".*"]\n');
+    await writeFile(join(dir, ".gitleaksignore"), "*\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "c");
+    const result = await runSecretGate({ gitDir: join(dir, ".git") });
+    expect(result.findings.some((f) => f.source === "gitleaks")).toBe(true);
+  });
+
+  test("git replace objects cannot hide a secret", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "matrix-rp-"));
+    git(dir, "init", "-q");
+    await writeFile(join(dir, "a.txt"), `k=${secret.value}\n`);
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "secret");
+    const dirty = git(dir, "rev-parse", "HEAD:a.txt");
+    const clean = execFileSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: dir,
+      input: "clean\n",
+    })
+      .toString()
+      .trim();
+    git(dir, "replace", dirty, clean);
+    const result = await runSecretGate({
+      gitDir: join(dir, ".git"),
+      secretValues: [secret],
+      skipGitleaks: true,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("scans exactly the requested push range", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "matrix-range-"));
+    git(dir, "init", "-q", "-b", "main");
+    await writeFile(join(dir, "base.txt"), "base\n");
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "base");
+    git(dir, "checkout", "-qb", "feature");
+    await writeFile(join(dir, "f.txt"), `k=${secret.value}\n`);
+    git(dir, "add", ".");
+    git(dir, "commit", "-qm", "feat");
+    const gate = (revs: string[]) =>
+      runSecretGate({
+        gitDir: join(dir, ".git"),
+        revs,
+        secretValues: [secret],
+        skipGitleaks: true,
+      });
+    expect((await gate(["main..feature"])).ok).toBe(false);
+    expect((await gate(["main"])).ok).toBe(true);
+  });
 });

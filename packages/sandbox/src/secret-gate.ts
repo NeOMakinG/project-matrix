@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Receipt } from "@matrix/core";
+import { gitLocation, safeGitEnv } from "./safe-git.js";
 
 export interface SecretFinding {
   source: "gitleaks" | "value";
@@ -13,7 +14,10 @@ export interface SecretFinding {
 }
 
 export interface SecretGateOptions {
-  repoPath: string;
+  /** Host-owned git dir (canonical `.git` or a bare clone). Never a path inside an agent worktree. */
+  gitDir: string;
+  /** Revisions to scan, e.g. `["origin/main..matrix/mx-1"]` for exactly what will be pushed. */
+  revs?: string[];
   /** Known secret values (gateway key, tokens). Matched raw, base64 (std + url) and hex encoded. */
   secretValues?: Array<{ name: string; value: string }>;
   gitleaksBinary?: string;
@@ -33,11 +37,11 @@ export interface SecretGateResult {
 function run(
   cmd: string,
   args: string[],
-  cwd: string,
+  env: Record<string, string>,
   input?: string,
 ): Promise<{ code: number; stdout: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
     const out: Buffer[] = [];
     let stderr = "";
     child.stdout.on("data", (c: Buffer) => out.push(c));
@@ -65,15 +69,33 @@ export function secretNeedles(value: string): Buffer[] {
   return [...variants].map((v) => Buffer.from(v));
 }
 
-async function scanGitleaks(repoPath: string, binary: string): Promise<SecretFinding[]> {
+/** Host-owned gitleaks config: default rules, no allowlists. Repo `.gitleaks.toml` is never read. */
+export const GITLEAKS_CONFIG = "[extend]\nuseDefault = true\n";
+
+async function scanGitleaks(
+  gitDir: string,
+  revs: string[],
+  binary: string,
+): Promise<SecretFinding[]> {
   const dir = await mkdtemp(join(tmpdir(), "matrix-gitleaks-"));
   const report = join(dir, "report.json");
+  const config = join(dir, "gitleaks.toml");
+  const ignoreDir = await mkdtemp(join(dir, "ignore-"));
+  const source = await mkdtemp(join(dir, "src-"));
   try {
+    await writeFile(config, GITLEAKS_CONFIG);
     const { code, stderr } = await run(
       binary,
       [
         "git",
-        repoPath,
+        source,
+        "--config",
+        config,
+        "--gitleaks-ignore-path",
+        ignoreDir,
+        "--ignore-gitleaks-allow",
+        "--log-opts",
+        revs.join(" "),
         "--no-banner",
         "--redact",
         "--report-format",
@@ -83,7 +105,7 @@ async function scanGitleaks(repoPath: string, binary: string): Promise<SecretFin
         "--exit-code",
         "0",
       ],
-      repoPath,
+      safeGitEnv({ GIT_DIR: gitDir }),
     );
     if (code !== 0) throw new Error(`gitleaks failed (${code}): ${stderr.trim().slice(-300)}`);
     const parsed: unknown = JSON.parse(await readFile(report, "utf8"));
@@ -101,14 +123,17 @@ async function scanGitleaks(repoPath: string, binary: string): Promise<SecretFin
 
 /** Scans every blob reachable from any ref for known secret values. */
 async function scanValues(
-  repoPath: string,
+  gitDir: string,
+  revs: string[],
   secrets: Array<{ name: string; value: string }>,
   maxBlobBytes: number,
 ): Promise<{ findings: SecretFinding[]; blobs: number }> {
   const needles = secrets.flatMap((s) =>
     secretNeedles(s.value).map((n) => ({ name: s.name, needle: n })),
   );
-  const objects = await run("git", ["rev-list", "--objects", "--all"], repoPath);
+  const git = (args: string[], input?: string) =>
+    run("git", [...gitLocation(gitDir), ...args], safeGitEnv(), input);
+  const objects = await git(["rev-list", "--objects", ...revs, "--"]);
   if (objects.code !== 0) throw new Error(`git rev-list failed: ${objects.stderr.trim()}`);
   const ids = objects.stdout
     .toString()
@@ -122,10 +147,8 @@ async function scanValues(
         : { id: l.slice(0, space), path: l.slice(space + 1) };
     });
   if (ids.length === 0) return { findings: [], blobs: 0 };
-  const check = await run(
-    "git",
+  const check = await git(
     ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-    repoPath,
     `${ids.map((i) => i.id).join("\n")}\n`,
   );
   const pathById = new Map(ids.map((i) => [i.id, i.path]));
@@ -147,12 +170,7 @@ async function scanValues(
     return true;
   });
   if (scanned.length === 0 || needles.length === 0) return { findings, blobs: scanned.length };
-  const batch = await run(
-    "git",
-    ["cat-file", "--batch"],
-    repoPath,
-    `${scanned.map((b) => b.id).join("\n")}\n`,
-  );
+  const batch = await git(["cat-file", "--batch"], `${scanned.map((b) => b.id).join("\n")}\n`);
   const data = batch.stdout;
   let offset = 0;
   for (const blob of scanned) {
@@ -177,10 +195,14 @@ async function scanValues(
 /** Gate run before any push or visibility change. Reports locations and rule names only. */
 export async function runSecretGate(options: SecretGateOptions): Promise<SecretGateResult> {
   const findings: SecretFinding[] = [];
+  const revs = options.revs ?? ["--all"];
   if (!options.skipGitleaks)
-    findings.push(...(await scanGitleaks(options.repoPath, options.gitleaksBinary ?? "gitleaks")));
+    findings.push(
+      ...(await scanGitleaks(options.gitDir, revs, options.gitleaksBinary ?? "gitleaks")),
+    );
   const values = await scanValues(
-    options.repoPath,
+    options.gitDir,
+    revs,
     options.secretValues ?? [],
     options.maxBlobBytes ?? 20 * 1024 * 1024,
   );
