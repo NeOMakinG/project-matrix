@@ -1,7 +1,8 @@
 import type { Option, Pack, Question, RuleStub } from "../types";
 import { hasGoBackend, opt } from "./helpers";
 
-const GO = ["services/api/**/*.go"];
+/** Every Go file in every module of the repo (go.mod / go.work discovered by the toolchain). */
+const GO = ["**/*.go"];
 
 const regex = (
   description: string,
@@ -17,17 +18,18 @@ const regex = (
 const imports = (
   description: string,
   importRe: string,
-  extra: { files?: string[]; except?: string[]; exceptGenerated?: boolean } = {},
+  extra: { files?: string[]; except?: string[] } = {},
 ): RuleStub => ({
   engine: "semgrep",
   description,
   check: { type: "go-imports", files: extra.files ?? GO, import: importRe, ...extra },
 });
 
-/** sqlc writes its package here; only generated files in this exact folder are exempt. */
+/**
+ * sqlc writes its package here. Files in this exact folder are exempt from the import rule only
+ * because the sqlc-generated rule proves each one is byte-for-byte `sqlc generate` output.
+ */
 const DB_PACKAGE = ["services/api/internal/db/*.go"];
-/** The entrypoint wires the connection pool. */
-const WIRING = ["services/api/cmd/api/*.go"];
 
 const LOW_LEVEL_DB = "^(database/sql|github\\.com/jackc/pgx)(/|$)";
 
@@ -112,18 +114,21 @@ export const goPack: Pack = {
               imports(
                 "Queries live in sqlc-generated code; hand-written code must not use database/sql or pgx directly.",
                 LOW_LEVEL_DB,
-                { except: [...DB_PACKAGE, ...WIRING] },
+                { except: DB_PACKAGE },
               ),
-              imports(
-                "Only sqlc-generated files may use the low-level driver inside the db package.",
-                LOW_LEVEL_DB,
-                { files: DB_PACKAGE, exceptGenerated: true },
-              ),
+              {
+                engine: "custom",
+                description:
+                  "Every file in an sqlc output package must equal `sqlc generate` output from the committed SQL (no hand-written or edited files).",
+                check: { type: "sqlc-generated" },
+              },
               imports("One data layer: no ORM next to sqlc.", "^(gorm\\.io|entgo\\.io)(/|$)"),
-              regex(
-                "SQL is never built with string concatenation or fmt.Sprintf.",
-                '\\.(Query|QueryRow|Exec)(Context)?\\([^)\\n]*(fmt\\.Sprintf|"\\s*\\+|\\+\\s*")',
-              ),
+              {
+                engine: "custom",
+                description:
+                  "Only byte-verified sqlc output may reference Query, QueryRow or Exec methods (including Context variants and method values); bootstrap wiring never issues raw SQL.",
+                check: { type: "go-db-calls", files: GO, except: DB_PACKAGE },
+              },
             ]
           : v === "gorm"
             ? [imports("One data layer: GORM; no ent next to it.", "^entgo\\.io(/|$)")]
@@ -159,7 +164,6 @@ export const goPack: Pack = {
         imports(
           "Logging goes through log/slog (structured, trace-aware), not the old log package.",
           "^log$",
-          { exceptGenerated: true },
         ),
         regex("No fmt.Print logging; use log/slog.", "\\bfmt\\.Print"),
       ],

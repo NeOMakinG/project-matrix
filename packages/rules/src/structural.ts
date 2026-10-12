@@ -99,6 +99,7 @@ const DANGEROUS = [
   /^fs:default$/,
   /^fs:.*(-all|read-all|write-all|recursive)/,
   /^fs:(allow|scope)-(home|desktop|document|download|public|picture|video|audio)/,
+  /^fs:(allow|scope)-(root|temp|localdata|data|config|cache|runtime|exe)(-|$)/,
   /^process:/,
 ];
 
@@ -114,18 +115,57 @@ function scopeFindings(id: string, scope: unknown): CapabilityFinding[] {
   for (const e of entries) {
     const path =
       typeof e === "string" ? e : typeof e === "object" && e && "path" in e ? String(e.path) : "";
-    if (!path) continue;
+    if (!path) {
+      out.push({ message: `${id} scope cannot be verified: missing path` });
+      continue;
+    }
     const p = path.normalize("NFKC").trim();
-    if (!SAFE_SCOPE_ROOTS.test(p) || p.includes(".."))
+    if (!SAFE_SCOPE_ROOTS.test(p) || p.includes("..") || p.includes("\\"))
       out.push({ message: `${id} scope "${path}" reaches outside the app's own directories` });
   }
   return out;
 }
 
-/**
- * Parses a Tauri capability file structurally. Every granted permission must be on the ADR's
- * allow-list, dangerous families are always refused, and scopes must stay inside app directories.
- */
+/** Checks one parsed capability object against the deny-list, allow-list and scope roots. */
+export function checkCapabilityObject(cap: unknown, allow: string[]): CapabilityFinding[] {
+  const allowed = new Set(allow.map(normalizePermission));
+  const out: CapabilityFinding[] = [];
+  const perms = (cap as { permissions?: unknown })?.permissions;
+  if (!Array.isArray(perms)) return [{ message: "capability has no permissions array" }];
+  for (const p of perms) {
+    const rawId =
+      typeof p === "string"
+        ? p
+        : typeof p === "object" && p && "identifier" in p
+          ? String((p as { identifier: unknown }).identifier)
+          : "";
+    const id = normalizePermission(rawId);
+    if (!id) {
+      out.push({ message: "permission without an identifier" });
+      continue;
+    }
+    if (DANGEROUS.some((re) => re.test(id)))
+      out.push({ message: `${id} is a dangerous permission family` });
+    else if (!allowed.has(id)) out.push({ message: `${id} is not on the ADR allow-list` });
+    if (typeof p === "object" && p && "allow" in p)
+      out.push(...scopeFindings(id, (p as { allow: unknown }).allow));
+  }
+  return out;
+}
+
+/** Capability files hold one capability, a list, or `{ capabilities: [...] }` (Tauri's three forms). */
+export function capabilityObjects(doc: unknown): unknown[] {
+  if (Array.isArray(doc)) return doc;
+  if (
+    doc &&
+    typeof doc === "object" &&
+    Array.isArray((doc as { capabilities?: unknown }).capabilities)
+  )
+    return (doc as { capabilities: unknown[] }).capabilities;
+  return [doc];
+}
+
+/** Parses a JSON capability file and checks every capability in it. */
 export function checkCapability(text: string, allow: string[]): CapabilityFinding[] {
   let doc: unknown;
   try {
@@ -133,33 +173,5 @@ export function checkCapability(text: string, allow: string[]): CapabilityFindin
   } catch {
     return [{ message: "capability file is not valid JSON, so it cannot be verified" }];
   }
-  const caps = Array.isArray(doc) ? doc : [doc];
-  const allowed = new Set(allow.map(normalizePermission));
-  const out: CapabilityFinding[] = [];
-  for (const cap of caps) {
-    const perms = (cap as { permissions?: unknown })?.permissions;
-    if (!Array.isArray(perms)) {
-      out.push({ message: "capability has no permissions array" });
-      continue;
-    }
-    for (const p of perms) {
-      const rawId =
-        typeof p === "string"
-          ? p
-          : typeof p === "object" && p && "identifier" in p
-            ? String((p as { identifier: unknown }).identifier)
-            : "";
-      const id = normalizePermission(rawId);
-      if (!id) {
-        out.push({ message: "permission without an identifier" });
-        continue;
-      }
-      if (DANGEROUS.some((re) => re.test(id)))
-        out.push({ message: `${id} is a dangerous permission family` });
-      else if (!allowed.has(id)) out.push({ message: `${id} is not on the ADR allow-list` });
-      if (typeof p === "object" && p && "allow" in p)
-        out.push(...scopeFindings(id, (p as { allow: unknown }).allow));
-    }
-  }
-  return out;
+  return capabilityObjects(doc).flatMap((c) => checkCapabilityObject(c, allow));
 }

@@ -46,10 +46,16 @@ export const ruleCheckSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("go-imports"),
     ...scope,
-    /** Regex tested against each Go import path (single, grouped, aliased and raw-string imports). */
+    /** Regex tested against each import path as reported by the Go toolchain (`go list`). */
     import: z.string().min(1),
-    /** Exempt files that carry Go's generated-code marker ("Code generated … DO NOT EDIT."). */
-    exceptGenerated: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("go-db-calls"),
+    ...scope,
+  }),
+  z.object({
+    type: z.literal("sqlc-generated"),
+    ...scope,
   }),
   z.object({
     type: z.literal("tauri-capabilities"),

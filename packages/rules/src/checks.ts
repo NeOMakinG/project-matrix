@@ -10,9 +10,12 @@ import {
 import picomatch from "picomatch";
 import ts from "typescript";
 import { callPatternHits } from "./callpattern";
+import { goDatabaseCallHits, goImportHits } from "./goimports";
+import type { FileImports, GoListResult } from "./golist";
 import { compileSafeRegex, MAX_REGEX_SCAN_BYTES } from "./safe";
 import type { RuleCheck } from "./schema";
-import { checkCapability, isGeneratedGo, parseGoImports } from "./structural";
+import { verifySqlc } from "./sqlc";
+import { verifyTauriCapabilities } from "./tauri";
 
 export interface Hit {
   file: string;
@@ -27,6 +30,10 @@ export interface SourceIndex {
   files: string[];
   /** Non-JS text files (Go, Rust, JSON, YAML…) scanned only by text rules. */
   textFiles: string[];
+  /** Every file in the project listing (any type). */
+  allFiles: string[];
+  /** Absolute project root on disk (empty for in-memory harness runs). */
+  root: string;
   known: ReadonlySet<string>;
   text(file: string): Promise<string>;
   imports(file: string): Promise<ImportRef[]>;
@@ -54,6 +61,17 @@ const computedHit = (file: string, ref: ImportRef): Hit => ({
   message: `computed ${ref.kind === "require" ? "require()" : "import()"} cannot be checked statically`,
   severity: "warning",
 });
+
+/** One `go list` per module per source index (one `matrix check` run). */
+const goListCaches = new WeakMap<SourceIndex, Map<string, GoListResult>>();
+const goParseCaches = new WeakMap<SourceIndex, Map<string, FileImports>>();
+
+/** Reads a file for structural checks, refusing anything above the scan cap. */
+const cappedText = (index: SourceIndex) => async (file: string) => {
+  const text = await index.text(file);
+  if (text.length > MAX_REGEX_SCAN_BYTES) throw new Error(`${file} is too large to verify`);
+  return text;
+};
 
 /** Runs one rule body against the indexed sources. */
 export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hit[]> {
@@ -107,33 +125,42 @@ export async function runCheck(check: RuleCheck, index: SourceIndex): Promise<Hi
       }
       break;
     }
-    case "go-imports": {
-      const re = compileSafeRegex(check.import, "");
-      for (const file of textFilesInScope(index, check)) {
-        if (!file.endsWith(".go")) continue;
-        const text = await index.text(file);
-        if (text.length > MAX_REGEX_SCAN_BYTES) {
-          hits.push({ file, line: 1, message: "file too large to parse imports; not scanned" });
-          continue;
-        }
-        if (check.exceptGenerated && isGeneratedGo(text)) continue;
-        for (const imp of parseGoImports(text))
-          if (re.test(imp.path))
-            hits.push({ file, line: imp.line, message: `imports "${imp.path}"` });
+    case "go-imports":
+    case "go-db-calls": {
+      const cached = goListCaches.get(index) ?? new Map();
+      goListCaches.set(index, cached);
+      const parsed = goParseCaches.get(index) ?? new Map();
+      goParseCaches.set(index, parsed);
+      const ctx = {
+        root: index.root,
+        allFiles: index.allFiles,
+        text: cappedText(index),
+        cache: cached,
+        parseCache: parsed,
+      };
+      if (check.type === "go-imports") {
+        hits.push(...(await goImportHits(ctx, check, compileSafeRegex(check.import, ""))));
+      } else {
+        hits.push(...(await goDatabaseCallHits(ctx, check)));
       }
       break;
     }
     case "tauri-capabilities": {
-      for (const file of textFilesInScope(index, check)) {
-        if (!file.endsWith(".json")) continue;
-        const text = await index.text(file);
-        if (text.length > MAX_REGEX_SCAN_BYTES) {
-          hits.push({ file, line: 1, message: "capability file too large; not verified" });
-          continue;
-        }
-        for (const f of checkCapability(text, check.allow))
-          hits.push({ file, line: 1, message: f.message });
+      for (const f of await verifyTauriCapabilities(index.allFiles, cappedText(index), check.allow))
+        hits.push({ file: f.file, line: 1, message: f.message });
+      break;
+    }
+    case "sqlc-generated": {
+      if (!index.root) {
+        hits.push({
+          file: "sqlc.yaml",
+          line: 1,
+          message: "sqlc output unverifiable: no disk root",
+        });
+        break;
       }
+      for (const f of await verifySqlc(index.root, index.allFiles))
+        hits.push({ file: f.file, line: 1, message: f.message });
       break;
     }
     case "required-header": {
@@ -154,6 +181,9 @@ export interface SourceIndexOptions {
   resolver: Resolver;
   /** Non-JS text files for regex and header rules. */
   textFiles?: string[];
+  allFiles?: string[];
+  /** Set when files live on disk, so toolchain-backed checks can run. */
+  diskRoot?: string;
 }
 
 const PROGRAM_OPTIONS: ts.CompilerOptions = {
@@ -208,6 +238,8 @@ export function createSourceIndex(
   return {
     files,
     textFiles: opts.textFiles ?? [],
+    allFiles: opts.allFiles ?? [...files, ...(opts.textFiles ?? [])],
+    root: opts.diskRoot ?? "",
     known: new Set(files),
     text,
     absolute,

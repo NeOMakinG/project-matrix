@@ -1,6 +1,7 @@
 import type { MatrixConfig } from "@matrix/config";
 import type { Files } from "./docs";
 import { goString } from "./escape";
+import sqlcOutput from "./sqlc-output.json";
 
 type GoConfig = NonNullable<MatrixConfig["backend"]["go"]>;
 
@@ -197,6 +198,8 @@ sql:
     files["services/api/internal/db/schema.sql"] =
       "-- Tables live here; `sqlc generate` turns queries.sql into typed Go.\n";
     files["services/api/internal/db/queries.sql"] = "-- name: Ping :one\nSELECT 1;\n";
+    for (const [name, content] of Object.entries(sqlcOutput[g.driver]))
+      files[`services/api/internal/db/${name}`] = content;
   }
   return files;
 }

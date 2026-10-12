@@ -40,7 +40,6 @@ export const desktopPack: Pack = {
               "Tauri capabilities grant only the allow-listed permissions; shell, process and broad filesystem families and scopes outside app directories are refused.",
             check: {
               type: "tauri-capabilities",
-              files: ["apps/desktop/src-tauri/capabilities/**"],
               allow: [
                 "core:default",
                 ...(a["desktop.updater"] === true ? ["updater:default"] : []),

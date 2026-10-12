@@ -23,6 +23,12 @@ Status: design phase. See [docs/SPIKE.md](docs/SPIKE.md) and [docs/adr/](docs/ad
 | Mobile | Expo (expo-router, TanStack Query, NativeWind/Tamagui, EAS, Maestro) | `apps/mobile` |
 | Desktop | Tauri v2 (updater, signing, least-privilege capabilities) | `apps/desktop` |
 
+Go rules read imports through the Go toolchain (`go list` and `go/parser`) across every module, sqlc output is verified by regenerating it, and Tauri capabilities are resolved from every JSON, JSON5 and TOML source; a missing toolchain fails the rule instead of passing it. These rules are defence in depth alongside the multi-model review lanes, not a replacement for them.
+
+Go/sqlc verification requires an offline OS sandbox (Linux `bwrap` or macOS `sandbox-exec`); unavailable or denied sandbox creation is an unverifiable violation. sqlc regeneration uses a disposable directory and compares exact bytes, including generator version stamps, without overwriting project files. On PRs, generated CI loads ADR policy from the base branch, never from the proposed changes.
+
+Generated Go CI probes runner-provisioned bubblewrap before verification. If installation or sandbox creation is unavailable, it fails with instructions for an administrator-approved, executable-scoped policy on a dedicated runner; it never disables AppArmor globally.
+
 It also asks which tools agents may use: browser driver (Orca browser, agent-browser, Playwright), emulator driver (Orca, agent-device, Maestro), the Figma MCP for design-first work, and extra CLIs. Each choice becomes an ADR, and ADR rules are enforced by `matrix check`.
 
 ## Agent skills

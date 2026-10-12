@@ -64,7 +64,7 @@ jobs:
           ref: ${pinned}
           path: .matrix-tool
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2${goToolchain(c)}
       - run: bun install --frozen-lockfile --cwd .matrix-tool
       - name: ADR rules (loaded from the base branch on pull requests)
         env:
@@ -79,6 +79,32 @@ jobs:
         run: bun .matrix-tool/packages/cli/src/bin.ts graph . --check
 ${extraJobs}`;
 }
+
+/** Go rules read imports through `go list` and verify sqlc output by regenerating it. */
+const goToolchain = (c: MatrixConfig) =>
+  c.backend?.kind !== "go"
+    ? ""
+    : `
+      - name: Verify offline rule toolchain sandbox
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            echo "::error::Offline rules require runner-provisioned bubblewrap. Ask the runner administrator to install it; verification fails closed."
+            exit 1
+          fi
+          if ! bwrap --die-with-parent --unshare-all --ro-bind / / --proc /proc --dev /dev -- /bin/true; then
+            echo "::error::Sandbox creation denied. Use a dedicated runner with an administrator-approved, executable-scoped sandbox policy; do not disable AppArmor globally. Verification fails closed."
+            exit 1
+          fi
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable${
+            c.backend.go?.data === "sqlc"
+              ? `
+      - uses: sqlc-dev/setup-sqlc@v4
+        with:
+          sqlc-version: "1.31.1"`
+              : ""
+          }`;
 
 const goJob = (c: MatrixConfig) =>
   c.backend?.kind !== "go"

@@ -37,6 +37,8 @@ export async function skillFiles(names: string[], dir = SKILLS_DIR): Promise<Fil
   const files: Files = {};
   for (const name of names) {
     if (!SAFE_NAME.test(name)) throw new Error(`invalid skill name: ${name}`);
+    if (!(await lstat(join(dir, name))).isDirectory())
+      throw new Error(`skill ${name} is not a regular directory`);
     const entries = await readdir(join(dir, name), { withFileTypes: true });
     for (const e of entries) {
       if (!e.isFile() || !e.name.endsWith(".md")) continue;
