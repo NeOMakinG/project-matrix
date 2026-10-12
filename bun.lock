@@ -163,6 +163,13 @@
     "packages/watch": {
       "name": "@matrix/watch",
       "version": "0.0.0",
+      "bin": {
+        "matrix-watch": "./src/bin.ts",
+      },
+      "dependencies": {
+        "@matrix/tickets": "workspace:*",
+        "zod": "^4",
+      },
     },
     "packs": {
       "name": "@matrix/packs",
