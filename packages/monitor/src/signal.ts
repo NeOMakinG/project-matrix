@@ -1,0 +1,55 @@
+import { z } from "zod";
+
+export const SignalProvider = z.enum(["sentry", "glitchtip", "posthog", "otel", "uptime"]);
+export type SignalProvider = z.infer<typeof SignalProvider>;
+
+export const SignalLevel = z.enum(["fatal", "error", "warning", "info"]);
+export type SignalLevel = z.infer<typeof SignalLevel>;
+
+export const StackFrame = z.object({
+  file: z.string(),
+  function: z.string().optional(),
+  line: z.number().int().optional(),
+  inApp: z.boolean(),
+});
+export type StackFrame = z.infer<typeof StackFrame>;
+
+/** One production occurrence (or alert), normalized across providers. */
+export const Signal = z.object({
+  id: z.string(),
+  provider: SignalProvider,
+  projectId: z.string(),
+  kind: z.enum(["error", "alert", "downtime"]),
+  title: z.string(),
+  message: z.string(),
+  level: SignalLevel,
+  occurredAt: z.iso.datetime({ offset: true }),
+  release: z.string().optional(),
+  environment: z.string().optional(),
+  exceptionType: z.string().optional(),
+  providerFingerprint: z.string().optional(),
+  frames: z.array(StackFrame),
+  users: z.number().int().nonnegative(),
+  count: z.number().int().positive(),
+  url: z.string().optional(),
+});
+export type Signal = z.infer<typeof Signal>;
+
+/**
+ * Raw signal envelope as stored by the server's webhook endpoints
+ * (structurally compatible with the server's MonitorSignal) or produced by pollers.
+ */
+export interface RawSignal {
+  source: SignalProvider | "github";
+  kind: string;
+  projectId?: string;
+  fingerprint?: string;
+  title: string;
+  payload: unknown;
+  receivedAt: string;
+}
+
+/** Port: where raw signals come from (server store, pollers, tests). */
+export interface SignalSource {
+  pull(since: string): Promise<RawSignal[]>;
+}

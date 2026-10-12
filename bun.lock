@@ -74,6 +74,11 @@
     "packages/monitor": {
       "name": "@matrix/monitor",
       "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+        "@matrix/tickets": "workspace:*",
+        "zod": "^4.6.6",
+      },
     },
     "packages/qa": {
       "name": "@matrix/qa",

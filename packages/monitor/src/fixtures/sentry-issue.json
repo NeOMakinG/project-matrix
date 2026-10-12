@@ -1,0 +1,16 @@
+{
+  "action": "created",
+  "data": {
+    "issue": {
+      "id": "4815162342",
+      "title": "TypeError: Cannot read properties of undefined (reading 'amount')",
+      "culprit": "invoiceTotal(src/billing/totals)",
+      "level": "error",
+      "count": "37",
+      "userCount": 12,
+      "firstSeen": "2026-10-12T08:00:00Z",
+      "lastSeen": "2026-10-12T09:30:00Z",
+      "permalink": "https://sentry.example.com/organizations/acme/issues/4815162342/"
+    }
+  }
+}

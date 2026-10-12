@@ -1,0 +1,34 @@
+{
+  "eventID": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "event_id": "9f8e7d6c5b4a39281706f5e4d3c2b1a0",
+  "issue_id": "913",
+  "title": "ValueError: invalid currency code 'XXX'",
+  "level": "error",
+  "dateCreated": "2026-10-12T09:10:00Z",
+  "release": "api@2.1.0",
+  "environment": "production",
+  "exception": {
+    "values": [
+      {
+        "type": "ValueError",
+        "value": "invalid currency code 'XXX'",
+        "stacktrace": {
+          "frames": [
+            {
+              "filename": "api/routes/invoices.ts",
+              "function": "createInvoice",
+              "lineno": 88,
+              "in_app": true
+            },
+            {
+              "filename": "api/billing/convert.ts",
+              "function": "convert",
+              "lineno": 12,
+              "in_app": true
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

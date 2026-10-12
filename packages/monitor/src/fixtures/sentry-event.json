@@ -1,0 +1,47 @@
+{
+  "action": "triggered",
+  "data": {
+    "event": {
+      "event_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "issue_id": "4815162342",
+      "title": "TypeError: Cannot read properties of undefined (reading 'amount')",
+      "level": "error",
+      "timestamp": 1791800000.123,
+      "release": "web@1.4.0",
+      "environment": "production",
+      "web_url": "https://sentry.example.com/organizations/acme/issues/4815162342/events/a1b2c3d4/",
+      "user": { "id": "u_42" },
+      "tags": [["release", "web@1.4.0"], ["environment", "production"]],
+      "exception": {
+        "values": [
+          {
+            "type": "TypeError",
+            "value": "Cannot read properties of undefined (reading 'amount')",
+            "stacktrace": {
+              "frames": [
+                {
+                  "filename": "node_modules/react-dom/cjs/react-dom.js",
+                  "function": "invokeGuardedCallback",
+                  "lineno": 4161,
+                  "in_app": false
+                },
+                {
+                  "filename": "src/billing/InvoiceList.tsx",
+                  "function": "InvoiceList",
+                  "lineno": 41,
+                  "in_app": true
+                },
+                {
+                  "filename": "src/billing/totals.ts",
+                  "function": "invoiceTotal",
+                  "lineno": 17,
+                  "in_app": true
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
