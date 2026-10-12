@@ -81,6 +81,7 @@
         "@matrix/graph": "workspace:*",
         "@matrix/packs": "workspace:*",
         "@matrix/rules": "workspace:*",
+        "@matrix/safe-fs": "workspace:*",
         "@matrix/tickets": "workspace:*",
         "zod": "^4",
       },

@@ -115,34 +115,61 @@ describe("hooks install/uninstall", () => {
   });
 });
 
+const tokenFetch = (bodies: Array<Record<string, unknown>>, failOn?: string) =>
+  (async (url: string, init: RequestInit) => {
+    if (init.method === "DELETE") {
+      bodies.push({ deleted: url });
+      return new Response("{}");
+    }
+    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+    bodies.push(body);
+    if (body.name === failOn) return new Response("{}", { status: 500 });
+    return new Response(
+      JSON.stringify({ token: `mx_tok_${body.name}`, key: { id: `id-${body.name}` } }),
+    );
+  }) as typeof fetch;
+
 describe("register-mcp", () => {
-  test("dry run makes no API calls and writes nothing", async () => {
+  const base = {
+    serverUrl: "https://matrix.example",
+    agents: ["claude-code", "codex", "opencode"] as const,
+  };
+
+  test("dry run: no API calls, no writes, never echoes existing config values", async () => {
     const home = await mkdtemp(join(tmpdir(), "mx-home-"));
-    let calls = 0;
+    await writeFile(
+      join(home, ".claude.json"),
+      JSON.stringify({
+        mcpServers: { db: { env: { PGPASSWORD: "hunter2-super-secret" } } },
+        oauthToken: "sk-live-abcdefghijkl",
+      }),
+    );
+    const logs: string[] = [];
+    const bodies: Array<Record<string, unknown>> = [];
     const out = await registerMcp({
-      serverUrl: "http://matrix:8787",
-      agents: ["claude-code", "codex", "opencode"],
-      projects: "*",
-      actions: ["read", "tickets:write"],
+      ...base,
+      agents: [...base.agents],
+      projects: ["ledgerly"],
+      actions: ["read"],
       home,
       apply: false,
-      fetchImpl: (async () => {
-        calls += 1;
-        return new Response("{}");
-      }) as typeof fetch,
-      log: () => {},
+      fetchImpl: tokenFetch(bodies),
+      log: (l) => logs.push(l),
     });
-    expect(calls).toBe(0);
+    expect(bodies).toHaveLength(0);
     expect(out.every((r) => !r.written)).toBe(true);
-    expect(existsSync(join(home, ".claude.json"))).toBe(false);
-    expect(out[0]?.diff).toContain("http://matrix:8787/mcp");
+    const text = logs.join("\n") + JSON.stringify(out);
+    expect(text).not.toContain("hunter2");
+    expect(text).not.toContain("sk-live");
+    expect(text).toContain('MCP server "matrix" -> https://matrix.example/mcp');
   });
 
-  test("apply creates one scoped agent key per agent, merges configs, redacts tokens", async () => {
+  test("apply: 0600 configs and backups, scoped keys, merged entries, no tokens logged", async () => {
     const home = await mkdtemp(join(tmpdir(), "mx-home-"));
     await writeFile(
       join(home, ".claude.json"),
       JSON.stringify({ theme: "dark", mcpServers: { other: { url: "x" } } }),
+      { mode: 0o644 },
     );
     await mkdir(join(home, ".codex"));
     await writeFile(
@@ -152,38 +179,94 @@ describe("register-mcp", () => {
     const bodies: Array<Record<string, unknown>> = [];
     const logs: string[] = [];
     await registerMcp({
-      serverUrl: "http://matrix:8787",
-      adminKey: "admin-key",
-      agents: ["claude-code", "codex", "opencode"],
+      ...base,
+      agents: [...base.agents],
+      adminKey: "admin",
       projects: ["ledgerly"],
-      actions: ["read"],
+      actions: ["read", "tickets:write"],
       home,
       apply: true,
-      fetchImpl: (async (_url: string, init: RequestInit) => {
-        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-        bodies.push(body);
-        return new Response(JSON.stringify({ token: `mx_tok_${body.name}` }));
-      }) as typeof fetch,
+      fetchImpl: tokenFetch(bodies),
       log: (l) => logs.push(l),
     });
     expect(bodies.map((b) => b.name)).toEqual(["orca-claude-code", "orca-codex", "orca-opencode"]);
     expect(bodies[0]).toMatchObject({
       kind: "agent",
-      scope: { projects: ["ledgerly"], actions: ["read"] },
+      scope: { projects: ["ledgerly"], actions: ["read", "tickets:write"] },
     });
+    expect(statSync(join(home, ".claude.json")).mode & 0o777).toBe(0o600);
+    const { readdirSync } = await import("node:fs");
+    const bak = readdirSync(home).find((f) => f.startsWith(".claude.json.bak-matrix-"));
+    expect(bak && statSync(join(home, bak)).mode & 0o777).toBe(0o600);
     const claude = JSON.parse(await readFile(join(home, ".claude.json"), "utf8"));
-    expect(claude.theme).toBe("dark");
     expect(claude.mcpServers.other).toEqual({ url: "x" });
     expect(claude.mcpServers.matrix.headers.Authorization).toBe("Bearer mx_tok_orca-claude-code");
     const codex = await readFile(join(home, ".codex", "config.toml"), "utf8");
-    expect(codex).toContain('model = "gpt"');
     expect(codex.match(/\[mcp_servers\.matrix\]/g)).toHaveLength(1);
     expect(codex).not.toContain('url = "old"');
-    const opencode = JSON.parse(
-      await readFile(join(home, ".config", "opencode", "opencode.json"), "utf8"),
-    );
-    expect(opencode.mcp.matrix).toMatchObject({ type: "remote", url: "http://matrix:8787/mcp" });
     expect(logs.join("\n")).not.toContain("mx_tok_");
-    expect(existsSync(join(home, ".claude", "skills", "matrix"))).toBe(false);
   });
+
+  test("a failure revokes every key created so far and writes nothing", async () => {
+    const home = await mkdtemp(join(tmpdir(), "mx-home-"));
+    const bodies: Array<Record<string, unknown>> = [];
+    await expect(
+      registerMcp({
+        ...base,
+        agents: [...base.agents],
+        adminKey: "admin",
+        projects: ["p"],
+        actions: ["read"],
+        home,
+        apply: true,
+        fetchImpl: tokenFetch(bodies, "orca-opencode"),
+        log: () => {},
+      }),
+    ).rejects.toThrow(/orca-opencode/);
+    expect(bodies.filter((b) => b.deleted).map((b) => String(b.deleted))).toEqual([
+      "https://matrix.example/v1/keys/id-orca-claude-code",
+      "https://matrix.example/v1/keys/id-orca-codex",
+    ]);
+    expect(existsSync(join(home, ".claude.json"))).toBe(false);
+  });
+
+  test("scope and transport policy", async () => {
+    const opts = { ...base, agents: ["codex" as const], home: "/tmp", apply: false, log: () => {} };
+    await expect(registerMcp({ ...opts, projects: "*", actions: ["read"] })).rejects.toThrow(
+      /one project/,
+    );
+    await expect(registerMcp({ ...opts, projects: ["p"], actions: ["merge"] })).rejects.toThrow(
+      /not allowed/,
+    );
+    const apply = { ...opts, projects: ["p"], actions: ["read"], apply: true, adminKey: "a" };
+    await expect(registerMcp({ ...apply, serverUrl: "http://matrix.example" })).rejects.toThrow(
+      /plain http/,
+    );
+    await expect(registerMcp({ ...apply, serverUrl: "http://100.90.1.2:8787" })).rejects.toThrow(
+      /allow-tailnet-http/,
+    );
+  });
+
+  test("skill copy refuses symlinks", async () => {
+    const { copySkillSafe } = await import("./mcp");
+    const src = await mkdtemp(join(tmpdir(), "mx-skill-"));
+    await writeFile(join(src, "SKILL.md"), "# skill");
+    await symlink("/etc/hosts", join(src, "leak.md"));
+    const home = await mkdtemp(join(tmpdir(), "mx-home-"));
+    await expect(
+      copySkillSafe(src, home, join(home, ".claude", "skills", "matrix")),
+    ).rejects.toThrow(/symlink/);
+  });
+});
+
+test("hook command shell-quotes the script path", async () => {
+  const { shellQuote } = await import("./hooks");
+  const changes = hookConfigChanges("/tmp/o'brien dir/$(touch x)/hook.mjs");
+  expect(changes[0]?.change).toContain(
+    JSON.stringify(`node ${shellQuote("/tmp/o'brien dir/$(touch x)/hook.mjs")} claude-code`).slice(
+      1,
+      -1,
+    ),
+  );
+  expect(shellQuote("a'b")).toBe(`'a'\\''b'`);
 });

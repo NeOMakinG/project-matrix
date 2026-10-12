@@ -13,6 +13,11 @@ EnvironmentFile=-%h/.config/matrix/orca-serve.env
 ExecStart=/usr/bin/orca serve --port ${ORCA_PORT} --pairing-address ${ORCA_PAIRING_ADDRESS} --project-root %h/matrix/projects
 Restart=on-failure
 RestartSec=5
+# `orca serve` has no bind-address flag (only --port and --pairing-address), so restrict who can
+# connect: loopback and the tailnet only. The host firewall rule in orca-serve.md is the primary
+# control; these directives are defence in depth where the user manager supports IP filtering.
+IPAddressDeny=any
+IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48
 NoNewPrivileges=yes
 PrivateTmp=yes
 

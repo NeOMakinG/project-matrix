@@ -17,7 +17,8 @@
     "@matrix/tickets": "workspace:*",
     "zod": "^4",
     "@matrix/rules": "workspace:*",
-    "@matrix/graph": "workspace:*"
+    "@matrix/graph": "workspace:*",
+    "@matrix/safe-fs": "workspace:*"
   },
   "bin": {
     "matrix": "./src/bin.ts"

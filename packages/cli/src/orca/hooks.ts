@@ -1,6 +1,7 @@
-import { chmod, copyFile, lstat, mkdir, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { chmod, lstat, mkdir, readFile, rm } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFileSafe } from "@matrix/safe-fs";
 import { HOOK_STATUS } from "./sign";
 
 export const HOOK_ASSET = fileURLToPath(
@@ -14,9 +15,14 @@ export interface ConfigChange {
   change: string;
 }
 
+/** POSIX single-quote escaping: safe for any path in a shell command string. */
+export function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 /** The exact agent-config edits that make an agent call the Matrix hook. Printed, never applied. */
 export function hookConfigChanges(script: string): ConfigChange[] {
-  const command = (agent: string) => `node ${JSON.stringify(script)} ${agent}`;
+  const command = (agent: string) => `node ${shellQuote(script)} ${agent}`;
   const claude = Object.fromEntries(
     CLAUDE_EVENTS.map((e) => [
       e,
@@ -91,13 +97,10 @@ export async function installOrcaHooks(o: HookFilesOptions): Promise<HookPlan> {
     throw new Error("a hook secret (>= 16 chars) is required with --apply");
   if (/[\r\n]/.test(o.serverUrl + o.secret))
     throw new Error("server url and secret must be single-line");
-  await assertNotSymlink(o.dir);
-  await mkdir(o.dir, { recursive: true, mode: 0o700 });
-  await assertNotSymlink(script);
-  await assertNotSymlink(env);
-  await copyFile(HOOK_ASSET, script);
-  await chmod(script, 0o755);
-  await writeFile(env, `MATRIX_URL=${o.serverUrl}\nMATRIX_ORCA_SECRET=${o.secret}\n`, {
+  const base = dirname(o.dir);
+  await mkdir(base, { recursive: true, mode: 0o700 });
+  await writeFileSafe(base, script, await readFile(HOOK_ASSET), { mode: 0o755 });
+  await writeFileSafe(base, env, `MATRIX_URL=${o.serverUrl}\nMATRIX_ORCA_SECRET=${o.secret}\n`, {
     mode: 0o600,
   });
   await chmod(env, 0o600);

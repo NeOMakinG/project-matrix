@@ -12,6 +12,16 @@ ORCA_PAIRING_ADDRESS=bosgame.<your-tailnet>.ts.net
 ENV
 ```
 
+**Required firewall (do this before starting the service).** `orca serve` has no bind-address flag, so it listens on all interfaces. Allow its port on the Tailscale interface only:
+
+```sh
+sudo ufw allow in on tailscale0 to any port 7420 proto tcp
+sudo ufw deny 7420/tcp
+sudo ufw status | grep 7420
+```
+
+The unit also sets `IPAddressDeny=any` / `IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48` as defence in depth (enforced only where the systemd user manager supports IP filtering). Check what's listening with `ss -ltnp | grep 7420`.
+
 `--pairing-address` is the host clients use to reach the runtime. Use the Tailscale name, so pairing and traffic stay on the tailnet. Make sure the port isn't open on public interfaces, for example with a host firewall rule allowing `7420/tcp` on `tailscale0` only.
 
 ## 2. Install and start the user service
@@ -41,8 +51,8 @@ Matrix's Orca workspace adapter then targets it with `environment: "bosgame"`.
 ```sh
 matrix orca hooks install --server http://bosgame.<tailnet>.ts.net:<matrix-port>                 # dry run
 MATRIX_ORCA_HOOK_SECRET=<secret> matrix orca hooks install --apply --server <url>                # writes ~/.matrix/orca only
-matrix orca register-mcp --server <url>                                                        # dry run
-MATRIX_ADMIN_KEY=<admin key> matrix orca register-mcp --server <url> --apply                     # creates scoped keys, writes configs with .bak
+matrix orca register-mcp --server <url> --project <id>                                         # dry run
+MATRIX_ADMIN_KEY=<admin key> matrix orca register-mcp --server <url> --project <id> --apply      # https, or add --allow-tailnet-http for http over Tailscale
 ```
 
 The hook secret must match the server's Orca webhook secret. The hooks command prints the agent config changes (Claude Code `hooks`, Codex `notify`, OpenCode plugin) for you to add yourself; Matrix never edits Orca's or the agents' hook configs.
