@@ -4,6 +4,8 @@ import { dirname, join } from "node:path";
 export interface TrustedWorktree {
   gitdir: string;
   commonDir: string;
+  /** HEAD when the host created the worktree; commits after it are agent work and get inspected. */
+  baseSha?: string;
 }
 
 /**

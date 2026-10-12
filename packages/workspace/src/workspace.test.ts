@@ -442,3 +442,74 @@ describe("round 3: submodules and nested repos", () => {
     await expect(port.cleanForChecks(workdir)).rejects.toThrow(/uncommitted/);
   });
 });
+
+describe("round 4: committed gitlinks", () => {
+  const sh = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], { cwd })
+      .toString()
+      .trim();
+  async function setup(ticketId: string, withBaseLink = false) {
+    const repoPath = await repo();
+    if (withBaseLink) {
+      sh(
+        repoPath,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        `160000,${sh(repoPath, "rev-parse", "HEAD")},vendor/lib`,
+      );
+      sh(repoPath, "commit", "-qm", "base submodule");
+    }
+    const ws = new NativeWorkspace({ root: await mkdtemp(join(tmpdir(), "matrix-ws-")) });
+    const { workdir } = await ws.prepare({
+      projectId: "p",
+      ticketId,
+      repoPath,
+      branch: `matrix/${ticketId}`,
+      baseBranch: "main",
+    });
+    return {
+      workdir,
+      port: new WorktreeGitPort({ trusted: ws.trusted }),
+      attacker: sh(repoPath, "rev-parse", "HEAD"),
+    };
+  }
+
+  test("PoC: gitlink committed then unstaged is caught", async () => {
+    const { workdir, port, attacker } = await setup("G1");
+    sh(workdir, "update-index", "--add", "--cacheinfo", `160000,${attacker},evil`);
+    sh(workdir, "commit", "-qm", "sneak submodule");
+    sh(workdir, "rm", "-q", "--cached", "evil");
+    await expect(port.isClean(workdir)).rejects.toThrow(/tampering: gitlink evil in HEAD/);
+  });
+
+  test("gitlink added then removed inside the range is caught", async () => {
+    const { workdir, port, attacker } = await setup("G2");
+    sh(workdir, "update-index", "--add", "--cacheinfo", `160000,${attacker},evil`);
+    sh(workdir, "commit", "-qm", "add");
+    sh(workdir, "rm", "-q", "--cached", "evil");
+    sh(workdir, "commit", "-qm", "remove");
+    await expect(port.headSha(workdir)).rejects.toThrow(/tampering: gitlink evil in commit/);
+  });
+
+  test("an unchanged gitlink from the trusted base is allowed; repointing it is not", async () => {
+    const { workdir, port } = await setup("G3", true);
+    expect(await port.isClean(workdir)).toBe(true);
+    sh(workdir, "update-index", "--cacheinfo", `160000,${"1".repeat(40)},vendor/lib`);
+    await expect(port.isClean(workdir)).rejects.toThrow(/gitlink vendor\/lib in the index/);
+  });
+
+  test("index must equal HEAD", async () => {
+    const { workdir, port } = await setup("G4");
+    await writeFile(join(workdir, "staged.ts"), "x");
+    sh(workdir, "add", "staged.ts");
+    expect(await port.isClean(workdir)).toBe(false);
+  });
+
+  test("nested .GIT is detected case-insensitively", async () => {
+    const { workdir, port } = await setup("G5");
+    const { mkdir: md } = await import("node:fs/promises");
+    await md(join(workdir, "x", ".GIT"), { recursive: true });
+    await expect(port.headSha(workdir)).rejects.toThrow(/nested git/);
+  });
+});

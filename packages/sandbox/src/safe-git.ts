@@ -95,7 +95,8 @@ export async function findNestedGitEntries(
       if (seen > maxEntries)
         throw new Error(`worktree ${workdir} has more than ${maxEntries} entries`);
       const full = join(dir, entry.name);
-      if (entry.name === ".git") {
+      // Case-insensitive: ".GIT" is a git dir on case-insensitive filesystems.
+      if (entry.name.toLowerCase() === ".git") {
         if (dir !== workdir) found.push(full);
         continue;
       }
