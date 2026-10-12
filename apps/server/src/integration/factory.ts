@@ -1,13 +1,11 @@
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createCompoundHandler } from "@matrix/compound";
 import {
   createDefaultHandlers,
   EventBus,
-  HoldoutStore,
   MemoryStore,
   PgStore,
   Reconciler,
@@ -15,15 +13,21 @@ import {
 } from "@matrix/core";
 import { GatewayLlm, type LlmClient } from "@matrix/monitor";
 import type { TicketStore } from "@matrix/tickets";
-import { runWatch } from "@matrix/watch";
+import { fileProposals, runWatch, SeenStore } from "@matrix/watch";
+import { PrivateState } from "../private-state.js";
+import { PrivateStateOwner } from "../state-owner.js";
 import { repoKnowledge } from "./knowledge.js";
 import { fakeTriageLlm, ServerMonitor } from "./monitor.js";
 import type { NativeRuntimeOptions } from "./native-runtime.js";
+import { publishOwnedFile } from "./owned-files.js";
+import { OwnedHoldoutStore } from "./owned-holdout.js";
+import { ownedExternalTickets } from "./owned-tickets.js";
 import { RealCore } from "./real-core.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
 import type { TicketBinaries, TicketSettings } from "./tickets.js";
 
 export interface FactoryOptions {
+  stateOwner?: PrivateStateOwner;
   runtime: RuntimeKind;
   /** Required for the native and orca runtimes. */
   native?: Omit<NativeRuntimeOptions, "workspace" | "dataDir">;
@@ -52,18 +56,21 @@ export async function initProjectRepo(
   repoPath: string,
   tickets: TicketSettings,
   binaries: TicketBinaries = {},
+  owner?: PrivateStateOwner,
 ): Promise<void> {
-  const git = (...args: string[]) => run("git", ["-C", repoPath, ...args]);
+  const execute = async (binary: string, args: string[], options: { cwd?: string } = {}) => {
+    owner?.assertOwned();
+    const result = await run(binary, args, { ...options, signal: owner?.signal });
+    owner?.assertOwned();
+    return result;
+  };
+  const git = (...args: string[]) => execute("git", ["-C", repoPath, ...args]);
   await git("init", "-q", "-b", "main");
   await git("config", "user.name", "Project Matrix");
   await git("config", "user.email", "matrix@localhost");
-  await writeFile(join(repoPath, "README.md"), "# New project\n\nCreated by Project Matrix.\n", {
-    flag: "wx",
-  }).catch(() => undefined);
-  await git("add", "README.md");
-  await git("commit", "-q", "-m", "chore: initial commit");
+  await git("commit", "--allow-empty", "-q", "-m", "chore: initial commit");
   if (tickets.kind === "beads") {
-    await run(
+    await execute(
       binaries.bd ?? "bd",
       ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
       {
@@ -93,40 +100,62 @@ function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
   } as TicketStore;
 }
 
-export async function createFactory(options: FactoryOptions) {
+async function createOwnedFactory(
+  options: FactoryOptions,
+  stateOwner: PrivateStateOwner,
+  ownsOwnership: boolean,
+) {
   const log = options.log ?? ((m: string) => console.log(m));
   const runtime = createRuntime(
     options.runtime,
-    options.native ? { ...options.native, dataDir: options.dataDir } : undefined,
+    options.native ? { ...options.native, dataDir: options.dataDir, stateOwner } : undefined,
   );
   mkdirSync(join(options.dataDir, "projects"), { recursive: true, mode: 0o700 });
   mkdirSync(join(options.dataDir, "holdout"), { recursive: true, mode: 0o700 });
 
-  const store: Store & { close?: () => Promise<void> } = options.databaseUrl
-    ? await PgStore.connect(options.databaseUrl, { migrate: true })
+  const rawStore: Store & { close?: () => Promise<void> } = options.databaseUrl
+    ? await PgStore.connect(options.databaseUrl, {
+        migrate: true,
+        assertOwned: () => stateOwner.assertOwned(),
+        signal: stateOwner.signal,
+      })
     : new MemoryStore();
+  const store = stateOwner.fence(rawStore);
   const bus = new EventBus();
-  const holdout = new HoldoutStore(join(options.dataDir, "holdout"));
+  const holdout = new OwnedHoldoutStore(join(options.dataDir, "holdout"), stateOwner);
   const handlers = {
     ...createDefaultHandlers({ ...runtime.deps, store, holdout }),
-    compound: createCompoundHandler({ store }),
+    compound: createCompoundHandler({
+      store,
+      publish: async (root, path, content) => {
+        publishOwnedFile({ root, path, content, replace: true, owner: stateOwner });
+      },
+    }),
   };
 
   let core: RealCore | undefined;
   const tickets = (projectId: string) =>
-    lazyTickets(async () => {
-      if (!core) throw new Error("factory not ready");
-      return core.ticketStore(projectId);
-    });
+    stateOwner.fence(
+      lazyTickets(async () => {
+        if (!core) throw new Error("factory not ready");
+        return core.ticketStore(projectId);
+      }),
+    );
 
   const reconciler = new Reconciler({
     store,
     bus,
     handlers,
-    workspace: runtime.workspace,
-    git: runtime.git,
+    workspace: stateOwner.fence(runtime.workspace),
+    git: stateOwner.fence(runtime.git),
     tickets,
-    limits: { perProject: 4, perModel: {}, defaultPerModel: 4, perHost: {}, defaultPerHost: 8 },
+    limits: {
+      perProject: options.runtime === "fake" ? 4 : 1,
+      perModel: {},
+      defaultPerModel: options.runtime === "fake" ? 4 : 1,
+      perHost: {},
+      defaultPerHost: options.runtime === "fake" ? 8 : 1,
+    },
     backoff: { baseMs: 5_000, maxMs: 10 * 60_000 },
     host: options.host,
     scratchRoot: join(options.dataDir, "scratch"),
@@ -138,20 +167,39 @@ export async function createFactory(options: FactoryOptions) {
       : (() => {
           if (!options.gateway)
             throw new Error("MATRIX_GATEWAY_URL and MATRIX_GATEWAY_KEY are required");
-          return new GatewayLlm(options.gateway);
+          return new GatewayLlm({ ...options.gateway, signal: stateOwner.signal });
         })();
 
   const monitor = new ServerMonitor({
+    stateOwner,
+    dataDir: options.dataDir,
+    repoPath: async (projectId) => {
+      const project = await store.getProject(projectId);
+      if (!project) throw new Error("monitor project not found");
+      return project.repoPath;
+    },
+    trackerVisibility: async (projectId) => {
+      const project = await store.getProject(projectId);
+      const settings = (project as import("./mapping.js").StoredProject | null)?.matrix?.tickets;
+      return settings?.kind === "github" ? "public" : "private";
+    },
     llm,
     model: options.triageModel ?? "gpt-6.1-sol",
     tickets: async (projectId) => {
       if (!core) throw new Error("factory not ready");
-      return core.ticketStore(projectId);
+      return ownedExternalTickets(
+        await core.ticketStore(projectId),
+        stateOwner,
+        join(options.dataDir, "projects", `${projectId}.monitor-tickets.json`),
+      );
     },
     projectIds: async () => (await store.listProjects()).map((p) => p.id),
   });
 
   core = new RealCore({
+    stateOwner,
+    fakeRuntime: options.runtime === "fake",
+    stateFile: join(options.dataDir, "core-state.json"),
     store,
     bus,
     reconciler,
@@ -159,43 +207,102 @@ export async function createFactory(options: FactoryOptions) {
     host: options.host,
     knowledge: repoKnowledge,
     monitor,
-    initRepo: (repoPath, tickets) => initProjectRepo(repoPath, tickets, options.binaries),
+    initRepo: (repoPath, tickets) =>
+      initProjectRepo(repoPath, tickets, options.binaries, stateOwner),
     ...(options.binaries ? { binaries: options.binaries } : {}),
   });
 
   const timers: ReturnType<typeof setInterval>[] = [];
+  const activeLoops = new Map<string, Promise<unknown>>();
+  const watchState = new PrivateState<{ nextAt: number }>(
+    join(options.dataDir, "watch-schedule.json"),
+    stateOwner,
+  );
+  const watchSchedule = watchState.load({ nextAt: 0 });
   const loop = {
     lastTickAt: undefined as string | undefined,
     lastError: undefined as string | undefined,
   };
+  const halt = () => {
+    for (const timer of timers) clearInterval(timer);
+    timers.length = 0;
+    reconciler.stop();
+  };
+  stateOwner.signal.addEventListener("abort", halt, { once: true });
   const guarded = (name: string, fn: () => Promise<unknown>) => async () => {
+    if (activeLoops.has(name)) return;
+    const pending = Promise.resolve().then(() => {
+      stateOwner.assertOwned();
+      return stateOwner.guard(fn);
+    });
+    activeLoops.set(name, pending);
     try {
-      await fn();
+      await pending;
     } catch (error) {
       log(`${name} failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      activeLoops.delete(name);
     }
   };
 
   const watchAll = async () => {
+    if (Date.now() < watchSchedule.nextAt) return;
     for (const project of await store.listProjects()) {
-      const result = await runWatch({
+      const result = await stateOwner.guard(() =>
+        runWatch({
+          root: project.repoPath,
+          dryRun: true,
+          http: { signal: stateOwner.signal },
+          ...(options.gateway
+            ? {
+                gateway: {
+                  baseUrl: options.gateway.baseUrl,
+                  apiKey: options.gateway.apiKey,
+                  model: options.triageModel ?? "gpt-6.1-sol",
+                  signal: stateOwner.signal,
+                },
+              }
+            : {}),
+        }),
+      );
+      if (result.errors.length)
+        throw new Error(
+          `watch had ${result.errors.length} collection errors; retrying before checkpoint`,
+        );
+      stateOwner.assertOwned();
+      publishOwnedFile({
         root: project.repoPath,
-        tickets: await (core as RealCore).ticketStore(project.id),
-        ...(options.gateway
-          ? {
-              gateway: {
-                baseUrl: options.gateway.baseUrl,
-                apiKey: options.gateway.apiKey,
-                model: options.triageModel ?? "gpt-6.1-sol",
-              },
-            }
-          : {}),
+        path: join(project.repoPath, ".matrix", "watch", `digest-${result.week}.md`),
+        content: result.digest,
+        replace: true,
+        owner: stateOwner,
       });
-      log(`watch ${project.id}: ${result.relevant} relevant, ${result.tickets.length} tickets`);
+      const tracker = ownedExternalTickets(
+        await (core as RealCore).ticketStore(project.id),
+        stateOwner,
+        join(options.dataDir, "projects", `${project.id}.watch-tickets.json`),
+      );
+      result.tickets = await fileProposals(tracker, result.scored, 0.5);
+      const seenStore = new SeenStore(project.repoPath);
+      const seen = await stateOwner.guard(() => seenStore.load());
+      for (const item of result.scored) seen.add(item.id);
+      publishOwnedFile({
+        root: project.repoPath,
+        path: seenStore.path,
+        content: `${JSON.stringify([...seen].sort())}\n`,
+        replace: true,
+        owner: stateOwner,
+      });
+      log(
+        `watch ${project.id}: ${result.relevant.length} relevant, ${result.tickets.length} tickets`,
+      );
     }
+    watchSchedule.nextAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
+    watchState.save(watchSchedule);
   };
 
   return {
+    stateOwner,
     core,
     store,
     bus,
@@ -214,6 +321,8 @@ export async function createFactory(options: FactoryOptions) {
     },
     /** Starts the reconcile, monitor and (optional) weekly watch loops. */
     start() {
+      stateOwner.assertOwned();
+      if (timers.length) return;
       const tick = async () => {
         try {
           await reconciler.tick();
@@ -225,19 +334,46 @@ export async function createFactory(options: FactoryOptions) {
         }
       };
       const monitorTick = guarded("monitor", () => monitor.tick());
-      timers.push(setInterval(tick, options.tickMs ?? 5_000));
+      timers.push(setInterval(guarded("reconcile", tick), options.tickMs ?? 5_000));
       timers.push(setInterval(monitorTick, options.monitorMs ?? 30_000));
-      if (options.watch)
-        timers.push(setInterval(guarded("watch", watchAll), 7 * 24 * 60 * 60 * 1000));
+      if (options.watch) {
+        const watchTick = guarded("watch", watchAll);
+        timers.push(setInterval(watchTick, 60 * 60 * 1000));
+        void watchTick();
+      }
       for (const t of timers) t.unref?.();
     },
     async stop() {
-      for (const t of timers) clearInterval(t);
-      reconciler.stop();
-      await reconciler.idle();
-      await store.close?.();
+      halt();
+      if (!stateOwner.signal.aborted) {
+        await stateOwner
+          .guard(() => Promise.allSettled([...activeLoops.values()]))
+          .catch(() => undefined);
+        reconciler.stop();
+        if (!stateOwner.signal.aborted)
+          await stateOwner.guard(() => reconciler.idle()).catch(() => undefined);
+      }
+      stateOwner.signal.removeEventListener("abort", halt);
+      await rawStore.close?.();
+      if (ownsOwnership) await stateOwner.close();
     },
   };
 }
 
 export type Factory = Awaited<ReturnType<typeof createFactory>>;
+
+export async function createFactory(options: FactoryOptions) {
+  const stateOwner = options.stateOwner ?? new PrivateStateOwner(options.dataDir);
+  try {
+    stateOwner.assertDirectory(options.dataDir);
+    stateOwner.claimFactory();
+    return await createOwnedFactory(
+      { ...options, dataDir: stateOwner.directory },
+      stateOwner,
+      !options.stateOwner,
+    );
+  } catch (error) {
+    if (!options.stateOwner) await stateOwner.close();
+    throw error;
+  }
+}

@@ -42,6 +42,8 @@ export function fakeRuntime(): Runtime {
     if (req.prompt.includes("acceptance scenarios")) return { summary: SCENARIOS };
     if (req.phase === "review") return { summary: '{"findings":[]}' };
     if (req.phase === "qa") return { summary: '{"verdicts":[{"id":"s1","satisfied":true}]}' };
+    if (req.phase === "spike") return { summary: "plan: 3 steps (fake runtime)" };
+    if (req.phase === "implement") return { summary: "implemented (fake runtime)" };
     return { summary: "" };
   });
   return {

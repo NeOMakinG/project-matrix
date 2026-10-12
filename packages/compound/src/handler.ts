@@ -8,6 +8,7 @@ export interface CompoundDeps {
   proposer?: Proposer;
   humanComments?: (projectId: string, ticketId: string) => Promise<HumanComment[]>;
   now?: () => Date;
+  publish?: (root: string, path: string, content: string) => Promise<void>;
 }
 
 /**
@@ -22,7 +23,7 @@ export function createCompoundHandler(deps: CompoundDeps): PhaseHandler {
       lessons,
       deps.proposer ? { proposer: deps.proposer } : {},
     );
-    const store = new LessonStore(ctx.project.repoPath, deps.store, deps.now);
+    const store = new LessonStore(ctx.project.repoPath, deps.store, deps.now, deps.publish);
     const ids: string[] = [];
     for (const proposal of proposals) {
       const candidate = await store.upsert(ctx.project.id, proposal);

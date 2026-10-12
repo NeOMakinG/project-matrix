@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdir, realpath } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import {
   type AutonomyMode,
   type EventBus,
@@ -32,6 +32,8 @@ import {
   type Run,
   type Adr as ServerAdr,
 } from "../core-port.js";
+import { PrivateState } from "../private-state.js";
+import type { PrivateStateOwner } from "../state-owner.js";
 import { finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
 import {
@@ -44,7 +46,7 @@ import {
 export interface KnowledgePort {
   adrs(repoPath: string): Promise<ServerAdr[]>;
   graph(repoPath: string): Promise<ProductGraph>;
-  checks(repoPath: string): Promise<CheckResult>;
+  checks(repoPath: string, baseBranch?: string): Promise<CheckResult>;
 }
 
 export interface MonitorPort {
@@ -53,6 +55,9 @@ export interface MonitorPort {
 }
 
 export interface RealCoreOptions {
+  stateOwner?: PrivateStateOwner;
+  fakeRuntime?: boolean;
+  stateFile?: string;
   store: Store;
   bus: EventBus;
   reconciler: Reconciler;
@@ -88,8 +93,38 @@ export class RealCore implements CorePort {
   private settings: Record<string, unknown> = {};
   private readonly orca: OrcaStatus[] = [];
   readonly modelHealth: ModelHealth[] = [];
+  private readonly state: PrivateState<{ inits: InitSession[]; settings: Record<string, unknown> }>;
+  private readonly mutations = new Map<string, Promise<unknown>>();
 
-  constructor(private readonly o: RealCoreOptions) {}
+  constructor(private readonly o: RealCoreOptions) {
+    this.state = new PrivateState(o.stateFile, o.stateOwner);
+    const saved = this.state.load({ inits: [], settings: {} });
+    for (const session of saved.inits) this.inits.set(session.id, session);
+    this.settings = saved.settings;
+  }
+
+  private persist(): void {
+    this.o.stateOwner?.assertOwned();
+    this.state.save({ inits: [...this.inits.values()], settings: this.settings });
+  }
+
+  get stateOwner(): PrivateStateOwner | undefined {
+    return this.o.stateOwner;
+  }
+
+  private async mutate<T>(key: string, action: () => Promise<T>): Promise<T> {
+    this.o.stateOwner?.assertOwned();
+    const previous = this.mutations.get(key) ?? Promise.resolve();
+    const pending = previous
+      .catch(() => undefined)
+      .then(() => (this.o.stateOwner ? this.o.stateOwner.guard(action) : action()));
+    this.mutations.set(key, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.mutations.get(key) === pending) this.mutations.delete(key);
+    }
+  }
 
   async ticketStore(projectId: string): Promise<TicketStore> {
     const cached = this.ticketStores.get(projectId);
@@ -101,9 +136,12 @@ export class RealCore implements CorePort {
           project.repoPath,
           project.matrix?.tickets ?? DEFAULT_TICKETS,
           this.o.binaries,
+          this.o.stateOwner,
         );
-    this.ticketStores.set(projectId, store);
-    return store;
+    this.o.stateOwner?.assertOwned();
+    const owned = this.o.stateOwner?.fence(store) ?? store;
+    this.ticketStores.set(projectId, owned);
+    return owned;
   }
 
   private async config(projectId: string): Promise<StoredProject> {
@@ -130,10 +168,13 @@ export class RealCore implements CorePort {
     tickets?: TicketSettings;
     checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
   }): Promise<Project> {
+    this.o.stateOwner?.assertOwned();
     const id = randomUUID();
     const repoPath = join(this.o.projectsRoot, id);
     await mkdir(repoPath, { recursive: true });
+    this.o.stateOwner?.assertOwned();
     await this.o.initRepo?.(repoPath, input.tickets ?? DEFAULT_TICKETS);
+    this.o.stateOwner?.assertOwned();
     const config = newProjectConfig({
       id,
       name: input.name,
@@ -146,14 +187,30 @@ export class RealCore implements CorePort {
         createdAt: new Date().toISOString(),
       },
     });
+    if (this.o.fakeRuntime)
+      config.models = {
+        implement: { runner: "claude-code", model: "fake-implementer" },
+        review: { runner: "codex", model: "fake-reviewer" },
+      };
     if (input.checks) config.checks = input.checks;
     await this.o.store.upsertProject(config);
     return toProject(config);
   }
 
-  async setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode): Promise<Project> {
+  async getProjectPolicy(projectId: string) {
+    if (!(await this.o.store.getProject(projectId))) return null;
+    const snapshot = await this.o.store.getProjectPolicy(projectId);
+    return { project: toProject(snapshot.project as StoredProject), version: snapshot.version };
+  }
+
+  async setAutonomy(
+    projectId: string,
+    phase: Phase,
+    mode: AutonomyMode,
+    actor: Actor,
+  ): Promise<Project> {
     await this.config(projectId);
-    await this.o.reconciler.setAutonomy(projectId, phase, mode, "server");
+    await this.o.reconciler.setAutonomy(projectId, phase, mode, actor.id);
     return toProject(await this.config(projectId));
   }
 
@@ -161,13 +218,9 @@ export class RealCore implements CorePort {
     projectId: string,
     policy: Partial<Record<Phase, AutonomyMode>>,
     actor: Actor,
+    expected?: string,
   ): Promise<Project> {
-    const config = await this.config(projectId);
-    // One config write applies every phase; history entries follow.
-    await this.o.store.upsertProject({ ...config, autonomy: { ...config.autonomy, ...policy } });
-    for (const [phase, mode] of Object.entries(policy) as [Phase, AutonomyMode][]) {
-      await this.o.reconciler.setAutonomy(projectId, phase, mode, actor.id);
-    }
+    await this.o.store.setAutonomyPolicy(projectId, policy, actor.id, expected);
     return toProject(await this.config(projectId));
   }
 
@@ -377,71 +430,104 @@ export class RealCore implements CorePort {
   }
 
   async getChecks(projectId: string): Promise<CheckResult | null> {
-    return this.o.knowledge.checks((await this.config(projectId)).repoPath);
+    const project = await this.config(projectId);
+    return this.o.knowledge.checks(project.repoPath, project.baseBranch);
   }
 
   // ── init interview sessions ──────────────────────────────────────────────────────────────────
 
   async startInit(projectId: string): Promise<InitSession> {
-    await this.config(projectId);
+    const project = await this.config(projectId);
+    this.o.stateOwner?.assertOwned();
     const session: InitSession = {
       id: randomUUID(),
       projectId,
-      answers: {},
+      answers: { "process.tickets": project.matrix?.tickets.kind ?? DEFAULT_TICKETS.kind },
       state: "in_progress",
       createdAt: new Date().toISOString(),
     };
     this.inits.set(session.id, session);
-    return session;
+    this.persist();
+    return structuredClone(session);
   }
 
   async answerInit(sessionId: string, answers: Record<string, unknown>): Promise<InitSession> {
-    const session = this.inits.get(sessionId);
-    if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
-    const updated = { ...session, answers: { ...session.answers, ...answers } };
-    this.inits.set(sessionId, updated);
-    return updated;
+    return this.mutate(`init:${this.inits.get(sessionId)?.projectId ?? sessionId}`, async () => {
+      const session = this.inits.get(sessionId);
+      if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+      if (session.state === "completed")
+        throw new CoreError("conflict", "the interview is already finalized");
+      const updated = { ...session, answers: { ...session.answers, ...answers } };
+      this.inits.set(sessionId, updated);
+      this.persist();
+      return structuredClone(updated);
+    });
   }
 
   async replaceInitAnswers(
     sessionId: string,
     answers: Record<string, unknown>,
   ): Promise<InitSession> {
-    const session = this.inits.get(sessionId);
-    if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
-    if (session.state === "completed")
-      throw new CoreError("conflict", "the interview is already finalized");
-    const updated = { ...session, answers };
-    this.inits.set(sessionId, updated);
-    return updated;
+    return this.mutate(`init:${this.inits.get(sessionId)?.projectId ?? sessionId}`, async () => {
+      const session = this.inits.get(sessionId);
+      if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+      if (session.state === "completed")
+        throw new CoreError("conflict", "the interview is already finalized");
+      const updated = { ...session, answers };
+      this.inits.set(sessionId, updated);
+      this.persist();
+      return structuredClone(updated);
+    });
   }
 
   async finalizeInit(
     sessionId: string,
     options: { acceptRecommended?: boolean } = {},
   ): Promise<InitSession> {
-    const session = this.inits.get(sessionId);
-    if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
-    if (session.state === "completed" && session.result) return session;
-    const project = await this.config(session.projectId);
-    const { result } = await finalizeProject({
-      project,
-      answers: session.answers,
-      acceptRecommended: options.acceptRecommended === true,
-      store: this.o.store,
-      tickets: await this.ticketStore(session.projectId),
+    return this.mutate(`init:${this.inits.get(sessionId)?.projectId ?? sessionId}`, async () => {
+      const session = this.inits.get(sessionId);
+      if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+      const project = await this.config(session.projectId);
+      const expected = resolve(this.o.projectsRoot, project.id);
+      if (
+        resolve(project.repoPath) !== expected ||
+        (await lstat(expected)).isSymbolicLink() ||
+        (await realpath(expected)) !== join(await realpath(this.o.projectsRoot), project.id)
+      )
+        throw new CoreError(
+          "forbidden",
+          "project repo is outside the allowed directory or uses symlinks",
+        );
+      const { result, effectiveAnswers } = await finalizeProject({
+        stateOwner: this.o.stateOwner,
+        sessionId: session.id,
+        ...(session.state === "completed" && session.result?.status === "ok"
+          ? { completedCommit: session.result.commit }
+          : {}),
+        project,
+        answers: session.answers,
+        acceptRecommended: options.acceptRecommended === true,
+        store: this.o.store,
+        tickets: await this.ticketStore(session.projectId),
+        journalFile: this.o.stateFile
+          ? join(this.o.projectsRoot, `${project.id}.init.json`)
+          : undefined,
+      });
+      this.o.stateOwner?.assertOwned();
+      const updated: InitSession = {
+        ...session,
+        ...(result.status === "ok" && effectiveAnswers ? { answers: effectiveAnswers } : {}),
+        result,
+        state: result.status === "ok" ? "completed" : "in_progress",
+      };
+      this.inits.set(sessionId, updated);
+      this.persist();
+      return structuredClone(updated);
     });
-    const updated: InitSession = {
-      ...session,
-      result,
-      state: result.status === "ok" ? "completed" : "in_progress",
-    };
-    this.inits.set(sessionId, updated);
-    return updated;
   }
 
   async getInit(sessionId: string): Promise<InitSession | null> {
-    return this.inits.get(sessionId) ?? null;
+    return structuredClone(this.inits.get(sessionId) ?? null);
   }
 
   // ── settings, monitor, Orca, gateway ─────────────────────────────────────────────────────────
@@ -451,7 +537,9 @@ export class RealCore implements CorePort {
   }
 
   async updateSettings(patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+    this.o.stateOwner?.assertOwned();
     this.settings = { ...this.settings, ...patch };
+    this.persist();
     return this.settings;
   }
 

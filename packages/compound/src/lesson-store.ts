@@ -30,6 +30,11 @@ export class LessonStore {
     private readonly root: string,
     private readonly index?: Store,
     private readonly now: () => Date = () => new Date(),
+    private readonly publish: (
+      root: string,
+      path: string,
+      content: string,
+    ) => Promise<void> = writeFileSafe,
   ) {
     this.dir = join(root, ".matrix", "lessons");
   }
@@ -41,7 +46,7 @@ export class LessonStore {
 
   private async write(candidate: Candidate): Promise<Candidate> {
     const valid = CandidateSchema.parse(candidate);
-    await writeFileSafe(this.root, this.path(valid.id), `${JSON.stringify(valid, null, 2)}\n`);
+    await this.publish(this.root, this.path(valid.id), `${JSON.stringify(valid, null, 2)}\n`);
     if (this.index) {
       await this.index.addLesson({
         projectId: valid.projectId,

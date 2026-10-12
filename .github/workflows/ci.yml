@@ -8,23 +8,30 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: matrix
+          POSTGRES_DB: matrix
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U matrix -d matrix"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      MATRIX_TEST_DATABASE_URL: postgres://matrix@127.0.0.1:5432/matrix
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.9
       - name: Install gitleaks (pinned, checksum verified)
-        env:
-          GITLEAKS_VERSION: 8.30.1
-          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         run: |
           set -euo pipefail
-          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLo "/tmp/${archive}" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
-          echo "${GITLEAKS_SHA256}  /tmp/${archive}" | sha256sum -c -
-          mkdir -p "$HOME/.local/bin"
-          tar -xzf "/tmp/${archive}" -C "$HOME/.local/bin" gitleaks
+          bash ops/bosgame/install-gitleaks.sh "$HOME/.local/bin/gitleaks"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/gitleaks" version
+      - name: Secret scan (fail closed)
+        run: gitleaks dir . --redact --no-banner
       - run: bun install --frozen-lockfile
       - run: bun run check

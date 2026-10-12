@@ -9,6 +9,21 @@ const dns = (map: Record<string, string[]>) => async (host: string) =>
   map[host] ?? ["93.184.216.34"];
 
 describe("SSRF guard", () => {
+  test("ownership cancellation prevents DNS or transport work", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("ownership lost"));
+    await expect(
+      getText("https://example.com", {
+        signal: controller.signal,
+        resolve: async () => {
+          throw new Error("unexpected DNS request");
+        },
+        transport: async () => {
+          throw new Error("unexpected transport request");
+        },
+      }),
+    ).rejects.toThrow("ownership lost");
+  });
   test.each([
     "127.0.0.1",
     "10.1.2.3",

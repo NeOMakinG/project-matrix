@@ -7,6 +7,7 @@ export interface GatewayConfig {
   model: string;
   fetch?: Fetch;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }
 
 export function extractJsonBlock(text: string): unknown {
@@ -32,6 +33,7 @@ export async function completeJson<S extends z.ZodType>(
   ];
   let lastError = "";
   for (let attempt = 0; attempt < 2; attempt++) {
+    gateway.signal?.throwIfAborted();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), gateway.timeoutMs ?? 120_000);
     try {
@@ -52,15 +54,17 @@ export async function completeJson<S extends z.ZodType>(
               ]
             : messages,
         }),
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, ...(gateway.signal ? [gateway.signal] : [])]),
       });
       if (!res.ok) throw new Error(`gateway ${res.status}`);
       const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+      gateway.signal?.throwIfAborted();
       const content = data.choices?.[0]?.message?.content ?? "";
       const parsed = schema.safeParse(extractJsonBlock(content));
       if (parsed.success) return parsed.data;
       lastError = parsed.error.message.slice(0, 500);
     } catch (error) {
+      gateway.signal?.throwIfAborted();
       lastError = (error as Error).message;
       if (/gateway (401|403)/.test(lastError)) break;
     } finally {

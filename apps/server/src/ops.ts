@@ -1,4 +1,5 @@
 import type { AutonomyMode, Phase } from "@matrix/core";
+import { AutonomyConflictError } from "@matrix/core";
 import type { NewTicket, TicketPatch, TicketQuery } from "@matrix/tickets";
 import { type Guard, type GuardedOp, HttpError, type Principal } from "./auth/guard.js";
 import {
@@ -36,6 +37,8 @@ async function core<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
+    if (error instanceof AutonomyConflictError)
+      throw new HttpError(412, "precondition_failed", error.message);
     if (error instanceof CoreError) {
       const status = error.code === "not_found" ? 404 : error.code === "forbidden" ? 403 : 409;
       throw new HttpError(status, error.code, error.message);
@@ -125,13 +128,26 @@ export class Operations {
     return this.op(p, "admin", "/projects")(() => this.core.createProject(input));
   }
 
+  getProjectPolicy(p: Principal, projectId: string) {
+    return this.op(
+      p,
+      "read",
+      `/projects/${projectId}`,
+      projectId,
+    )(async () => {
+      const snapshot = await this.core.getProjectPolicy(projectId);
+      if (!snapshot) throw new CoreError("not_found", `project ${projectId} not found`);
+      return snapshot;
+    });
+  }
+
   setAutonomy(p: Principal, projectId: string, phase: Phase, mode: AutonomyMode) {
     return this.op(
       p,
       "admin",
       `/projects/${projectId}/autonomy`,
       projectId,
-    )(() => this.core.setAutonomy(projectId, phase, mode));
+    )(() => this.core.setAutonomy(projectId, phase, mode, this.actor(p)));
   }
 
   listTickets(p: Principal, projectId: string, query?: TicketQuery) {
@@ -527,12 +543,13 @@ export class Operations {
       projectId,
     )(() => {
       const write = this.settingsLock.then(async () => {
-        const project = await this.core.getProject(projectId);
-        if (!project) throw new CoreError("not_found", `project ${projectId} not found`);
-        if (ifMatch.replace(/^W\//, "") !== autonomyEtag(project)) {
+        const snapshot = await this.core.getProjectPolicy(projectId);
+        if (!snapshot) throw new CoreError("not_found", `project ${projectId} not found`);
+        if (ifMatch !== autonomyEtag(snapshot)) {
           throw new HttpError(412, "precondition_failed", "autonomy changed since you loaded it");
         }
-        return this.core.setAutonomyPolicy(projectId, policy, this.actor(p));
+        await this.core.setAutonomyPolicy(projectId, policy, this.actor(p), snapshot.version);
+        return this.core.getProjectPolicy(projectId);
       });
       this.settingsLock = write.catch(() => undefined);
       return write;

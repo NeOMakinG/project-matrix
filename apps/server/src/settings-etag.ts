@@ -19,6 +19,6 @@ export function settingsEtag(settings: Record<string, unknown>): string {
 }
 
 /** ETag over a project's autonomy map, for atomic policy updates. */
-export function autonomyEtag(project: { autonomy: Record<string, unknown> }): string {
-  return settingsEtag(project.autonomy);
+export function autonomyEtag(policy: { version: string }): string {
+  return `"${policy.version}"`;
 }

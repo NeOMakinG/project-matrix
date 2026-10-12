@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { PHASES } from "../ports.js";
-import { VersionConflictError } from "../store.js";
+import { type AutonomyMode, PHASES, type Phase } from "../ports.js";
+import { AutonomyConflictError, VersionConflictError } from "../store.js";
 import { testProject } from "../testing/fakes.js";
 import { createHarness } from "../testing/harness.js";
 import { PgStore } from "./pg-store.js";
@@ -16,6 +16,71 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
 
   afterAll(async () => {
     await store?.close();
+  });
+
+  test("concurrent same-value policy saves use history versions and roll back the loser", async () => {
+    const projectId = `version-cas-${Date.now()}`;
+    await store.upsertProject(testProject({ id: projectId, autonomy: { default: "human" } }));
+    const before = await store.getProjectPolicy(projectId);
+    const results = await Promise.allSettled([
+      store.setAutonomyPolicy(projectId, { merge: "human" }, "human:first", before.version),
+      store.setAutonomyPolicy(projectId, { merge: "human" }, "human:second", before.version),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(await store.autonomyHistory(projectId)).toHaveLength(1);
+    await expect(
+      store.setAutonomyPolicy(projectId, { merge: "autonomous" }, "human:stale", before.version),
+    ).rejects.toBeInstanceOf(AutonomyConflictError);
+    expect(await store.autonomyHistory(projectId)).toHaveLength(1);
+  });
+
+  test("init CAS rejects policy ABA without partial project or history updates", async () => {
+    const projectId = `init-policy-${Date.now()}`;
+    await store.upsertProject(testProject({ id: projectId, autonomy: { default: "human" } }));
+    const snapshot = await store.getProjectPolicy(projectId);
+    await store.setAutonomyPolicy(projectId, { merge: "autonomous" }, "human:external");
+    await store.setAutonomyPolicy(projectId, { merge: "human" }, "human:external");
+    const current = await store.getProjectPolicy(projectId);
+    expect(current.version).not.toBe(snapshot.version);
+    await expect(
+      store.saveInitializedProject(
+        { ...snapshot.project, dailyBudgetUsd: 999 },
+        { merge: "autonomous", deploy: "autonomous" },
+        snapshot.version,
+      ),
+    ).rejects.toBeInstanceOf(AutonomyConflictError);
+    expect(await store.getProjectPolicy(projectId)).toEqual(current);
+  });
+
+  test("concurrent autonomy PUTs compare-and-set and commit full policies with history", async () => {
+    const projectId = `policy-${Date.now()}`;
+    await store.upsertProject(testProject({ id: projectId, autonomy: { default: "human" } }));
+    const expected = Object.fromEntries(PHASES.map((phase) => [phase, "human"])) as Record<
+      Phase,
+      AutonomyMode
+    >;
+    const results = await Promise.allSettled([
+      store.setAutonomyPolicy(
+        projectId,
+        { merge: "gated", deploy: "autonomous" },
+        "human:first",
+        expected,
+      ),
+      store.setAutonomyPolicy(
+        projectId,
+        { merge: "autonomous", deploy: "gated" },
+        "human:second",
+        expected,
+      ),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find(
+      (result) => result.status === "rejected",
+    ) as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(AutonomyConflictError);
+    const history = await store.autonomyHistory(projectId);
+    expect(history).toHaveLength(2);
+    expect(history[0]!.actor).toBe(history[1]!.actor);
   });
 
   test("runs a full ticket through the loop on Postgres", async () => {

@@ -15,6 +15,15 @@ import type { PhaseModel, PhaseOutcome } from "./types.js";
 export type PhaseHandler = (ctx: PhaseContext) => Promise<PhaseOutcome>;
 export type PhaseHandlers = Record<Phase, PhaseHandler>;
 
+export class FactoryToolingError extends Error {
+  constructor(
+    message: string,
+    readonly receipts: Receipt[] = [],
+  ) {
+    super(message);
+  }
+}
+
 export interface HandlerDeps {
   runners: Partial<Record<RunnerId, Runner>>;
   sandbox?: Sandbox;
@@ -24,6 +33,7 @@ export interface HandlerDeps {
   merge?: MergePort;
   deploy?: DeployPort;
   verify?: VerifyPort;
+  architecture?: (ctx: PhaseContext) => Promise<Receipt[]>;
 }
 
 function tail(text: string, lines = 20): string {
@@ -164,27 +174,45 @@ const checks =
         summary: "no sandbox configured for checks",
         receipts: [],
         runStatus: "failed",
+        failureClass: "factory-tooling",
       };
     if (ctx.project.checks.length === 0)
-      return { ok: false, summary: "no checks configured", receipts: [] };
+      return {
+        ok: false,
+        summary: "no checks configured",
+        receipts: [],
+        failureClass: "factory-tooling",
+      };
     const receipts: Receipt[] = [];
-    for (const check of ctx.project.checks) {
-      ctx.emit(`running ${check.kind}: ${check.cmd.join(" ")}`, "tool");
-      const res = await deps.sandbox.exec(
-        {
-          workdir: ctx.workdir,
-          cmd: check.cmd,
-          network: "none",
-          timeoutMs: ctx.project.runTimeoutMs,
-        },
-        ctx.signal,
-      );
-      receipts.push({
-        kind: check.kind,
-        ok: res.code === 0,
-        summary: `${check.kind} exit ${res.code}`,
-        data: { cmd: check.cmd, output: tail(`${res.stdout}\n${res.stderr}`) },
-      });
+    try {
+      for (const check of ctx.project.checks) {
+        ctx.emit(`running ${check.kind}: ${check.cmd.join(" ")}`, "tool");
+        const res = await deps.sandbox.exec(
+          {
+            workdir: ctx.workdir,
+            cmd: check.cmd,
+            network: "none",
+            timeoutMs: ctx.project.runTimeoutMs,
+          },
+          ctx.signal,
+        );
+        receipts.push({
+          kind: check.kind,
+          ok: res.code === 0,
+          summary: `${check.kind} exit ${res.code}`,
+          data: { cmd: check.cmd, output: tail(`${res.stdout}\n${res.stderr}`) },
+        });
+      }
+      if (deps.architecture) receipts.push(...(await deps.architecture(ctx)));
+    } catch (error) {
+      if (!(error instanceof FactoryToolingError)) throw error;
+      return {
+        ok: false,
+        summary: error.message,
+        receipts: [...receipts, ...error.receipts],
+        runStatus: "failed",
+        failureClass: "factory-tooling",
+      };
     }
     const ok = receipts.every((r) => r.ok);
     return { ok, summary: ok ? "checks passed" : "checks failed", receipts, runStatus: "ok" };

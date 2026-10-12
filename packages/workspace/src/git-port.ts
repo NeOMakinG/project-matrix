@@ -1,18 +1,66 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, readlink } from "node:fs/promises";
-import { join } from "node:path";
-import type { GitPort } from "@matrix/core";
+import { constants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readlink, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+import type { GitPort, Receipt } from "@matrix/core";
 import {
   findNestedGitEntries,
   gitLocation,
   hostExecutor,
   type LineExecutor,
-  readInsideRoot,
   runToCompletion,
   safeGitEnv,
   verifyWorktreeLink,
 } from "@matrix/sandbox";
 import type { TrustedWorktrees } from "./trusted.js";
+
+const exec = promisify(execFile);
+
+export interface CandidateBinding {
+  tree: string;
+  objects: Array<{ path: string; sha: string }>;
+}
+
+async function readSource(root: string, path: string): Promise<Buffer> {
+  const segments = path.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === ".."))
+    throw new Error("invalid source path");
+  const realRoot = await realpath(root);
+  const check = async () => {
+    for (let depth = 1; depth <= segments.length; depth++) {
+      const stat = await lstat(join(realRoot, ...segments.slice(0, depth)));
+      if (stat.isSymbolicLink()) throw new Error("tampering: source symlink");
+    }
+  };
+  await check();
+  const full = join(realRoot, path);
+  const handle = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 64 * 1024 ** 2)
+      throw new Error("tampering: non-regular, hardlinked or oversized source");
+    await check();
+    const content = await handle.readFile();
+    const after = await handle.stat();
+    const current = await lstat(full);
+    await check();
+    if (
+      after.nlink !== 1 ||
+      current.dev !== stat.dev ||
+      current.ino !== stat.ino ||
+      after.size !== stat.size ||
+      after.mtimeMs !== stat.mtimeMs ||
+      after.ctimeMs !== stat.ctimeMs
+    )
+      throw new Error("source changed while reading");
+    return content;
+  } finally {
+    await handle.close();
+  }
+}
 
 /** GitPort for agent-touched worktrees: host-owned gitdir only, hardened git, no symlink following. */
 export class WorktreeGitPort implements GitPort {
@@ -24,13 +72,24 @@ export class WorktreeGitPort implements GitPort {
     this.#trusted = options.trusted;
   }
 
-  async #run(gitdir: string, args: string[], extra: Array<[string, string]> = []) {
-    return runToCompletion(this.#executor, {
-      cmd: ["git", ...args],
-      cwd: gitdir,
-      env: safeGitEnv({}, extra),
-      timeoutMs: 120_000,
-    });
+  async #run(
+    gitdir: string,
+    args: string[],
+    extra: Array<[string, string]> = [],
+    env: Record<string, string> = {},
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    return runToCompletion(
+      this.#executor,
+      {
+        cmd: ["git", ...args],
+        cwd: gitdir,
+        env: safeGitEnv(env, extra),
+        timeoutMs: 120_000,
+      },
+      signal,
+    );
   }
 
   /** Every filter driver in the (trusted) config is disabled, so worktree attributes can't trigger one. */
@@ -59,7 +118,12 @@ export class WorktreeGitPort implements GitPort {
     );
   }
 
-  async #git(workdir: string, args: string[], withTree = false): Promise<string> {
+  async #git(
+    workdir: string,
+    args: string[],
+    withTree = false,
+    signal?: AbortSignal,
+  ): Promise<string> {
     const entry = await this.#trusted.lookup(workdir);
     const { gitdir } = entry;
     await verifyWorktreeLink(workdir, gitdir);
@@ -68,6 +132,8 @@ export class WorktreeGitPort implements GitPort {
       gitdir,
       [...gitLocation(gitdir, withTree ? workdir : undefined), ...args],
       await this.#filterOverrides(gitdir),
+      {},
+      signal,
     );
     if (result.exitCode !== 0)
       throw new Error(`git ${args[0]} failed: ${result.stderrTail.trim().slice(-300)}`);
@@ -108,14 +174,277 @@ export class WorktreeGitPort implements GitPort {
   }
 
   /**
-   * Makes the worktree exactly the committed tree before checks run: removes untracked and
-   * gitignored files host-side, then requires a clean tree. Returns the checked HEAD SHA.
+   * Requires the committed tree before checks. The trusted BASE policy classifies no disposable
+   * artifacts, so unknown and ignored files are preserved rather than blanket-cleaned.
    */
   async cleanForChecks(workdir: string): Promise<string> {
-    await this.#git(workdir, ["clean", "-ffdx", "-q"], true);
+    await this.#assertNoHiddenArtifacts(workdir);
+    const others = await this.#git(workdir, ["ls-files", "--others", "-z"], true);
+    if (others) throw new Error("untracked artifacts preserved; cleanup refused");
     if (!(await this.isClean(workdir)))
       throw new Error("worktree has uncommitted changes after clean");
     return this.headSha(workdir);
+  }
+
+  async #assertNoHiddenArtifacts(workdir: string): Promise<void> {
+    const { baseSha } = await this.#trusted.lookup(workdir);
+    if (!baseSha) throw new Error("trusted BASE required for artifact policy");
+    const all = await this.#git(workdir, ["ls-files", "--others", "-z"], true);
+    const visible = new Set(
+      (await this.#git(workdir, ["ls-files", "--others", "--exclude-standard", "-z"], true)).split(
+        "\0",
+      ),
+    );
+    for (const path of all.split("\0").filter(Boolean)) {
+      if (!visible.has(path))
+        throw new Error(`ignored artifact preserved; trusted BASE deny-clean policy: ${path}`);
+    }
+  }
+
+  async commitImplementation(
+    workdir: string,
+    options: {
+      expectedHead: string;
+      approvedPaths: string[];
+      message: string;
+      scan: (snapshot: string, binding: CandidateBinding) => Promise<Receipt>;
+      derivedGraph?: {
+        generate: (staging: string) => Promise<Record<string, string>>;
+        publish: (files: Record<string, { content: string; previous?: string }>) => void;
+      };
+      signal?: AbortSignal;
+    },
+  ): Promise<{ headSha: string; receipt: Receipt }> {
+    options.signal?.throwIfAborted();
+    await this.#assertNoHiddenArtifacts(workdir);
+    const head = await this.headSha(workdir);
+    if (head !== options.expectedHead)
+      throw new Error("implementation HEAD changed before handover");
+    const branch = (await this.#git(workdir, ["symbolic-ref", "HEAD"])).trim();
+    if (!branch.startsWith("refs/heads/matrix/"))
+      throw new Error("implementation commit requires a Matrix ticket branch");
+    const state = await this.treeState(workdir);
+    const status = await this.#git(
+      workdir,
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--no-renames"],
+      true,
+    );
+    const paths = status
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => {
+        if (entry.slice(0, 2).includes("U")) throw new Error("unmerged implementation files");
+        return entry.slice(3);
+      });
+    for (const path of paths) {
+      const segments = path.split("/");
+      if (
+        segments.some(
+          (segment) => !segment || segment === "." || segment === ".." || segment.startsWith("."),
+        ) ||
+        !options.approvedPaths.some((allowed) => path === allowed || path.startsWith(`${allowed}/`))
+      )
+        throw new Error(`unapproved implementation path: ${path}`);
+      for (let depth = 1; depth <= segments.length; depth++) {
+        try {
+          if ((await lstat(join(workdir, ...segments.slice(0, depth)))).isSymbolicLink())
+            throw new Error(`tampering: implementation symlink at ${path}`);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }
+    }
+    const { gitdir } = await this.#trusted.lookup(workdir);
+    const temporary = await mkdtemp(join(tmpdir(), "matrix-handover-"));
+    try {
+      const source = join(temporary, "source");
+      await mkdir(source, { mode: 0o700 });
+      const staging = join(temporary, "staging");
+      await mkdir(staging, { mode: 0o700 });
+      const files = await this.#git(workdir, ["ls-files", "--cached", "--others", "-z"], true);
+      for (const path of new Set(files.split("\0").filter(Boolean))) {
+        options.signal?.throwIfAborted();
+        const stat = await lstat(join(workdir, path)).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        });
+        if (!stat) continue;
+        const content = await readSource(workdir, path);
+        const target = join(staging, path);
+        await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+        await writeFile(target, content, { mode: stat.mode & 0o777, flag: "wx" });
+      }
+      if ((await this.treeState(workdir)) !== state)
+        throw new Error("implementation changed while preparing staging");
+      const generated: Record<string, { content: string; previous?: string }> = {};
+      if (options.derivedGraph) {
+        const files = await options.derivedGraph.generate(staging);
+        const allowed = [".matrix/graph/code.json", ".matrix/graph/GRAPH.md"];
+        if (
+          Object.keys(files).length !== allowed.length ||
+          allowed.some((path) => typeof files[path] !== "string")
+        )
+          throw new Error("invalid host-derived graph artifacts");
+        for (const [path, content] of Object.entries(files)) {
+          const previous = await readSource(staging, path).catch((error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return undefined;
+            throw error;
+          });
+          generated[path] = {
+            content,
+            ...(previous === undefined ? {} : { previous: previous.toString("utf8") }),
+          };
+          options.signal?.throwIfAborted();
+          await mkdir(dirname(join(staging, path)), { recursive: true, mode: 0o700 });
+          await writeFile(join(staging, path), content, { mode: 0o644 });
+        }
+      }
+      const env = { GIT_INDEX_FILE: join(temporary, "index"), GIT_LITERAL_PATHSPECS: "1" };
+      const candidate = async (...args: string[]) => {
+        const result = await this.#run(
+          gitdir,
+          [...gitLocation(gitdir, staging), ...args],
+          await this.#filterOverrides(gitdir),
+          env,
+          options.signal,
+        );
+        if (result.exitCode !== 0)
+          throw new Error(
+            `implementation git ${args[0]} failed (exit ${result.exitCode}): ${result.stderrTail.trim().slice(-300)}`,
+          );
+        return result.stdout.trim();
+      };
+      await candidate("read-tree", head);
+      if (paths.length) await candidate("add", "-A", "--", ...paths);
+      if (Object.keys(generated).length)
+        await candidate("add", "-A", "--", ...Object.keys(generated));
+      const index = await candidate("ls-files", "--stage", "-z");
+      if (
+        index
+          .split("\0")
+          .filter(Boolean)
+          .some((record) => !/^(100644|100755) [0-9a-f]+ 0\t/.test(record))
+      )
+        throw new Error("tampering: non-regular implementation snapshot entries");
+      const tree = await candidate("write-tree");
+      const records = await candidate("ls-tree", "-r", "-z", tree);
+      const binding: CandidateBinding = { tree, objects: [] };
+      let bytes = 0;
+      for (const record of records.split("\0").filter(Boolean)) {
+        const tab = record.indexOf("\t");
+        const [mode, type, sha] = record.slice(0, tab).split(" ");
+        const path = record.slice(tab + 1);
+        if (
+          !/^(100644|100755)$/.test(mode ?? "") ||
+          type !== "blob" ||
+          !sha ||
+          !/^[0-9a-f]{40,64}$/.test(sha) ||
+          tab < 0 ||
+          path.split("/").some((part) => !part || part === "." || part === "..")
+        )
+          throw new Error("invalid candidate blob");
+        options.signal?.throwIfAborted();
+        const raw = await exec("git", [...gitLocation(gitdir), "cat-file", "blob", sha], {
+          cwd: gitdir,
+          env: safeGitEnv(),
+          encoding: "buffer",
+          maxBuffer: 16 * 1024 ** 2,
+          timeout: 60_000,
+          signal: options.signal,
+        });
+        bytes += raw.stdout.length;
+        if (bytes > 128 * 1024 ** 2 || binding.objects.length >= 100_000)
+          throw new Error("candidate scan limit");
+        const target = join(source, path);
+        await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+        await writeFile(target, raw.stdout, { mode: 0o600, flag: "wx" });
+        binding.objects.push({ path, sha });
+      }
+      const receipt = await options.scan(source, structuredClone(binding));
+      if (receipt.kind !== "secret-scan" || !receipt.ok)
+        throw new Error("implementation secret scan failed closed");
+      options.signal?.throwIfAborted();
+      await this.#assertNoHiddenArtifacts(workdir);
+      if ((await this.treeState(workdir)) !== state || (await this.headSha(workdir)) !== head)
+        throw new Error("implementation changed during secret scan");
+      if (tree === (await this.#git(workdir, ["rev-parse", "HEAD^{tree}"])).trim())
+        return {
+          headSha: head,
+          receipt: { ...receipt, data: { scan: receipt.data, headSha: head, ...binding } },
+        };
+      options.signal?.throwIfAborted();
+      let finalState = state;
+      if (Object.keys(generated).length) {
+        options.derivedGraph?.publish(generated);
+        options.signal?.throwIfAborted();
+        const refreshed = await this.#run(
+          gitdir,
+          [...gitLocation(gitdir, workdir), "update-index", "--refresh"],
+          await this.#filterOverrides(gitdir),
+          env,
+          options.signal,
+        );
+        if (refreshed.exitCode !== 0)
+          throw new Error("implementation differs from scanned final tree during index refresh");
+        const matches = await this.#run(
+          gitdir,
+          [
+            ...gitLocation(gitdir, workdir),
+            "diff-files",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+          ],
+          await this.#filterOverrides(gitdir),
+          env,
+          options.signal,
+        );
+        const untracked = await this.#run(
+          gitdir,
+          [...gitLocation(gitdir, workdir), "ls-files", "--others", "-z"],
+          await this.#filterOverrides(gitdir),
+          env,
+          options.signal,
+        );
+        if (matches.exitCode !== 0 || untracked.exitCode !== 0 || untracked.stdout)
+          throw new Error("implementation differs from scanned final tree");
+        finalState = await this.treeState(workdir);
+      }
+      const committed = await this.#run(
+        gitdir,
+        [...gitLocation(gitdir), "commit-tree", tree, "-p", head, "-m", options.message],
+        [],
+        {
+          GIT_AUTHOR_NAME: "Matrix",
+          GIT_AUTHOR_EMAIL: "matrix@localhost",
+          GIT_COMMITTER_NAME: "Matrix",
+          GIT_COMMITTER_EMAIL: "matrix@localhost",
+        },
+        options.signal,
+      );
+      const next = committed.stdout.trim();
+      if (committed.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(next))
+        throw new Error("implementation commit failed");
+      options.signal?.throwIfAborted();
+      if ((await this.treeState(workdir)) !== finalState)
+        throw new Error("implementation changed before reference update");
+      if (
+        (await this.#git(workdir, ["symbolic-ref", "HEAD"], false, options.signal)).trim() !==
+        branch
+      )
+        throw new Error("implementation branch changed during handover");
+      await this.#git(workdir, ["update-ref", branch, next, head], false, options.signal);
+      await this.#git(workdir, ["read-tree", tree], false, options.signal);
+      if (!(await this.isClean(workdir)))
+        throw new Error("implementation changed after commit; clean handover refused");
+      return {
+        headSha: next,
+        receipt: { ...receipt, data: { scan: receipt.data, headSha: next, ...binding } },
+      };
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
   }
 
   async headSha(workdir: string): Promise<string> {
@@ -171,6 +500,21 @@ export class WorktreeGitPort implements GitPort {
   async treeState(workdir: string): Promise<string> {
     const hash = createHash("sha256");
     hash.update(await this.headSha(workdir));
+    const untracked = await this.#git(workdir, ["ls-files", "-z", "--cached", "--others"], true);
+    for (const path of [...new Set(untracked.split("\0").filter(Boolean))].sort()) {
+      hash.update(`\0${path}\0`);
+      const full = join(workdir, path);
+      const stat = await lstat(full).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (!stat) {
+        hash.update("deleted");
+        continue;
+      }
+      if (stat.isSymbolicLink()) hash.update(`link:${await readlink(full)}`);
+      else if (stat.isFile()) hash.update(await readSource(workdir, path));
+    }
     hash.update(await this.status(workdir));
     hash.update(
       await this.#git(
@@ -179,18 +523,6 @@ export class WorktreeGitPort implements GitPort {
         true,
       ),
     );
-    const untracked = await this.#git(
-      workdir,
-      ["ls-files", "-z", "--others", "--exclude-standard"],
-      true,
-    );
-    for (const path of untracked.split("\0").filter(Boolean).sort()) {
-      hash.update(`\0${path}\0`);
-      const full = join(workdir, path);
-      const stat = await lstat(full);
-      if (stat.isSymbolicLink()) hash.update(`link:${await readlink(full)}`);
-      else if (stat.isFile()) hash.update(await readInsideRoot(workdir, path));
-    }
     return hash.digest("hex");
   }
 }

@@ -6,6 +6,7 @@ export interface GatewayOptions {
   apiKey: string;
   timeoutMs?: number;
   fetch?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 /**
@@ -16,6 +17,7 @@ export class GatewayLlm implements LlmClient {
   constructor(private readonly opts: GatewayOptions) {}
 
   async complete(req: ChatRequest): Promise<string> {
+    this.opts.signal?.throwIfAborted();
     const doFetch = this.opts.fetch ?? fetch;
     const res = await doFetch(`${this.opts.baseUrl.replace(/\/$/, "")}/chat/completions`, {
       method: "POST",
@@ -33,8 +35,12 @@ export class GatewayLlm implements LlmClient {
           { role: "user", content: req.user },
         ],
       }),
-      signal: AbortSignal.timeout(this.opts.timeoutMs ?? 120_000),
+      signal: AbortSignal.any([
+        AbortSignal.timeout(this.opts.timeoutMs ?? 120_000),
+        ...(this.opts.signal ? [this.opts.signal] : []),
+      ]),
     });
+    this.opts.signal?.throwIfAborted();
     if (!res.ok) {
       const text = (await res.text()).slice(0, 300);
       throw new Error(`gateway ${res.status}: ${text}`);
@@ -42,6 +48,7 @@ export class GatewayLlm implements LlmClient {
     const body = (await res.json()) as {
       choices?: { message?: { content?: string | null } }[];
     };
+    this.opts.signal?.throwIfAborted();
     const content = body.choices?.[0]?.message?.content;
     if (!content) throw new Error("gateway returned an empty completion");
     return content;
