@@ -7,6 +7,14 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "generate": "cd ../../apps/server && bun run openapi && cd ../../packages/sdk && openapi-typescript openapi.json -o src/schema.d.ts && biome format --write openapi.json src/schema.d.ts"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0",
+    "@matrix/server": "workspace:*"
   }
 }
