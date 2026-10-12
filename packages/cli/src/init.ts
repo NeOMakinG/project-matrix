@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import type { MatrixConfig } from "@matrix/config";
@@ -17,7 +17,8 @@ import {
   resolve,
 } from "@matrix/packs";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
-import { planWrites, safeWrite } from "./fs-safe";
+import { assertSafePath } from "@matrix/tickets/adapters/safe-fs";
+import { planWrites, SafePathError, safeWrite } from "./fs-safe";
 import {
   adrPath,
   configFile,
@@ -139,7 +140,8 @@ async function planAdrs(
 }
 
 async function seedBacklog(outDir: string, config: MatrixConfig): Promise<string[]> {
-  const store = new MarkdownTicketStore(join(outDir, ".matrix/tickets"));
+  const root = await realpath(outDir);
+  const store = new MarkdownTicketStore(join(root, ".matrix/tickets"), { root });
   const existing = new Map((await store.list()).map((t) => [t.title, t]));
   const create: typeof store.create = async (input) =>
     existing.get(input.title) ?? (await store.create(input));
@@ -244,9 +246,12 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     warnings.push(...s.warnings);
   }
 
+  // The backlog is written by the ticket store; refuse unsafe backlog paths before writing anything.
+  const root = await realpath(opts.outDir);
+  await assertSafePath(root, join(root, ".matrix/tickets/.ids/x"));
   const plan = await planWrites(opts.outDir, Object.keys(files));
   if (plan.refused.length > 0) {
-    throw new Error(
+    throw new SafePathError(
       `refusing to write: ${plan.refused.map((r) => `${r.path} (${r.reason})`).join(", ")}`,
     );
   }

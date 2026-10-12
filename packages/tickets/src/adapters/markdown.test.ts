@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { MarkdownTicketStore } from "./markdown";
 
 test("create, link, ready and update round-trip through markdown files", async () => {
@@ -37,4 +37,44 @@ test("ids stay monotonic after a ticket file is deleted, and parallel creates ne
     Array.from({ length: 8 }, (_, i) => store.create({ title: `P${i}`, body: "" })),
   );
   expect(new Set(many.map((t) => t.id)).size).toBe(8);
+});
+
+describe("symlink safety", () => {
+  const outsideDir = async () => mkdtemp(join(tmpdir(), "outside-"));
+
+  test("a symlinked tickets directory is refused and nothing is written outside", async () => {
+    const { symlink, readdir } = await import("node:fs/promises");
+    const root = await mkdtemp(join(tmpdir(), "root-"));
+    const outside = await outsideDir();
+    await symlink(outside, join(root, "tickets"));
+    const store = new MarkdownTicketStore(join(root, "tickets"), { root });
+    await expect(store.create({ title: "x", body: "" })).rejects.toThrow(/symlink/);
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  test("a symlinked .ids directory is refused", async () => {
+    const { mkdir, symlink, readdir } = await import("node:fs/promises");
+    const root = await mkdtemp(join(tmpdir(), "root-"));
+    const outside = await outsideDir();
+    await mkdir(join(root, "tickets"));
+    await symlink(outside, join(root, "tickets/.ids"));
+    const store = new MarkdownTicketStore(join(root, "tickets"), { root });
+    await expect(store.create({ title: "x", body: "" })).rejects.toThrow(/symlink/);
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  test("a ticket file swapped for a symlink is never followed on update", async () => {
+    const { rm, symlink, readdir, writeFile, readFile } = await import("node:fs/promises");
+    const root = await mkdtemp(join(tmpdir(), "root-"));
+    const outside = await outsideDir();
+    const victim = join(outside, "victim.txt");
+    await writeFile(victim, "untouched");
+    const store = new MarkdownTicketStore(join(root, "tickets"), { root });
+    const t = await store.create({ title: "x", body: "" });
+    const file = (await readdir(join(root, "tickets"))).find((f) => f.startsWith(t.id)) as string;
+    await rm(join(root, "tickets", file));
+    await symlink(victim, join(root, "tickets", file));
+    await expect(store.update(t.id, { status: "done" })).rejects.toThrow();
+    expect(await readFile(victim, "utf8")).toBe("untouched");
+  });
 });

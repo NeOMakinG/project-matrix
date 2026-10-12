@@ -1,5 +1,5 @@
-import { mkdir, open, readdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type {
   LinkType,
   NewTicket,
@@ -9,6 +9,7 @@ import type {
   TicketStatus,
   TicketStore,
 } from "../types.js";
+import { ensureSafeDir, overwriteFile, readFileSafe, writeNewFile } from "./safe-fs";
 
 const FRONT = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 
@@ -47,17 +48,31 @@ function parse(text: string): Ticket {
   return { ...(meta as Omit<Ticket, "body">), body: (m[2] ?? "").trim() };
 }
 
+export interface MarkdownStoreOptions {
+  /**
+   * Every read and write must stay inside this directory with no symlinked path component.
+   * Defaults to the parent of the tickets directory.
+   */
+  root?: string;
+  now?: () => Date;
+}
+
 /** Tickets as markdown files with JSON-valued frontmatter, e.g. `.matrix/tickets/T-0001-title.md`. */
 export class MarkdownTicketStore implements TicketStore {
   readonly kind = "markdown" as const;
+  private readonly root: string;
+  private readonly now: () => Date;
 
   constructor(
     private readonly dir: string,
-    private readonly now: () => Date = () => new Date(),
-  ) {}
+    opts: MarkdownStoreOptions = {},
+  ) {
+    this.root = opts.root ?? dirname(dir);
+    this.now = opts.now ?? (() => new Date());
+  }
 
   private async files(): Promise<string[]> {
-    await mkdir(this.dir, { recursive: true });
+    await ensureSafeDir(this.root, this.dir);
     return (await readdir(this.dir)).filter((f) => /^T-\d{4,}-.*\.md$/.test(f)).sort();
   }
 
@@ -68,7 +83,9 @@ export class MarkdownTicketStore implements TicketStore {
 
   async list(query: TicketQuery = {}): Promise<Ticket[]> {
     const all = await Promise.all(
-      (await this.files()).map(async (f) => parse(await readFile(join(this.dir, f), "utf8"))),
+      (await this.files()).map(async (f) =>
+        parse(await readFileSafe(this.root, join(this.dir, f))),
+      ),
     );
     return all.filter(
       (t) =>
@@ -79,7 +96,7 @@ export class MarkdownTicketStore implements TicketStore {
 
   async get(id: string): Promise<Ticket | null> {
     const p = await this.path(id);
-    return p ? parse(await readFile(p, "utf8")) : null;
+    return p ? parse(await readFileSafe(this.root, p)) : null;
   }
 
   /**
@@ -88,7 +105,7 @@ export class MarkdownTicketStore implements TicketStore {
    */
   private async reserveId(): Promise<string> {
     const idsDir = join(this.dir, ".ids");
-    await mkdir(idsDir, { recursive: true });
+    await ensureSafeDir(this.root, idsDir);
     const numbers = [...(await this.files()), ...(await readdir(idsDir))]
       .map((f) => /^T-(\d{4,})/.exec(f)?.[1])
       .filter((n): n is string => n !== undefined)
@@ -96,8 +113,7 @@ export class MarkdownTicketStore implements TicketStore {
     for (let n = Math.max(0, ...numbers) + 1; ; n++) {
       const id = `T-${String(n).padStart(4, "0")}`;
       try {
-        const handle = await open(join(idsDir, id), "wx");
-        await handle.close();
+        await writeNewFile(this.root, join(idsDir, id), "");
         return id;
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -120,18 +136,20 @@ export class MarkdownTicketStore implements TicketStore {
       ...(input.priority !== undefined ? { priority: input.priority } : {}),
       ...(input.parent !== undefined ? { parent: input.parent } : {}),
     };
-    await writeFile(join(this.dir, `${id}-${slug(input.title)}.md`), serialize(ticket), {
-      flag: "wx",
-    });
+    await writeNewFile(
+      this.root,
+      join(this.dir, `${id}-${slug(input.title)}.md`),
+      serialize(ticket),
+    );
     return ticket;
   }
 
   async update(id: string, patch: TicketPatch): Promise<Ticket> {
     const p = await this.path(id);
     if (!p) throw new Error(`ticket ${id} not found`);
-    const current = parse(await readFile(p, "utf8"));
+    const current = parse(await readFileSafe(this.root, p));
     const next = { ...current, ...patch, updatedAt: this.now().toISOString() } as Ticket;
-    await writeFile(p, serialize(next));
+    await overwriteFile(this.root, p, serialize(next));
     return next;
   }
 

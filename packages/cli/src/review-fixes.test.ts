@@ -151,3 +151,47 @@ describe("P2: re-running init keeps ADR numbers stable", () => {
     expect((await readdir(join(out, "docs/adr"))).length).toBe(before);
   });
 });
+
+describe("round 2: backlog writes are confined like every other write", () => {
+  test("--existing with .matrix/tickets symlinked outside refuses and writes nothing anywhere", async () => {
+    const outside = await fresh();
+    const out = await fresh();
+    await mkdir(join(out, ".matrix"));
+    await symlink(outside, join(out, ".matrix/tickets"));
+    await expect(
+      runInit({ ...base, outDir: out, scaffold: false, existingRepo: out }),
+    ).rejects.toThrow(/symlink/);
+    expect(await readdir(outside)).toEqual([]);
+    expect((await readdir(out)).sort()).toEqual([".matrix"]);
+    expect((await readdir(join(out, ".matrix"))).sort()).toEqual(["tickets"]);
+  });
+
+  test("a symlinked .ids directory is refused too", async () => {
+    const outside = await fresh();
+    const out = await fresh();
+    await mkdir(join(out, ".matrix/tickets"), { recursive: true });
+    await symlink(outside, join(out, ".matrix/tickets/.ids"));
+    await expect(
+      runInit({ ...base, outDir: out, scaffold: false, existingRepo: out }),
+    ).rejects.toThrow(/symlink/);
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  test("the CLI prints one clean refusal line instead of a stack trace", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const outside = await fresh();
+    const out = await fresh();
+    await mkdir(join(out, ".matrix"));
+    await symlink(outside, join(out, ".matrix/tickets"));
+    const answers = join(await fresh(), "answers.json");
+    await writeFile(answers, JSON.stringify(sampleAnswers));
+    const bin = join(import.meta.dirname, "bin.ts");
+    const r = spawnSync("bun", [bin, "init", out, "--existing", "--answers", answers, "--yes"], {
+      encoding: "utf8",
+    });
+    expect(r.status).toBe(3);
+    expect(r.stderr.trim()).toMatch(/^matrix: refusing .*symlink/);
+    expect(r.stderr).not.toMatch(/\n\s+at /);
+    expect(await readdir(outside)).toEqual([]);
+  });
+});

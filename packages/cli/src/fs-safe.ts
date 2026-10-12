@@ -1,5 +1,13 @@
-import { lstat, mkdir, realpath, writeFile } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  ensureSafeDir,
+  overwriteFile,
+  SafePathError,
+  writeNewFile,
+} from "@matrix/tickets/adapters/safe-fs";
+
+export { SafePathError };
 
 export interface PlanResult {
   /** Paths that would be created. */
@@ -65,7 +73,7 @@ export async function safeWrite(
 ): Promise<{ written: string[]; skipped: string[] }> {
   const plan = await planWrites(outDir, Object.keys(files));
   if (plan.refused.length > 0) {
-    throw new Error(
+    throw new SafePathError(
       `refusing to write: ${plan.refused.map((r) => `${r.path} (${r.reason})`).join(", ")}`,
     );
   }
@@ -73,14 +81,11 @@ export async function safeWrite(
   const toWrite = opts.overwrite ? [...plan.create, ...plan.existing] : plan.create;
   for (const path of toWrite) {
     const target = resolve(root, path);
-    await mkdir(dirname(target), { recursive: true });
-    // Re-check right before writing: a symlink could have appeared since planning.
-    if ((await exists(target))?.isSymbolicLink() || (await symlinkOnPath(root, target))) {
-      throw new Error(`refusing to write ${path}: symlink appeared`);
-    }
-    await writeFile(target, files[path] as string, {
-      flag: plan.create.includes(path) ? "wx" : "w",
-    });
+    // Component-wise mkdir + O_NOFOLLOW/O_EXCL opens: the final component is never followed and the
+    // parents are re-checked right before each write, which shrinks the plan-then-write race.
+    await ensureSafeDir(root, dirname(target));
+    if (plan.create.includes(path)) await writeNewFile(root, target, files[path] as string);
+    else await overwriteFile(root, target, files[path] as string);
   }
   return { written: toWrite.sort(), skipped: opts.overwrite ? [] : plan.existing.sort() };
 }

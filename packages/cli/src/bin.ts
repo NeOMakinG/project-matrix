@@ -106,4 +106,12 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-process.exitCode = await main(process.argv.slice(2));
+try {
+  process.exitCode = await main(process.argv.slice(2));
+} catch (e) {
+  // Expected refusals (unsafe paths) and other failures: one clear line, no stack trace.
+  const err = e as Error;
+  console.error(`matrix: ${err.message}`);
+  if (process.env.MATRIX_DEBUG === "1") console.error(err.stack);
+  process.exitCode = err.name === "SafePathError" ? 3 : 1;
+}
