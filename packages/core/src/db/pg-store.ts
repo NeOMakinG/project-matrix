@@ -204,6 +204,14 @@ export class PgStore implements Store {
       .onConflictDoUpdate({ target: [s.ticketIndex.projectId, s.ticketIndex.ticketId], set: row });
   }
 
+  async getIndexedTicketTitle(projectId: string, ticketId: string) {
+    const [row] = await this.db
+      .select({ title: s.ticketIndex.title })
+      .from(s.ticketIndex)
+      .where(and(eq(s.ticketIndex.projectId, projectId), eq(s.ticketIndex.ticketId, ticketId)));
+    return row?.title ?? null;
+  }
+
   async getWorkflow(projectId: string, ticketId: string) {
     const [row] = await this.db
       .select()

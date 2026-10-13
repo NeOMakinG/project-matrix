@@ -25,6 +25,7 @@ import { ownedExternalTickets } from "./owned-tickets.js";
 import { RealCore } from "./real-core.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
 import type { TicketBinaries, TicketSettings } from "./tickets.js";
+import { TrackerUnavailableError } from "./tracker-error.js";
 
 export interface FactoryOptions {
   stateOwner?: PrivateStateOwner;
@@ -70,13 +71,20 @@ export async function initProjectRepo(
   await git("config", "user.email", "matrix@localhost");
   await git("commit", "--allow-empty", "-q", "-m", "chore: initial commit");
   if (tickets.kind === "beads") {
-    await execute(
-      binaries.bd ?? "bd",
-      ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
-      {
-        cwd: repoPath,
-      },
-    );
+    try {
+      await execute(
+        binaries.bd ?? "bd",
+        ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
+        { cwd: repoPath },
+      );
+    } catch (error) {
+      owner?.assertOwned();
+      throw new TrackerUnavailableError(
+        error && typeof error === "object" && "code" in error && error.code === "ENOENT"
+          ? "missing"
+          : "failed",
+      );
+    }
   }
 }
 

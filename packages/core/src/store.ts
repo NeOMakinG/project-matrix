@@ -147,6 +147,8 @@ export interface Store {
     },
   ): Promise<void>;
 
+  getIndexedTicketTitle(projectId: string, ticketId: string): Promise<string | null>;
+
   getWorkflow(projectId: string, ticketId: string): Promise<WorkflowState | null>;
   createWorkflow(state: WorkflowState): Promise<boolean>;
   /** Optimistic update: fails with VersionConflictError if `state.version` is stale. Returns the stored state (version + 1). */
@@ -222,7 +224,7 @@ export class MemoryStore implements Store {
   private history: AutonomyChange[] = [];
   private spend = new Map<string, number>();
   private lessons: Lesson[] = [];
-  readonly tickets = new Map<string, unknown>();
+  readonly tickets = new Map<string, Parameters<Store["indexTicket"]>[1]>();
 
   async upsertProject(config: ProjectConfig) {
     this.projects.set(config.id, clone(config));
@@ -234,8 +236,11 @@ export class MemoryStore implements Store {
   async listProjects() {
     return [...this.projects.values()].map(clone);
   }
-  async indexTicket(projectId: string, ticket: { id: string }) {
+  async indexTicket(projectId: string, ticket: Parameters<Store["indexTicket"]>[1]) {
     this.tickets.set(key(projectId, ticket.id), clone(ticket));
+  }
+  async getIndexedTicketTitle(projectId: string, ticketId: string) {
+    return this.tickets.get(key(projectId, ticketId))?.title ?? null;
   }
   async getWorkflow(projectId: string, ticketId: string) {
     const w = this.workflows.get(key(projectId, ticketId));

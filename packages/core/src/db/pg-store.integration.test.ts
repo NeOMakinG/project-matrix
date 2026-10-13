@@ -93,6 +93,8 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     expect(w?.status).toBe("done");
     const runs = await store.listRuns({ projectId, ticketId: t.id });
     expect(runs).toHaveLength(PHASES.length);
+    expect(await store.getIndexedTicketTitle(projectId, t.id)).toBe(t.title);
+    expect(await store.getIndexedTicketTitle(projectId, "missing")).toBeNull();
     expect(new Set(runs.map((r) => r.phase))).toEqual(new Set(PHASES));
     const events = await store.listEvents(runs[0]?.id ?? "");
     expect(events.length).toBeGreaterThan(0);

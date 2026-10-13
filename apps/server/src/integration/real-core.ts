@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
@@ -171,9 +172,17 @@ export class RealCore implements CorePort {
     this.o.stateOwner?.assertOwned();
     const id = randomUUID();
     const repoPath = join(this.o.projectsRoot, id);
-    await mkdir(repoPath, { recursive: true });
+    await mkdir(this.o.projectsRoot, { recursive: true });
     this.o.stateOwner?.assertOwned();
-    await this.o.initRepo?.(repoPath, input.tickets ?? DEFAULT_TICKETS);
+    await mkdir(repoPath);
+    this.o.stateOwner?.assertOwned();
+    try {
+      await this.o.initRepo?.(repoPath, input.tickets ?? DEFAULT_TICKETS);
+    } catch (error) {
+      this.o.stateOwner?.assertOwned();
+      rmSync(repoPath, { recursive: true, force: true });
+      throw error;
+    }
     this.o.stateOwner?.assertOwned();
     const config = newProjectConfig({
       id,
@@ -258,15 +267,14 @@ export class RealCore implements CorePort {
   // ── runs ────────────────────────────────────────────────────────────────────────────────────
 
   private async runView(record: Parameters<typeof toRun>[0]): Promise<Run> {
-    const store = await this.ticketStore(record.projectId).catch(() => undefined);
-    const ticket = await store?.get(record.ticketId).catch(() => null);
+    const title = await this.o.store.getIndexedTicketTitle(record.projectId, record.ticketId);
     const pending = await this.o.store.getPendingApproval(
       record.projectId,
       record.ticketId,
       record.phase,
     );
     return toRun(record, {
-      ...(ticket ? { title: ticket.title } : {}),
+      ...(title !== null ? { title } : {}),
       awaitingApproval: pending?.runId === record.id,
     });
   }
