@@ -121,6 +121,10 @@ test("a short interview against the real server, end to end", async ({ page }) =
 
   await page.getByRole("link", { name: "Open project board" }).click();
   await expect(page).toHaveURL(new RegExp(`/p/${projectId}/board`));
+  // The board must finish loading and show the generated backlog, not just a skeleton.
+  await expect(page.getByRole("region", { name: /column$/ }).first()).toBeVisible({
+    timeout: 15_000,
+  });
   await expect(page.getByText("No tickets yet")).not.toBeVisible();
   await page.screenshot({ path: `${SHOTS}/04-board.png`, fullPage: true });
 });
