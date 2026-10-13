@@ -247,7 +247,6 @@
       "version": "0.0.0",
       "dependencies": {
         "@matrix/core": "workspace:*",
-        "@matrix/packs": "workspace:*",
         "@matrix/sandbox": "workspace:*",
         "typescript": "^5.9.0",
       },
