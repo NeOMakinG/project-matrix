@@ -29,7 +29,7 @@ const config = {
   endpoint: "https://mcp.figma.com/mcp",
   authMode: "credential-store" as const,
   credentialRef: "matrix-figma-v1",
-  fileKey: "r0B5pUAZIGMVlRYT9nE4iL",
+  fileKey: process.env.MATRIX_FIGMA_FILE_KEY,
   nodes: operatorSelectedFrameNodeIds,
   authenticationTool: {
     name: discoveredIdentityToolName,

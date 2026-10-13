@@ -28,7 +28,7 @@ import { captureAuthorizedFrames } from "./live-capture.js";
 import { ArtifactStore, credentialFromStore } from "./storage.js";
 import { HostUiContext } from "./ui-context.js";
 
-const fileKey = "r0B5pUAZIGMVlRYT9nE4iL";
+const fileKey = "a".repeat(22);
 const frameUrl = `https://www.figma.com/design/${fileKey}/Matrix?node-id=1-2`;
 const png = encodePng(
   2,
