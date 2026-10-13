@@ -115,7 +115,8 @@ test("a short interview against the real server, end to end", async ({ page }) =
   expect(Object.keys((await project.json()).autonomy)).toContain("compound");
 
   await page.getByRole("button", { name: "Generate project" }).click();
-  await expect(page.getByText("Project generated. Artifacts:")).toBeVisible();
+  // Real finalize runs git, the ticket tracker CLI and the graph build.
+  await expect(page.getByText("Project generated. Artifacts:")).toBeVisible({ timeout: 60_000 });
   await page.screenshot({ path: `${SHOTS}/03-finalize.png`, fullPage: true });
 
   await page.getByRole("link", { name: "Open project board" }).click();

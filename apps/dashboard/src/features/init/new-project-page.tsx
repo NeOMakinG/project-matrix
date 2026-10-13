@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
+import { randomId } from "@/lib/random-id";
 
 export const newProjectSchema = z.object({
   name: z
@@ -34,7 +35,7 @@ export function NewProjectPage() {
   const keyFor = (input: z.infer<typeof newProjectSchema>) => {
     const body = JSON.stringify(input);
     if (attempt.current?.body !== body)
-      attempt.current = { body, key: `new-project-${crypto.randomUUID()}` };
+      attempt.current = { body, key: `new-project-${randomId()}` };
     return attempt.current.key;
   };
   const create = useMutation({

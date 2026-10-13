@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
 import { QueryView } from "@/components/ui/states";
 import { cn } from "@/lib/cn";
+import { randomId } from "@/lib/random-id";
 import { AutonomyStep } from "./autonomy-step";
 import { AnswersCard, EditAnswersCard } from "./edit-answers";
 import {
@@ -37,7 +38,7 @@ export function InitPage() {
 function StartInterview({ projectId }: { projectId: string }) {
   const auth = useQuery(queries.session());
   const navigate = useNavigate({ from: "/p/$projectId/init" });
-  const [idempotencyKey] = useState(() => `init-${crypto.randomUUID()}`);
+  const [idempotencyKey] = useState(() => `init-${randomId()}`);
   const start = useMutation({
     mutationFn: () => endpoints.startInit(projectId, idempotencyKey),
     onSuccess: (session) => navigate({ search: { session: session.id } }),
