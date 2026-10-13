@@ -33,6 +33,7 @@ export interface ReconcilerOptions {
   workspace: Workspace;
   git: GitPort;
   tickets: (projectId: string) => TicketStore;
+  projectDispatchAllowed?: (projectId: string) => boolean;
   limits: Limits;
   backoff: BackoffPolicy;
   host: string;
@@ -157,7 +158,8 @@ export class Reconciler {
     };
     await this.reapExpired(report);
     const projects = await this.o.store.listProjects();
-    for (const project of projects) await this.syncReady(project);
+    for (const project of projects)
+      if (this.o.projectDispatchAllowed?.(project.id) !== false) await this.syncReady(project);
 
     const now = this.clock();
     const pending = (await this.o.store.listWorkflows({ status: ["pending"] }))
@@ -168,12 +170,17 @@ export class Reconciler {
     for (const w of pending) {
       const project = byId.get(w.projectId);
       if (!project) continue;
+      if (this.o.projectDispatchAllowed?.(project.id) === false) {
+        report.skipped.push({ ticketId: w.ticketId, reason: "project finalize incomplete" });
+        continue;
+      }
       if (this.isActive(w)) continue;
       const reason = await this.blockedBy(project, w);
       if (reason) {
         report.skipped.push({ ticketId: w.ticketId, reason });
         continue;
       }
+      if (this.o.projectDispatchAllowed?.(project.id) === false) continue;
       const result = await this.dispatch(project, w);
       if (result === "dispatched") report.dispatched.push(w.ticketId);
       else if (result === "replayed") report.replayed.push(w.ticketId);
@@ -455,6 +462,7 @@ export class Reconciler {
       }
     }
 
+    if (this.o.projectDispatchAllowed?.(project.id) === false) return "conflict";
     const runId = this.ids();
     const now = this.clock();
     let state: WorkflowState;

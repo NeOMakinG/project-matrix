@@ -2,8 +2,10 @@ import { join } from "node:path";
 import { hostExecutor, type LineExecutor } from "@matrix/sandbox";
 import type { TicketStore } from "@matrix/tickets";
 import { BeadsStore } from "@matrix/tickets/adapters/beads";
+import { BeadsQueueTimeoutError } from "@matrix/tickets/adapters/beads-queue";
 import { GitHubStore } from "@matrix/tickets/adapters/github";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
+import { CoreError } from "../core-port.js";
 import type { PrivateStateOwner } from "../state-owner.js";
 import { publishOwnedFile } from "./owned-files.js";
 
@@ -81,10 +83,35 @@ export function ticketStoreFor(
         ...(owner ? { publish: (input) => publishOwnedFile({ ...input, owner }) } : {}),
       });
     case "beads":
-      return new BeadsStore({
+      const beads = new BeadsStore({
         cwd: repoPath,
-        executor,
+        executor: async (spec, onLine, signal) => {
+          const result = await hostExecutor(
+            spec,
+            onLine,
+            owner ? AbortSignal.any([signal, owner.signal]) : signal,
+          );
+          if (result.timedOut) throw new TrackerTimeoutError();
+          if (result.cancelled) throw owner?.signal.reason ?? new Error("tracker cancelled");
+          return result;
+        },
+        ...(owner ? { signal: owner.signal } : {}),
         ...(binaries.bd ? { bdBinary: binaries.bd } : {}),
+      });
+      return new Proxy(beads, {
+        get(target, property) {
+          const value = Reflect.get(target, property);
+          if (typeof value !== "function") return value;
+          return async (...args: unknown[]) => {
+            try {
+              return await value.apply(target, args);
+            } catch (error) {
+              if (error instanceof BeadsQueueTimeoutError || error instanceof TrackerTimeoutError)
+                throw new CoreError("tracker_unavailable", error.message);
+              throw error;
+            }
+          };
+        },
       });
     case "github":
       if (!settings.repo) throw new Error("the github ticket adapter needs `repo` (owner/name)");

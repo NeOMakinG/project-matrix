@@ -18,7 +18,7 @@ import type { StoredProject } from "./mapping.js";
 import { publishOwnedFile } from "./owned-files.js";
 
 type Generated = Extract<Awaited<ReturnType<typeof runInit>>, { status: "ok" }>;
-interface FinalizeJournal extends TrackerJournal {
+export interface FinalizeJournal extends TrackerJournal {
   sessionId?: string;
   inputHash: string;
   effectiveHash?: string;

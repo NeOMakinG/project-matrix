@@ -13,6 +13,7 @@ import {
 } from "@matrix/core";
 import { GatewayLlm, type LlmClient } from "@matrix/monitor";
 import type { TicketStore } from "@matrix/tickets";
+import { BeadsQueueTimeoutError, withBeadsQueue } from "@matrix/tickets/adapters/beads-queue";
 import { fileProposals, runWatch, SeenStore } from "@matrix/watch";
 import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
@@ -85,19 +86,24 @@ export async function initProjectRepo(
   await git("commit", "--allow-empty", "-q", "-m", "chore: initial commit");
   if (tickets.kind === "beads") {
     try {
-      await trackerDeadline(
-        (signal) =>
-          execute(
-            binaries.bd ?? "bd",
-            ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
-            { cwd: repoPath, signal },
+      await withBeadsQueue(
+        repoPath,
+        () =>
+          trackerDeadline(
+            (signal) =>
+              execute(
+                binaries.bd ?? "bd",
+                ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
+                { cwd: repoPath, signal },
+              ),
+            owner?.signal,
           ),
         owner?.signal,
       );
     } catch (error) {
       owner?.assertOwned();
       throw new TrackerUnavailableError(
-        error instanceof TrackerTimeoutError
+        error instanceof TrackerTimeoutError || error instanceof BeadsQueueTimeoutError
           ? "timeout"
           : error && typeof error === "object" && "code" in error && error.code === "ENOENT"
             ? "missing"
@@ -176,6 +182,7 @@ async function createOwnedFactory(
     workspace: stateOwner.fence(runtime.workspace),
     git: stateOwner.fence(runtime.git),
     tickets,
+    projectDispatchAllowed: (projectId) => core?.projectDispatchAllowed(projectId) ?? false,
     limits: {
       perProject: options.runtime === "fake" ? 4 : 1,
       perModel: {},

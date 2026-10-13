@@ -2,9 +2,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sampleAnswers } from "@matrix/packs";
+import type { TicketStore } from "@matrix/tickets";
+import { MemoryStore as MemoryTickets } from "@matrix/tickets/adapters/memory";
 import { expect, test, vi } from "vitest";
 import { createServer } from "../http/app.js";
+import { PrivateState } from "../private-state.js";
 import { createFactory } from "./factory.js";
+import type { FinalizeJournal } from "./finalize.js";
 
 async function bounded<T>(promise: Promise<T>, label: string, timeoutMs = 2_000): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -22,6 +26,96 @@ async function bounded<T>(promise: Promise<T>, label: string, timeoutMs = 2_000)
 
 const trackers: ("markdown" | "beads")[] = ["markdown"];
 if (process.env.MATRIX_TEST_BD_BINARY) trackers.push("beads");
+
+test("finalize gates both ready discovery and already-pending workflows until commit", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "matrix-finalize-gate-"));
+  const factory = await createFactory({
+    runtime: "fake",
+    dataDir,
+    host: "test-host",
+    log: () => undefined,
+  });
+  const memory = new MemoryTickets();
+  const tracker: TicketStore = {
+    kind: "beads",
+    list: memory.list.bind(memory),
+    get: memory.get.bind(memory),
+    create: memory.create.bind(memory),
+    update: memory.update.bind(memory),
+    comment: memory.comment.bind(memory),
+    link: memory.link.bind(memory),
+    ready: memory.ready.bind(memory),
+  };
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let mirrored = (_id: string) => {};
+  const firstTicket = new Promise<string>((resolve) => {
+    mirrored = resolve;
+  });
+  const create = vi.spyOn(tracker, "create").mockImplementation(async (input) => {
+    const ticket = await memory.create(input);
+    mirrored(ticket.id);
+    await held;
+    return ticket;
+  });
+  const ready = vi.spyOn(tracker, "ready");
+  vi.spyOn(factory.core, "ticketStore").mockResolvedValue(tracker);
+  let finalizing: ReturnType<typeof factory.core.finalizeInit> | undefined;
+  try {
+    const project = await factory.core.createProject({
+      name: "gate",
+      description: "",
+      workspace: "native",
+      tickets: { kind: "markdown" },
+    });
+    const session = await factory.core.startInit(project.id);
+    await factory.core.answerInit(session.id, { ...sampleAnswers, "process.tickets": "beads" });
+    finalizing = factory.core.finalizeInit(session.id, { acceptRecommended: true });
+    const ticketId = await bounded(firstTicket, "first mirrored ticket");
+    await factory.store.createWorkflow({
+      projectId: project.id,
+      ticketId,
+      phase: "spike",
+      status: "pending",
+      attempt: 0,
+      loops: 0,
+      priority: 2,
+      version: 0,
+    });
+    const report = await bounded(factory.reconciler.tick(), "gated tick");
+    expect(report.dispatched).toEqual([]);
+    expect(report.skipped).toContainEqual({ ticketId, reason: "project finalize incomplete" });
+    expect(ready).not.toHaveBeenCalled();
+    expect(await factory.store.listRuns()).toEqual([]);
+    expect(factory.core.projectDispatchAllowed(project.id)).toBe(false);
+    release();
+    expect((await bounded(finalizing, "finalize", 10_000)).state).toBe("completed");
+    expect(factory.core.projectDispatchAllowed(project.id)).toBe(true);
+    create.mockRestore();
+    const journal = new PrivateState<FinalizeJournal | null>(
+      join(dataDir, "projects", `${project.id}.init.json`),
+      factory.stateOwner,
+    );
+    const completed = journal.load(null)!;
+    const incomplete = { ...completed };
+    delete incomplete.completed;
+    journal.save(incomplete);
+    expect(factory.core.projectDispatchAllowed(project.id)).toBe(false);
+    expect((await factory.reconciler.tick()).dispatched).toEqual([]);
+    expect(ready).not.toHaveBeenCalled();
+    journal.save(completed);
+    expect((await factory.reconciler.tick()).dispatched.length).toBeGreaterThan(0);
+    await factory.reconciler.idle();
+    expect(ready).toHaveBeenCalled();
+  } finally {
+    release();
+    await finalizing?.catch(() => undefined);
+    vi.restoreAllMocks();
+    await factory.stop();
+  }
+}, 30_000);
 
 test.each(trackers)(
   "%s: runs and overview settle after real finalize with a stalled tracker",
