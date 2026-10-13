@@ -93,10 +93,10 @@ const control = createServer({
   keys,
   stateDir: dataDir,
   ...(env.MATRIX_AUDIT_FILE ? { auditFile: env.MATRIX_AUDIT_FILE } : {}),
-  replayLogFile: env.MATRIX_REPLAY_LOG ?? `${env.HOME ?? "."}/.matrix/replay.log`,
+  replayLogFile: env.MATRIX_REPLAY_LOG ?? join(stateOwner.directory, "replay.log"),
   ...(env.MATRIX_DASHBOARD_DIR ? { dashboardDir: env.MATRIX_DASHBOARD_DIR } : {}),
   webhookSecretsFile:
-    env.MATRIX_WEBHOOK_SECRETS_FILE ?? `${env.HOME ?? "."}/.matrix/webhook-secrets.json`,
+    env.MATRIX_WEBHOOK_SECRETS_FILE ?? join(stateOwner.directory, "webhook-secrets.json"),
   health: () => factory.health(),
   sessions: {
     ...(env.MATRIX_DASHBOARD_ORIGINS
