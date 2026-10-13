@@ -114,6 +114,8 @@ export function advance(
   backoff: BackoffPolicy,
   now: Date,
 ): Transition {
+  if (outcome.failureClass === "factory-tooling")
+    return block(state, `factory/tooling error at ${state.phase}: ${outcome.summary}`);
   if (outcome.requiresApproval && (state.phase === "merge" || state.phase === "deploy")) {
     // Autonomy changed or the approval no longer matches: stop and ask again instead of acting.
     return {

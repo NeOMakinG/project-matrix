@@ -1,5 +1,44 @@
+import { createHash } from "node:crypto";
+import type { Ticket } from "@matrix/tickets";
 import type { AutonomyMode, Phase, Receipt, RunEvent, RunnerId } from "./ports.js";
+import { PHASES } from "./ports.js";
 import type { ProjectConfig, WorkflowState } from "./types.js";
+
+export interface ProjectPolicySnapshot {
+  project: ProjectConfig;
+  history: AutonomyChange[];
+  version: string;
+}
+
+export function projectPolicySnapshot(
+  project: ProjectConfig,
+  history: AutonomyChange[],
+): ProjectPolicySnapshot {
+  const version = createHash("sha256")
+    .update(
+      JSON.stringify({
+        policy: [
+          project.autonomy.default,
+          ...PHASES.map((phase) => project.autonomy[phase] ?? project.autonomy.default),
+        ],
+        history: history.map((change) => [
+          change.phase,
+          change.mode,
+          change.actor,
+          new Date(change.at).toISOString(),
+          change.reason ?? null,
+        ]),
+      }),
+    )
+    .digest("hex");
+  return { project, history, version };
+}
+
+export class AutonomyConflictError extends Error {
+  constructor() {
+    super("autonomy changed since you loaded it");
+  }
+}
 
 export type RunRecordStatus = "running" | "ok" | "failed" | "timeout" | "cancelled" | "stalled";
 
@@ -106,8 +145,14 @@ export interface Store {
       priority?: number;
       labels: string[];
       url?: string;
+      snapshot?: Ticket;
     },
   ): Promise<void>;
+
+  getIndexedTicketTitle(projectId: string, ticketId: string): Promise<string | null>;
+  replaceIndexedTickets(projectId: string, tickets: Ticket[], signal?: AbortSignal): Promise<void>;
+  listIndexedTickets(projectId: string): Promise<Ticket[]>;
+  getIndexedTicket(projectId: string, ticketId: string): Promise<Ticket | null>;
 
   getWorkflow(projectId: string, ticketId: string): Promise<WorkflowState | null>;
   createWorkflow(state: WorkflowState): Promise<boolean>;
@@ -149,7 +194,19 @@ export interface Store {
   ): Promise<ApprovalRecord>;
 
   setAutonomy(change: AutonomyChange): Promise<void>;
+  setAutonomyPolicy(
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    actor: string,
+    expected?: Record<Phase, AutonomyMode> | string,
+  ): Promise<void>;
   autonomyHistory(projectId: string): Promise<AutonomyChange[]>;
+  getProjectPolicy(projectId: string): Promise<ProjectPolicySnapshot>;
+  saveInitializedProject(
+    config: ProjectConfig,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    expectedVersion: string,
+  ): Promise<ProjectPolicySnapshot>;
 
   addSpend(projectId: string, day: string, usd: number): Promise<number>;
   getSpend(projectId: string, day: string): Promise<number>;
@@ -172,7 +229,7 @@ export class MemoryStore implements Store {
   private history: AutonomyChange[] = [];
   private spend = new Map<string, number>();
   private lessons: Lesson[] = [];
-  readonly tickets = new Map<string, unknown>();
+  readonly tickets = new Map<string, Parameters<Store["indexTicket"]>[1]>();
 
   async upsertProject(config: ProjectConfig) {
     this.projects.set(config.id, clone(config));
@@ -184,8 +241,46 @@ export class MemoryStore implements Store {
   async listProjects() {
     return [...this.projects.values()].map(clone);
   }
-  async indexTicket(projectId: string, ticket: { id: string }) {
+  async indexTicket(projectId: string, ticket: Parameters<Store["indexTicket"]>[1]) {
     this.tickets.set(key(projectId, ticket.id), clone(ticket));
+  }
+  async getIndexedTicketTitle(projectId: string, ticketId: string) {
+    return this.tickets.get(key(projectId, ticketId))?.title ?? null;
+  }
+  async replaceIndexedTickets(projectId: string, tickets: Ticket[], signal?: AbortSignal) {
+    const replacement = new Map(this.tickets);
+    for (const [entryKey, ticket] of replacement) {
+      if (!entryKey.startsWith(`${projectId}\u0000`)) continue;
+      const historical = { ...ticket };
+      delete historical.snapshot;
+      replacement.set(entryKey, historical);
+    }
+    for (const ticket of tickets) {
+      replacement.set(
+        key(projectId, ticket.id),
+        clone({
+          id: ticket.id,
+          title: ticket.title,
+          status: ticket.status,
+          labels: ticket.labels,
+          ...(ticket.priority === undefined ? {} : { priority: ticket.priority }),
+          ...(ticket.url ? { url: ticket.url } : {}),
+          snapshot: ticket,
+        }),
+      );
+    }
+    signal?.throwIfAborted();
+    this.tickets.clear();
+    for (const [entryKey, ticket] of replacement) this.tickets.set(entryKey, ticket);
+  }
+  async listIndexedTickets(projectId: string) {
+    return [...this.tickets.entries()].flatMap(([entryKey, ticket]) =>
+      entryKey.startsWith(`${projectId}\u0000`) && ticket.snapshot ? [clone(ticket.snapshot)] : [],
+    );
+  }
+  async getIndexedTicket(projectId: string, ticketId: string) {
+    const ticket = this.tickets.get(key(projectId, ticketId))?.snapshot;
+    return ticket ? clone(ticket) : null;
   }
   async getWorkflow(projectId: string, ticketId: string) {
     const w = this.workflows.get(key(projectId, ticketId));
@@ -301,8 +396,72 @@ export class MemoryStore implements Store {
     if (change.phase === "default") p.autonomy.default = change.mode;
     else p.autonomy[change.phase] = change.mode;
   }
+  async setAutonomyPolicy(
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    actor: string,
+    expected?: Record<Phase, AutonomyMode> | string,
+  ) {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`project ${projectId} not found`);
+    if (
+      typeof expected === "string" &&
+      projectPolicySnapshot(
+        project,
+        this.history.filter((change) => change.projectId === projectId),
+      ).version !== expected
+    )
+      throw new AutonomyConflictError();
+    if (
+      expected &&
+      typeof expected !== "string" &&
+      PHASES.some(
+        (phase) => expected[phase] !== (project.autonomy[phase] ?? project.autonomy.default),
+      )
+    )
+      throw new AutonomyConflictError();
+    const at = new Date();
+    project.autonomy = { ...project.autonomy, ...policy };
+    for (const [phase, mode] of Object.entries(policy) as [Phase, AutonomyMode][])
+      this.history.push({ projectId, phase, mode, actor, at });
+  }
   async autonomyHistory(projectId: string) {
     return this.history.filter((h) => h.projectId === projectId).map(clone);
+  }
+  async getProjectPolicy(projectId: string) {
+    const project = this.projects.get(projectId);
+    if (!project) throw new Error(`project ${projectId} not found`);
+    return projectPolicySnapshot(
+      clone(project),
+      this.history.filter((change) => change.projectId === projectId).map(clone),
+    );
+  }
+  async saveInitializedProject(
+    config: ProjectConfig,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    expectedVersion: string,
+  ) {
+    const current = this.projects.get(config.id);
+    if (!current) throw new Error(`project ${config.id} not found`);
+    const history = this.history.filter((change) => change.projectId === config.id);
+    if (projectPolicySnapshot(current, history).version !== expectedVersion)
+      throw new AutonomyConflictError();
+    const updated = {
+      ...current,
+      reviewLanes: config.reviewLanes,
+      dailyBudgetUsd: config.dailyBudgetUsd,
+      autonomy: { ...current.autonomy, ...policy },
+    } as ProjectConfig;
+    const at = new Date();
+    for (const [phase, mode] of Object.entries(policy) as [Phase, AutonomyMode][]) {
+      if (mode !== (current.autonomy[phase] ?? current.autonomy.default))
+        this.history.push({ projectId: config.id, phase, mode, actor: "init", at });
+    }
+    this.projects.set(config.id, clone(updated));
+    return projectPolicySnapshot(
+      clone(updated),
+      this.history.filter((change) => change.projectId === config.id).map(clone),
+    );
   }
   async addSpend(projectId: string, day: string, usd: number) {
     const k = key(projectId, day);

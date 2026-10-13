@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type { PreparedWorkspace, Workspace, WorkspaceTarget } from "@matrix/core";
 import {
   gitLocation,
@@ -37,16 +37,16 @@ export class NativeWorkspace implements Workspace {
   readonly trusted: TrustedWorktrees;
 
   constructor(options: NativeWorkspaceOptions) {
-    this.#o = options;
+    this.#o = { ...options, root: resolve(options.root) };
     this.trusted =
-      options.trusted ?? new TrustedWorktrees(join(options.root, ".matrix", "worktrees.json"));
+      options.trusted ?? new TrustedWorktrees(join(this.#o.root, ".matrix", "worktrees.json"));
   }
 
   /** Host git, always against host-owned metadata, never discovering anything from a worktree. */
-  async #git(location: string[], args: string[]): Promise<string> {
+  async #git(gitdir: string, args: string[]): Promise<string> {
     const result = await runToCompletion(this.#o.executor ?? hostExecutor, {
-      cmd: [this.#o.gitBinary ?? "git", ...location, ...args],
-      cwd: this.#o.root,
+      cmd: [this.#o.gitBinary ?? "git", ...gitLocation(gitdir), ...args],
+      cwd: gitdir,
       env: safeGitEnv(),
       timeoutMs: 120_000,
     });
@@ -69,8 +69,7 @@ export class NativeWorkspace implements Workspace {
 
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {
     const commonDir = await this.#commonDir(target.repoPath);
-    const repo = gitLocation(commonDir);
-    await this.#git(repo, ["check-ref-format", "--branch", target.branch]);
+    await this.#git(commonDir, ["check-ref-format", "--branch", target.branch]);
     const workdir = join(this.#o.root, safeSegment(target.projectId), safeSegment(target.ticketId));
     if (existsSync(workdir)) {
       // Never reuse: a previous owner's runner may still be writing here (lease takeover).
@@ -79,21 +78,17 @@ export class NativeWorkspace implements Workspace {
     }
     {
       await mkdir(dirname(workdir), { recursive: true });
-      const exists = await this.#git(repo, ["branch", "--list", target.branch]);
+      const exists = await this.#git(commonDir, ["branch", "--list", target.branch]);
       const add = exists
         ? ["worktree", "add", "--", workdir, target.branch]
         : ["worktree", "add", "-b", target.branch, "--", workdir, target.baseBranch];
-      await this.#git(repo, add);
+      await this.#git(commonDir, add);
     }
     const gitdir = await gitdirFromCommonDir(commonDir, workdir);
     await verifyWorktreeLink(workdir, gitdir);
-    const baseSha = await this.#git(gitLocation(gitdir), [
-      "rev-parse",
-      "--verify",
-      "HEAD^{commit}",
-    ]);
+    const baseSha = await this.#git(gitdir, ["rev-parse", "--verify", "HEAD^{commit}"]);
     await this.trusted.record(workdir, { gitdir, commonDir, baseSha });
-    const branch = await this.#git(gitLocation(gitdir), ["symbolic-ref", "--short", "HEAD"]);
+    const branch = await this.#git(gitdir, ["symbolic-ref", "--short", "HEAD"]);
     if (branch !== target.branch)
       throw new Error(`workspace ${workdir} is on ${branch}, expected ${target.branch}`);
     return { workdir, ref: JSON.stringify({ commonDir, gitdir }) };
@@ -109,17 +104,11 @@ export class NativeWorkspace implements Workspace {
     const prepared = { workdir };
     try {
       await verifyWorktreeLink(workdir, await gitdirFromCommonDir(commonDir, workdir));
-      await this.#git(gitLocation(commonDir), [
-        "worktree",
-        "remove",
-        "--force",
-        "--",
-        prepared.workdir,
-      ]);
+      await this.#git(commonDir, ["worktree", "remove", "--force", "--", prepared.workdir]);
     } catch {
       // Tampered or partial worktree: remove files without trusting them, then let git forget it.
       await rm(prepared.workdir, { recursive: true, force: true });
-      await this.#git(gitLocation(commonDir), ["worktree", "prune"]);
+      await this.#git(commonDir, ["worktree", "prune"]);
     }
   }
 }

@@ -17,6 +17,7 @@ function fixture(): DoctorAdapters {
       if (name === "git") return "git version 2.40.0";
       if (name === "podman") return '{"host":{"security":{"rootless":true}}}';
       if (name === "gitleaks") return "8.24.0";
+      if (name === "bd") return "bd version 1.3.1";
       return "fixture version";
     }),
     postgres: vi.fn(async () => {}),
@@ -182,4 +183,87 @@ test("invalid JSON options return a redacted machine-readable failure", async ()
   ).toBe(2);
   expect(JSON.parse(output[0] ?? "").blocked).toBe(true);
   expect(output.join("")).not.toContain("fixture-secret");
+});
+
+test.each(["beads", "markdown", "github"])(
+  "bd failure is required only for configured %s",
+  async (tracker) => {
+    const adapters = fixture();
+    adapters.config = vi.fn(
+      async () =>
+        `throw new Error("must not execute");\nexport default defineConfig(${JSON.stringify({ process: { tickets: tracker } })});`,
+    );
+    const original = adapters.command;
+    adapters.command = vi.fn(async (name, args, signal) => {
+      if (name === "bd") throw new Error("private tracker failure");
+      return original(name, args, signal);
+    });
+    const report = await diagnose(adapters);
+    expect(report.checks.find((entry) => entry.id === "bd")?.status).toBe(
+      tracker === "beads" ? "fail" : "warn",
+    );
+    expect(report.blocked).toBe(tracker === "beads");
+    expect(adapters.command).toHaveBeenCalledWith("bd", ["version"], expect.any(AbortSignal));
+    expect(JSON.stringify(report)).not.toContain("private tracker failure");
+  },
+);
+
+test.each(["bd version 1.3.1", "not a version"])(
+  "validates bd version output: %s",
+  async (version) => {
+    const adapters = fixture();
+    adapters.config = async () => JSON.stringify({ process: { tickets: "beads" } });
+    const original = adapters.command;
+    adapters.command = async (name, args, signal) =>
+      name === "bd" ? version : original(name, args, signal);
+    expect((await diagnose(adapters)).checks.find((entry) => entry.id === "bd")?.status).toBe(
+      version.startsWith("bd") ? "pass" : "fail",
+    );
+  },
+);
+
+test("dynamic config is not evaluated and unavailable bd warns without a known beads project", async () => {
+  const adapters = fixture();
+  adapters.config = async () => "export default (() => { throw new Error('secret'); })();";
+  const original = adapters.command;
+  adapters.command = async (name, args, signal) => {
+    if (name === "bd") throw new Error("absent");
+    return original(name, args, signal);
+  };
+  const report = await diagnose(adapters);
+  expect(report.checks.find((entry) => entry.id === "tracker-config")?.status).toBe("warn");
+  expect(report.checks.find((entry) => entry.id === "bd")?.status).toBe("warn");
+  expect(report.blocked).toBe(false);
+});
+
+test("handwritten literal config is read without evaluating code or confusing comments with properties", async () => {
+  const adapters = fixture();
+  adapters.config = async () => `throw new Error('must not execute');
+export default defineConfig ({
+  // process: { tickets: 'markdown' }
+  process: { tickets: 'beads', },
+  name: 'A "quoted" project',
+});`;
+  const original = adapters.command;
+  adapters.command = async (name, args, signal) => {
+    if (name === "bd") throw new Error("unavailable");
+    return original(name, args, signal);
+  };
+  const output: string[] = [];
+  expect(await doctorCommand(["--json"], adapters, (text) => output.push(text))).toBe(2);
+  const report = JSON.parse(output.join(""));
+  expect(report.checks.find((entry: { id: string }) => entry.id === "bd").status).toBe("fail");
+  expect(report.checks.some((entry: { id: string }) => entry.id === "tracker-config")).toBe(false);
+});
+
+test("a hung required bd probe is bounded", async () => {
+  vi.useFakeTimers();
+  const adapters = fixture();
+  adapters.config = async () => '{"process":{"tickets":"beads"}}';
+  const original = adapters.command;
+  adapters.command = async (name, args, signal) =>
+    name === "bd" ? new Promise(() => {}) : original(name, args, signal);
+  const pending = diagnose(adapters);
+  await vi.advanceTimersByTimeAsync(3_100);
+  expect((await pending).checks.find((entry) => entry.id === "bd")?.status).toBe("fail");
 });

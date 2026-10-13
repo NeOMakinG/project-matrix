@@ -9,7 +9,9 @@ export const TicketStatus = z
   .openapi("TicketStatus");
 
 export const ErrorBody = z
-  .object({ error: z.object({ code: z.string(), message: z.string() }) })
+  .object({
+    error: z.object({ code: z.string(), message: z.string(), details: z.unknown().optional() }),
+  })
   .openapi("Error");
 
 export const Project = z
@@ -28,6 +30,26 @@ export const CreateProject = z
     name: z.string().min(1).max(100),
     description: z.string().max(2000).default(""),
     workspace: z.enum(["orca", "native"]).default("orca"),
+    tickets: z
+      .object({
+        kind: z.enum(["beads", "markdown", "github"]),
+        repo: z
+          .string()
+          .regex(/^[\w.-]+\/[\w.-]+$/)
+          .optional(),
+      })
+      .optional()
+      .openapi({ description: "Ticket tracker; beads by default" }),
+    checks: z
+      .array(
+        z.object({
+          kind: z.enum(["typecheck", "lint", "test", "adr-check"]),
+          cmd: z.array(z.string().min(1).max(200)).min(1).max(20),
+        }),
+      )
+      .max(20)
+      .optional()
+      .openapi({ description: "Check commands run in the sandbox (argv, no shell)" }),
   })
   .openapi("CreateProject");
 
@@ -177,6 +199,28 @@ export const InitSession = z
     answers: z.record(z.string(), z.unknown()),
     state: z.enum(["in_progress", "completed"]),
     createdAt: z.string(),
+    result: z
+      .discriminatedUnion("status", [
+        z.object({ status: z.literal("missing"), missing: z.array(z.string()) }),
+        z.object({
+          status: z.literal("contradictions"),
+          contradictions: z.array(
+            z.object({ id: z.string(), message: z.string(), questions: z.array(z.string()) }),
+          ),
+        }),
+        z.object({
+          status: z.literal("invalid"),
+          issues: z.array(z.object({ path: z.string(), message: z.string() })),
+        }),
+        z.object({
+          status: z.literal("ok"),
+          files: z.array(z.string()),
+          tickets: z.array(z.string()),
+          warnings: z.array(z.string()),
+          commit: z.string().optional(),
+        }),
+      ])
+      .optional(),
   })
   .openapi("InitSession");
 
@@ -338,6 +382,15 @@ export const CheckResult = z
   })
   .openapi("CheckResult");
 
+export const Contradiction = z
+  .object({
+    id: z.string(),
+    severity: z.enum(["error", "warning"]),
+    message: z.string(),
+    questions: z.array(z.string()),
+  })
+  .openapi("Contradiction");
+
 export const InitProgress = z
   .object({
     packs: z.array(
@@ -349,7 +402,28 @@ export const InitProgress = z
         state: z.enum(["done", "active", "todo"]),
       }),
     ),
-    answered: z.array(z.object({ questionId: z.string(), label: z.string(), value: z.string() })),
+    answered: z.array(
+      z.object({
+        questionId: z.string(),
+        label: z.string(),
+        value: z.string(),
+        id: z.string(),
+        pack: z.string(),
+        prompt: z.string(),
+        kind: z.enum(["select", "multiselect", "text", "list", "confirm", "number"]),
+        rationale: z.string(),
+        recommended: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]),
+        options: z.array(
+          z.object({
+            id: z.string(),
+            label: z.string(),
+            description: z.string(),
+            recommended: z.boolean(),
+          }),
+        ),
+        dependsOn: z.array(z.string()),
+      }),
+    ),
     question: z
       .object({
         id: z.string(),
@@ -372,5 +446,25 @@ export const InitProgress = z
       .nullable(),
     configPreview: z.string(),
     adrs: z.array(z.object({ id: z.string(), title: z.string(), status: Pill })),
+    round: z.array(
+      z.object({
+        id: z.string(),
+        pack: z.string(),
+        kind: z.enum(["select", "multiselect", "text", "list", "confirm", "number"]),
+        prompt: z.string(),
+        rationale: z.string(),
+        recommended: z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]),
+        options: z.array(
+          z.object({
+            id: z.string(),
+            label: z.string(),
+            description: z.string(),
+            recommended: z.boolean(),
+          }),
+        ),
+        dependsOn: z.array(z.string()),
+      }),
+    ),
+    contradictions: z.array(Contradiction),
   })
   .openapi("InitProgress");

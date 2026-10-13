@@ -6,6 +6,7 @@ export * from "./holdout.js";
 export * from "./machine.js";
 export * from "./ports.js";
 export type * from "./ports-internal.js";
+export * from "./qa-evidence.js";
 export * from "./reconcile.js";
 export * from "./review.js";
 export * from "./store.js";

@@ -12,24 +12,39 @@ afterEach(async () => {
   while (cleanups.length) await cleanups.pop()?.();
 });
 
-async function upstream(): Promise<{ url: string; seen: http.IncomingHttpHeaders[] }> {
+async function upstream(
+  redirectTo?: string,
+): Promise<{ url: string; seen: http.IncomingHttpHeaders[]; paths: string[] }> {
   const seen: http.IncomingHttpHeaders[] = [];
+  const paths: string[] = [];
   const server = http.createServer((req, res) => {
     seen.push(req.headers);
+    paths.push(req.url ?? "");
     let body = "";
     req.on("data", (c) => {
       body += c;
     });
     req.on("end", () => {
+      if (redirectTo) {
+        res.writeHead(302, { location: redirectTo });
+        res.end();
+        return;
+      }
       res.writeHead(200, { "content-type": "text/event-stream" });
       res.write(`data: ${JSON.stringify({ path: req.url, body })}\n\n`);
       res.end("data: [DONE]\n\n");
     });
   });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
   cleanups.push(() => new Promise((r) => server.close(() => r())));
   const { port } = server.address() as net.AddressInfo;
-  return { url: `http://127.0.0.1:${port}`, seen };
+  return { url: `http://127.0.0.1:${port}`, seen, paths };
 }
 
 function request(
@@ -57,6 +72,94 @@ async function broker(url: string) {
 }
 
 describe("llm socket", () => {
+  test("normalizes origin and v1 bases through the actual proxy, retaining custom mounts and queries", async () => {
+    const up = await upstream();
+    const bases = [
+      "",
+      "/",
+      "/v1",
+      "/v1/",
+      "/hermes",
+      "/hermes/",
+      "/hermes/v1",
+      "/hermes/v1/",
+      "/proxy/hermes/v1/",
+    ];
+    for (const [index, base] of bases.entries()) {
+      const grant = await (await broker(`${up.url}${base}`)).grant({
+        runId: `normalization-${index}`,
+        network: "gateway",
+      });
+      const socket = join(grant.socketDir ?? "", "llm.sock");
+      const mount = base.startsWith("/proxy/")
+        ? "/proxy/hermes"
+        : base.startsWith("/hermes")
+          ? "/hermes"
+          : "";
+      for (const path of ["/v1/responses", "/v1/messages", "/v1/models"]) {
+        const original = `${path}?trace=fixture%2Fvalue&keep=a%2Bb`;
+        const response = await request(socket, {
+          method: path.endsWith("models") ? "GET" : "POST",
+          path: original,
+          headers: {
+            authorization: `Bearer ${grant.token}`,
+            "x-api-key": grant.token,
+            "proxy-authorization": "Bearer fake-client-only",
+          },
+        });
+        expect(response.status).toBe(200);
+        expect(up.paths.at(-1)).toBe(`${mount}${original}`);
+        expect(up.seen.at(-1)?.authorization).toBe(`Bearer ${REAL_KEY}`);
+        expect(up.seen.at(-1)?.["x-api-key"]).toBe(REAL_KEY);
+        expect(up.seen.at(-1)?.["proxy-authorization"]).toBeUndefined();
+        expect(JSON.stringify(up.seen.at(-1))).not.toContain(grant.token);
+      }
+      const before = up.paths.length;
+      for (const path of [
+        "/v0/management/keys",
+        "/v1/v1/responses",
+        "/v1/../responses",
+        "/hermes/v1/responses",
+      ]) {
+        expect(
+          (await request(socket, { method: "POST", path, headers: { "x-api-key": grant.token } }))
+            .status,
+        ).toBe(403);
+      }
+      expect(
+        (
+          await request(socket, {
+            method: "POST",
+            path: "/v1/responses",
+            headers: { "x-api-key": "fake-invalid-token" },
+          })
+        ).status,
+      ).toBe(401);
+      expect(up.paths).toHaveLength(before);
+      await grant.close();
+    }
+    expect(up.paths).toHaveLength(bases.length * 3);
+  });
+
+  test("upstream redirects are rejected without contacting the redirect destination", async () => {
+    const destination = await upstream();
+    const up = await upstream(`${destination.url}/v1/responses`);
+    const grant = await (await broker(`${up.url}/v1/`)).grant({
+      runId: "redirect-fixture",
+      network: "gateway",
+    });
+    const response = await request(join(grant.socketDir ?? "", "llm.sock"), {
+      method: "POST",
+      path: "/v1/responses",
+      headers: { "x-api-key": grant.token },
+    });
+    expect(response.status).toBe(502);
+    expect(response.body).toBe("gateway redirects are not allowed");
+    expect(up.paths).toEqual(["/v1/responses"]);
+    expect(destination.paths).toEqual([]);
+    expect(destination.seen).toEqual([]);
+  });
+
   test("forwards allowed routes with the real key, never the run token", async () => {
     const up = await upstream();
     const grant = await (await broker(up.url)).grant({ runId: "run-1", network: "gateway" });
@@ -112,6 +215,24 @@ describe("llm socket", () => {
       request(join(grant.socketDir ?? "", "llm.sock"), { method: "GET", path: "/v1/models" }),
     ).rejects.toThrow();
   });
+});
+
+test.each([
+  "ftp://fixture.invalid",
+  "http://fixture.invalid/v2",
+  "http://fixture.invalid/v1/v1",
+  "http://fixture.invalid/v1/proxy",
+  "http://fixture.invalid/proxy//mount",
+  "http://fixture.invalid/proxy/../mount",
+  "http://fixture.invalid/proxy/./mount",
+  "http://fixture.invalid/proxy%2Fmount",
+  "http://fixture.invalid/proxy\\mount",
+  "http://fixture.invalid/v1?redirect=fixture",
+  "http://fixture.invalid/v1#fragment",
+])("rejects unsupported gateway base %s without opening sockets", (gatewayUrl) => {
+  expect(() => new CredentialBroker({ gatewayUrl, gatewayKey: { value: REAL_KEY } })).toThrow(
+    "unsupported gateway base",
+  );
 });
 
 describe("egress socket", () => {

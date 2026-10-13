@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   realpath: vi.fn(),
   lstat: vi.fn(),
   statfs: vi.fn(),
+  readFile: vi.fn(),
 }));
 vi.mock("node:child_process", () => ({ spawn: mocks.spawn }));
 vi.mock("node:net", () => ({ connect: mocks.connect }));
@@ -16,6 +17,7 @@ vi.mock("node:fs/promises", () => ({
   realpath: mocks.realpath,
   lstat: mocks.lstat,
   statfs: mocks.statfs,
+  readFile: mocks.readFile,
 }));
 
 function processFixture() {
@@ -68,6 +70,33 @@ test("process adapter uses only explicitly approved tools even from a nested cwd
   expect(options.cwd).not.toMatch(/project/);
   expect(options.env.PATH).toBe("/trusted/bin");
   expect(options.env.MATRIX_ADMIN_KEY).toBeUndefined();
+});
+
+test("bd version uses the same trusted lookup, not inherited PATH", async () => {
+  const child = processFixture();
+  const pending = localAdapters(["/trusted/bin"]).command(
+    "bd",
+    ["version"],
+    new AbortController().signal,
+  );
+  await vi.waitFor(() => expect(mocks.spawn).toHaveBeenCalled());
+  child.stdout.write("bd version 1.3.1");
+  child.emit("close", 0);
+  expect(await pending).toBe("bd version 1.3.1");
+  expect(mocks.spawn.mock.calls[0]?.[0]).toBe("/trusted/bin/bd");
+});
+
+test("config adapter reads text without importing project code", async () => {
+  processFixture();
+  const text =
+    'throw new Error("must not execute"); export default defineConfig({"process":{"tickets":"beads"}});';
+  mocks.readFile.mockResolvedValue(text);
+  expect(await localAdapters().config?.(new AbortController().signal)).toBe(text);
+  expect(mocks.readFile).toHaveBeenCalledWith(
+    "/project/packages/sub/matrix.config.ts",
+    expect.objectContaining({ encoding: "utf8" }),
+  );
+  expect(mocks.spawn).not.toHaveBeenCalled();
 });
 
 test("default system policy ignores fake PATH binaries and restricts child PATH", async () => {

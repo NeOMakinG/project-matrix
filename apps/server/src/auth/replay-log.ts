@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { preparePrivateFile } from "../private-state.js";
+import type { PrivateStateOwner } from "../state-owner.js";
 import type { Clock } from "./limits.js";
 
 export interface ReplayLogOptions {
@@ -8,6 +10,7 @@ export interface ReplayLogOptions {
   clock?: Clock;
   /** How long an accepted delivery is remembered. Must exceed the accepted timestamp skew. */
   ttlMs?: number;
+  owner?: PrivateStateOwner | undefined;
 }
 
 /**
@@ -22,6 +25,10 @@ export class ReplayLog {
   private appended = 0;
 
   constructor(private readonly options: ReplayLogOptions = {}) {
+    if (options.file) {
+      options.owner?.assertFile(options.file);
+      preparePrivateFile(options.file);
+    }
     this.clock = options.clock ?? Date.now;
     this.ttlMs = options.ttlMs ?? 7 * 24 * 60 * 60 * 1000;
     if (options.file && existsSync(options.file)) {
@@ -39,6 +46,10 @@ export class ReplayLog {
 
   /** Returns false when `key` was already accepted within the TTL; otherwise records it. */
   accept(key: string): boolean {
+    if (this.options.file) {
+      this.options.owner?.assertFile(this.options.file);
+      preparePrivateFile(this.options.file);
+    }
     const now = this.clock();
     this.expire(now);
     const hash = createHash("sha256").update(key).digest("hex");
@@ -64,8 +75,10 @@ export class ReplayLog {
   /** Rewrites the file with live entries only (atomic rename). */
   private compact(): void {
     if (!this.options.file) return;
+    this.options.owner?.assertFile(this.options.file);
     const tmp = `${this.options.file}.tmp`;
     writeFileSync(tmp, [...this.seen].map(([h, at]) => `${h} ${at}\n`).join(""), { mode: 0o600 });
+    this.options.owner?.assertOwned();
     renameSync(tmp, this.options.file);
     this.appended = 0;
   }

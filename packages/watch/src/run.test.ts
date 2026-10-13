@@ -10,6 +10,31 @@ import { heuristicScore, scoreItems } from "./score.js";
 import { fetchTransport } from "./transport.js";
 import { type Fetch, ScoreBatchSchema, type WatchItem } from "./types.js";
 
+test("ownership cancellation prevents gateway retry calls", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const fake: Fetch = async () => {
+    calls += 1;
+    controller.abort(new Error("ownership lost"));
+    throw new Error("response outcome unknown");
+  };
+  await expect(
+    completeJson(
+      {
+        baseUrl: "http://fixture",
+        apiKey: "fixture",
+        model: "fixture",
+        fetch: fake,
+        signal: controller.signal,
+      },
+      "s",
+      "u",
+      ScoreBatchSchema,
+    ),
+  ).rejects.toThrow("ownership lost");
+  expect(calls).toBe(1);
+});
+
 class FakeTickets implements TicketStore {
   readonly kind = "markdown" as const;
   tickets: Ticket[] = [];

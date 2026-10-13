@@ -1,5 +1,6 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  AutonomyConflictError,
   type AutonomyMode,
   assertActor,
   PHASES,
@@ -39,6 +40,7 @@ function defaultAutonomy(): Record<Phase, AutonomyMode> {
 
 /** In-memory CorePort used by tests and until the orchestrator core lands. */
 export class MemoryCore implements CorePort {
+  private readonly policyRevisions = new Map<string, number>();
   readonly projects = new Map<string, Project>();
   readonly tickets = new Map<string, Ticket[]>();
   readonly runs = new Map<string, Run>();
@@ -104,7 +106,39 @@ export class MemoryCore implements CorePort {
     const project = this.project(projectId);
     const updated = { ...project, autonomy: { ...project.autonomy, [phase]: mode } };
     this.projects.set(projectId, updated);
+    this.policyRevisions.set(projectId, (this.policyRevisions.get(projectId) ?? 0) + 1);
     return updated;
+  }
+
+  async setAutonomyPolicy(
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    _actor: Actor,
+    expected?: string,
+  ) {
+    const project = this.project(projectId);
+    if (expected !== undefined && expected !== this.policyVersion(projectId))
+      throw new AutonomyConflictError();
+    const updated = { ...project, autonomy: { ...project.autonomy, ...policy } };
+    this.projects.set(projectId, updated);
+    this.policyRevisions.set(projectId, (this.policyRevisions.get(projectId) ?? 0) + 1);
+    return updated;
+  }
+
+  private policyVersion(projectId: string): string {
+    return createHash("sha256")
+      .update(
+        JSON.stringify([
+          this.project(projectId).autonomy,
+          this.policyRevisions.get(projectId) ?? 0,
+        ]),
+      )
+      .digest("hex");
+  }
+
+  async getProjectPolicy(projectId: string) {
+    const project = await this.getProject(projectId);
+    return project ? { project, version: this.policyVersion(projectId) } : null;
   }
 
   async listTickets(projectId: string, query?: TicketQuery) {
@@ -387,6 +421,26 @@ export class MemoryCore implements CorePort {
     const updated = { ...session, answers: { ...session.answers, ...answers } };
     this.inits.set(sessionId, updated);
     return updated;
+  }
+
+  async replaceInitAnswers(sessionId: string, answers: Record<string, unknown>) {
+    const session = this.inits.get(sessionId);
+    if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+    if (session.state === "completed")
+      throw new CoreError("conflict", "the interview is already finalized");
+    const updated = { ...session, answers };
+    this.inits.set(sessionId, updated);
+    return updated;
+  }
+
+  async finalizeInit(
+    _sessionId: string,
+    _options?: { acceptRecommended?: boolean },
+  ): Promise<InitSession> {
+    throw new CoreError(
+      "invalid_state",
+      "finalizing an interview needs the real core (project repo)",
+    );
   }
 
   async getInit(sessionId: string) {

@@ -1,0 +1,6 @@
+[Unit]
+Description=Project Matrix Postgres backup
+
+[Service]
+Type=oneshot
+ExecStart=%h/Projects/project-matrix/ops/bosgame/backup-postgres.sh

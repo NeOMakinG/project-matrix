@@ -1,4 +1,6 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { PrivateState } from "../private-state.js";
+import type { PrivateStateOwner } from "../state-owner.js";
 import type { Clock } from "./limits.js";
 
 export interface Session {
@@ -16,7 +18,22 @@ export const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 export class SessionStore {
   private readonly sessions = new Map<string, Session>();
 
-  constructor(private readonly clock: Clock = Date.now) {}
+  private readonly state: PrivateState<Session[]>;
+
+  constructor(
+    private readonly clock: Clock = Date.now,
+    file?: string,
+    owner?: PrivateStateOwner,
+  ) {
+    this.state = new PrivateState(file, owner);
+    for (const session of this.state.load([])) {
+      if (session.expiresAt > this.clock()) this.sessions.set(session.id, session);
+    }
+  }
+
+  private persist(): void {
+    this.state.save([...this.sessions.values()]);
+  }
 
   create(keyId: string): Session {
     const now = this.clock();
@@ -28,6 +45,7 @@ export class SessionStore {
       expiresAt: now + SESSION_TTL_MS,
     };
     this.sessions.set(session.id, session);
+    this.persist();
     return session;
   }
 
@@ -37,6 +55,7 @@ export class SessionStore {
     if (!session) return null;
     if (session.expiresAt <= this.clock()) {
       this.sessions.delete(id);
+      this.persist();
       return null;
     }
     return session;
@@ -44,6 +63,7 @@ export class SessionStore {
 
   delete(id: string): void {
     this.sessions.delete(id);
+    this.persist();
   }
 
   /** Ends every session of a key, e.g. when it's revoked. */
@@ -51,6 +71,7 @@ export class SessionStore {
     for (const [id, session] of this.sessions) {
       if (session.keyId === keyId) this.sessions.delete(id);
     }
+    this.persist();
   }
 }
 
