@@ -5,6 +5,13 @@ describe("trusted BASE disposable policy (no Git)", () => {
   test("stack defaults match root and nested workspaces only", () => {
     const matches = disposablePolicy(
       'export default defineConfig({ mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" } });',
+      new Set([
+        "package.json",
+        "app/package.json",
+        "web/package.json",
+        "app/android/app/build.gradle",
+        "app/ios/Podfile",
+      ]),
     );
     for (const path of [
       "node_modules/pkg/index.js",
@@ -21,6 +28,11 @@ describe("trusted BASE disposable policy (no Git)", () => {
     for (const path of [
       "src/new.ts",
       "src/build/secret.ts",
+      "src/coverage/secret.ts",
+      "src/node_modules/hidden.ts",
+      "lib/node_modules/pkg/index.js",
+      "src/.turbo/cache",
+      "src/project.tsbuildinfo",
       "backend/dist/api.js",
       "web/build/bundle.js",
       "src/node_modules.ts",

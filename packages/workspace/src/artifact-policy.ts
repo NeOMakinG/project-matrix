@@ -1,4 +1,4 @@
-import { stackDisposableArtifacts } from "@matrix/packs/disposable";
+import { type AnchoredArtifact, stackDisposableArtifacts } from "@matrix/packs/disposable";
 import ts from "typescript";
 
 type Literal = string | number | boolean | null | Literal[] | { [key: string]: Literal };
@@ -7,7 +7,10 @@ function object(value: Literal | undefined): Record<string, Literal> {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-export function disposablePolicy(source: string): (path: string) => boolean {
+export function disposablePolicy(
+  source: string,
+  baseTracked: ReadonlySet<string> = new Set(),
+): (path: string) => boolean {
   const file = ts.createSourceFile("matrix.config.ts", source, ts.ScriptTarget.Latest, true);
   const bindings = new Map<string, ts.Expression>();
   for (const statement of file.statements) {
@@ -72,6 +75,7 @@ export function disposablePolicy(source: string): (path: string) => boolean {
     throw new Error("trusted BASE artifact config requires a default export");
   const config = object(literal(exported[0]!.expression));
   const patterns: string[] = [];
+  const anchored: AnchoredArtifact[] = [];
   const frontend = object(config.frontend);
   const mobile = object(config.mobile);
   const backend = object(config.backend);
@@ -82,10 +86,10 @@ export function disposablePolicy(source: string): (path: string) => boolean {
     backend.kind === "fullstack" ||
     object(config.desktop).framework === "tauri"
   ) {
-    patterns.push(...stackDisposableArtifacts.node);
+    anchored.push(...stackDisposableArtifacts.node);
   }
-  if (frontend.bundler === "next") patterns.push(...stackDisposableArtifacts.next);
-  if (mobile.framework === "expo") patterns.push(...stackDisposableArtifacts.expo);
+  if (frontend.bundler === "next") anchored.push(...stackDisposableArtifacts.next);
+  if (mobile.framework === "expo") anchored.push(...stackDisposableArtifacts.expo);
   const declared = object(config.process).disposableArtifacts;
   if (declared !== undefined) {
     if (!Array.isArray(declared) || declared.some((pattern) => typeof pattern !== "string"))
@@ -115,7 +119,31 @@ export function disposablePolicy(source: string): (path: string) => boolean {
     }
     return new RegExp(`^${expression}${pattern.endsWith("/") ? ".+" : ""}$`);
   });
+  const segment = (glob: string) =>
+    new RegExp(
+      `^${glob
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*/g, "[^/]*")
+        .replace(/\?/g, "[^/]")}$`,
+    );
+  const anchoredMatch = (path: string) =>
+    anchored.some(({ path: artifact, anchors }) => {
+      const directory = artifact.endsWith("/");
+      const parts = path.split("/");
+      const artifactParts = artifact.replace(/\/$/, "").split("/");
+      // Every position where the artifact could start defines a candidate root.
+      for (let start = 0; start + artifactParts.length <= parts.length; start++) {
+        const root = parts.slice(0, start).join("/");
+        const prefix = root ? `${root}/` : "";
+        const tail = parts.slice(start, start + artifactParts.length);
+        const rest = parts.length - start - artifactParts.length;
+        if (directory ? rest < 1 : rest !== 0) continue;
+        if (!tail.every((part, index) => segment(artifactParts[index]!).test(part))) continue;
+        if (anchors.some((anchor) => baseTracked.has(`${prefix}${anchor}`))) return true;
+      }
+      return false;
+    });
   return (path) =>
     !path.split("/").some((part) => !part || part === "." || part === "..") &&
-    matchers.some((matcher) => matcher.test(path));
+    (anchoredMatch(path) || matchers.some((matcher) => matcher.test(path)));
 }

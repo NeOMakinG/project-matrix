@@ -204,7 +204,12 @@ export class WorktreeGitPort implements GitPort {
       const size = Number((await this.#git(workdir, ["cat-file", "-s", sha])).trim());
       if (!Number.isSafeInteger(size) || size > 1024 * 1024)
         throw new Error("trusted BASE artifact config exceeds size limit");
-      matches = disposablePolicy(await this.#git(workdir, ["cat-file", "blob", sha]));
+      const baseTracked = new Set(
+        (await this.#git(workdir, ["ls-tree", "-r", "--name-only", "-z", baseSha]))
+          .split("\0")
+          .filter(Boolean),
+      );
+      matches = disposablePolicy(await this.#git(workdir, ["cat-file", "blob", sha]), baseTracked);
     }
     const tracked = new Set(
       (await this.#git(workdir, ["ls-tree", "-r", "--name-only", "-z", "HEAD"])).split("\0"),

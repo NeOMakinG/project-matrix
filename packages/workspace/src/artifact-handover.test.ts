@@ -91,7 +91,7 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
         output = args.includes("matrix.config.ts")
           ? `100644 blob ${configSha}\tmatrix.config.ts\0`
           : args.includes("--name-only")
-            ? "matrix.config.ts\0src/answer.ts\0"
+            ? "matrix.config.ts\0src/answer.ts\0package.json\0backend/package.json\0web/package.json\0"
             : records;
         break;
       case "ls-files":

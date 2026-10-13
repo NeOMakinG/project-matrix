@@ -10,7 +10,12 @@ import { scanSourceSnapshot } from "../../../apps/server/src/integration/source-
 import { WorktreeGitPort } from "./git-port.js";
 import { NativeWorkspace } from "./native.js";
 
-async function fixture(policy?: { ignore?: string; attributes?: string; config?: string }) {
+async function fixture(policy?: {
+  ignore?: string;
+  attributes?: string;
+  config?: string;
+  packageRoots?: string[];
+}) {
   const repo = await mkdtemp(join(tmpdir(), "matrix-handover-test-"));
   const git = (...args: string[]) =>
     execFileSync(
@@ -23,6 +28,10 @@ async function fixture(policy?: { ignore?: string; attributes?: string; config?:
   if (policy?.ignore) await writeFile(join(repo, ".gitignore"), policy.ignore);
   if (policy?.attributes) await writeFile(join(repo, ".gitattributes"), policy.attributes);
   if (policy?.config) await writeFile(join(repo, "matrix.config.ts"), policy.config);
+  for (const root of policy?.packageRoots ?? []) {
+    await mkdir(join(repo, root), { recursive: true });
+    await writeFile(join(repo, root, "package.json"), "{}\n");
+  }
   await writeFile(
     join(repo, "src/answer.ts"),
     Buffer.from(
@@ -65,6 +74,7 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
         config:
           'export default { mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" }, process: { disposableArtifacts: ["web/dist/"] } };',
         ...(ignored ? { ignore: "node_modules/\ndist/\n.expo/\n.next/\n" } : {}),
+        packageRoots: [".", "backend", "app", "web"],
       });
       const artifacts = [
         "node_modules/dependency/index.js",
@@ -82,9 +92,15 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
         ...options,
         scan: async (snapshot, binding) => {
           expect(binding.objects.map((object) => object.path)).toEqual(
-            [".gitignore", "matrix.config.ts", "src/answer.ts"].filter(
-              (path) => ignored || path !== ".gitignore",
-            ),
+            [
+              ".gitignore",
+              "app/package.json",
+              "backend/package.json",
+              "matrix.config.ts",
+              "package.json",
+              "src/answer.ts",
+              "web/package.json",
+            ].filter((path) => ignored || path !== ".gitignore"),
           );
           for (const path of artifacts) expect(existsSync(join(snapshot, path))).toBe(false);
           return options.scan();

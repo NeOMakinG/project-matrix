@@ -1,7 +1,28 @@
-// Defaults name only tool-owned directories. Generic names like dist/ or build/ can hold authored
-// source (src/build/...), so projects must declare those explicitly in their trusted config.
+// A default applies only under a root whose anchor file is tracked in the trusted base commit,
+// so authored folders such as src/coverage/ or src/node_modules/ never qualify.
+export interface AnchoredArtifact {
+  /** Directory (trailing slash) or file glob relative to the anchored root. */
+  readonly path: string;
+  /** Files relative to the same root; at least one must be tracked in the trusted base. */
+  readonly anchors: readonly string[];
+}
+
+const packageRoot = ["package.json"] as const;
+
 export const stackDisposableArtifacts = {
-  node: ["**/node_modules/", "**/coverage/", "**/.turbo/", "**/*.tsbuildinfo"],
-  next: ["**/.next/"],
-  expo: ["**/.expo/", "**/android/app/build/", "**/ios/Pods/"],
-} as const;
+  node: [
+    { path: "node_modules/", anchors: packageRoot },
+    { path: "coverage/", anchors: packageRoot },
+    { path: ".turbo/", anchors: packageRoot },
+    { path: "*.tsbuildinfo", anchors: packageRoot },
+  ],
+  next: [{ path: ".next/", anchors: packageRoot }],
+  expo: [
+    { path: ".expo/", anchors: packageRoot },
+    {
+      path: "android/app/build/",
+      anchors: ["android/app/build.gradle", "android/app/build.gradle.kts"],
+    },
+    { path: "ios/Pods/", anchors: ["ios/Podfile"] },
+  ],
+} as const satisfies Record<string, readonly AnchoredArtifact[]>;
