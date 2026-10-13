@@ -38,7 +38,12 @@ configuration changes before `--apply`. Dry run creates no key and writes nothin
 
 Replacement revokes the exact previous credential's key through
 `DELETE /v1/keys/{id}` **after the new config is written**, not by its shared agent
-name. Rotation only revokes credentials belonging to the same server URL. If
+name. New keys use the stable name `matrix-mcp:<agent>:<projectId>`. Before deleting
+an old credential, registration reads metadata through `GET /v1/keys` and verifies
+agent kind, that exact registration name, exactly one matching project, and only
+allowed agent actions. Copied human/admin keys, other agents/projects, legacy names,
+or unverifiable metadata are **not revoked**; a warning names the skipped key ID
+for operator review. Rotation only revokes credentials belonging to the same server URL. If
 revocation fails, registration reports failure but keeps the newly installed
 credential valid; use a reviewed authorized client to inspect `GET /v1/keys` and
 retry revocation. There is no standalone CLI revoke command documented here.
@@ -86,6 +91,10 @@ reviewed client which reads authorization from a secure prompt/env-file; never
 put the key in curl arguments. Revoke before removing the local agent config and
 its credential-bearing backups. Server revocation invalidates associated browser
 sessions and active run SSE streams; verify reconnection is denied.
+
+Server revocation requires admin authority or ownership (the authenticated creator
+or the key itself), and project-scope coverage. Agent credentials can never revoke
+human keys or keys with admin authority, even when the caller has an admin grant.
 
 Dashboard login is `POST /auth/login` with JSON `{ "token": <human-key> }` over
 protected transport. Agent keys cannot open dashboard sessions. `GET /auth/session`

@@ -189,7 +189,11 @@ describe("register-mcp", () => {
       fetchImpl: tokenFetch(bodies),
       log: (l) => logs.push(l),
     });
-    expect(bodies.map((b) => b.name)).toEqual(["orca-claude-code", "orca-codex", "orca-opencode"]);
+    expect(bodies.map((b) => b.name)).toEqual([
+      "matrix-mcp:claude-code:ledgerly",
+      "matrix-mcp:codex:ledgerly",
+      "matrix-mcp:opencode:ledgerly",
+    ]);
     expect(bodies[0]).toMatchObject({
       kind: "agent",
       scope: { projects: ["ledgerly"], actions: ["read", "tickets:write"] },
@@ -201,7 +205,7 @@ describe("register-mcp", () => {
     const claude = JSON.parse(await readFile(join(home, ".claude.json"), "utf8"));
     expect(claude.mcpServers.other).toEqual({ url: "x" });
     expect(claude.mcpServers["matrix-ledgerly"].headers.Authorization).toBe(
-      "Bearer mx_tok_orca-claude-code",
+      "Bearer mx_tok_matrix-mcp:claude-code:ledgerly",
     );
     const codex = await readFile(join(home, ".codex", "config.toml"), "utf8");
     expect(codex.match(/\[mcp_servers\.matrix-ledgerly\]/g)).toHaveLength(1);
@@ -221,13 +225,13 @@ describe("register-mcp", () => {
         actions: ["read"],
         home,
         apply: true,
-        fetchImpl: tokenFetch(bodies, "orca-opencode"),
+        fetchImpl: tokenFetch(bodies, "matrix-mcp:opencode:p"),
         log: () => {},
       }),
-    ).rejects.toThrow(/orca-opencode/);
+    ).rejects.toThrow(/matrix-mcp:opencode:p/);
     expect(bodies.filter((b) => b.deleted).map((b) => String(b.deleted))).toEqual([
-      "https://matrix.example/v1/keys/id-orca-claude-code",
-      "https://matrix.example/v1/keys/id-orca-codex",
+      "https://matrix.example/v1/keys/id-matrix-mcp%3Aclaude-code%3Ap",
+      "https://matrix.example/v1/keys/id-matrix-mcp%3Acodex%3Ap",
     ]);
     expect(existsSync(join(home, ".claude.json"))).toBe(false);
   });

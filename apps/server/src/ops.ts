@@ -671,7 +671,7 @@ export class Operations {
       if (input.kind === "human" && p.key.kind !== "human") {
         throw new HttpError(403, "forbidden", "only human keys can mint human keys");
       }
-      return this.keys.create({ ...input, kind: input.kind ?? "agent" });
+      return this.keys.create({ ...input, kind: input.kind ?? "agent", createdByKeyId: p.key.id });
     });
   }
 
@@ -701,11 +701,31 @@ export class Operations {
   }
 
   revokeKey(p: Principal, id: string) {
+    const admin = p.key.scope.actions.includes("admin");
     return this.op(
       p,
-      "admin",
+      admin ? "admin" : (p.key.scope.actions[0] ?? "admin"),
       `/keys/${id}`,
+      { kind: "list" },
+      { mutating: true, method: "DELETE" },
     )(async () => {
+      const current = this.keys.get(id);
+      if (!current || current.revokedAt) throw new CoreError("not_found", `key ${id} not found`);
+      if (
+        p.key.kind === "agent" &&
+        (current.kind === "human" || current.scope.actions.includes("admin"))
+      )
+        throw new HttpError(403, "forbidden", "agent keys cannot revoke human or admin keys");
+      const owner = current.id === p.key.id || current.createdByKeyId === p.key.id;
+      if (!admin && !owner)
+        throw new HttpError(403, "forbidden", "only an admin or the key owner can revoke a key");
+      const scope = p.key.scope.projects;
+      if (
+        scope !== "*" &&
+        (current.scope.projects === "*" ||
+          current.scope.projects.some((project) => !scope.includes(project)))
+      )
+        throw new HttpError(403, "forbidden", "cannot revoke a key outside your project scope");
       if (!this.keys.revoke(id)) throw new CoreError("not_found", `key ${id} not found`);
       return { id, revoked: true };
     });

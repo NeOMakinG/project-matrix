@@ -26,7 +26,13 @@ export function keySpec(
   projects: "*" | string[],
   actions: string[],
 ): AgentKeySpec {
-  return { name: `orca-${agent}`, kind: "agent", scope: { projects, actions }, ratePerMinute: 120 };
+  assertAgentScope(projects, actions);
+  return {
+    name: `matrix-mcp:${agent}:${projects[0]}`,
+    kind: "agent",
+    scope: { projects, actions },
+    ratePerMinute: 120,
+  };
 }
 
 /** Redacts anything secret-shaped: bearer tokens, key-ish assignments, common token prefixes. */
@@ -197,7 +203,13 @@ export async function registerMcp(o: RegisterMcpOptions): Promise<AgentRegistrat
   const out: AgentRegistration[] = [];
   const writes = new Map<
     string,
-    { file: string; before: string; after: string; keys: string[]; oldKeys: string[] }
+    {
+      file: string;
+      before: string;
+      after: string;
+      keys: string[];
+      oldKeys: Array<{ id: string; name: string; project: string }>;
+    }
   >();
   const projects = [...new Set(o.projects as string[])];
   try {
@@ -241,7 +253,10 @@ export async function registerMcp(o: RegisterMcpOptions): Promise<AgentRegistrat
           before: pending?.before ?? before,
           after,
           keys: [...(pending?.keys ?? []), ...(newKey ? [newKey] : [])],
-          oldKeys: [...(pending?.oldKeys ?? []), ...(oldKey ? [oldKey] : [])],
+          oldKeys: [
+            ...(pending?.oldKeys ?? []),
+            ...(oldKey ? [{ id: oldKey, name: spec.name, project }] : []),
+          ],
         });
         out.push({ agent, key: spec, file: target.file, summary, written: o.apply });
       }
@@ -255,7 +270,41 @@ export async function registerMcp(o: RegisterMcpOptions): Promise<AgentRegistrat
           });
         await writeFileSafe(o.home, w.file, w.after, { mode: 0o600 });
         for (const id of w.keys) installed.add(id);
-        for (const id of new Set(w.oldKeys)) {
+        for (const { id, name, project } of w.oldKeys) {
+          let matches = false;
+          try {
+            const metadata = await call("/v1/keys", { method: "GET" });
+            if (metadata.ok) {
+              const keys = (await metadata.json()) as Array<{
+                id?: string;
+                name?: string;
+                kind?: string;
+                scope?: { projects?: unknown; actions?: string[] };
+              }>;
+              const key = Array.isArray(keys)
+                ? keys.find((candidate) => candidate?.id === id)
+                : undefined;
+              const projects = key?.scope?.projects;
+              const actions = key?.scope?.actions;
+              matches =
+                key?.kind === "agent" &&
+                key.name === name &&
+                Array.isArray(projects) &&
+                projects.length === 1 &&
+                projects[0] === project &&
+                Array.isArray(actions) &&
+                actions.length > 0 &&
+                actions.every((action) => (AGENT_ACTIONS as readonly string[]).includes(action));
+            }
+          } catch {
+            matches = false;
+          }
+          if (!matches) {
+            log(
+              `warning: skipped revocation of key ${id}: agent, project and registration ownership could not be verified`,
+            );
+            continue;
+          }
           const response = await call(`/v1/keys/${encodeURIComponent(id)}`, { method: "DELETE" });
           if (!response.ok)
             throw new Error(

@@ -14,7 +14,17 @@ describe.each(["claude-code", "codex", "opencode"] as OrcaAgent[])("multi-projec
     const home = await mkdtemp(join(tmpdir(), "matrix-projects-"));
     const calls: string[] = [];
     let sequence = 0;
+    const metadata: Array<{
+      id: string;
+      name: string;
+      kind: string;
+      scope: { projects: string[]; actions: string[] };
+    }> = [];
     const fetchImpl = (async (input, init) => {
+      if (init?.method === "GET") {
+        expect(String(input)).toBe(`${serverUrl}/v1/keys`);
+        return new Response(JSON.stringify(metadata));
+      }
       if (init?.method === "DELETE") {
         const target = mcpConfigFor(agent, home, `${serverUrl}/mcp`, "", "travel");
         const content = await readFile(target.file, "utf8");
@@ -27,6 +37,8 @@ describe.each(["claude-code", "codex", "opencode"] as OrcaAgent[])("multi-projec
       expect(spec.scope.projects).toHaveLength(1);
       sequence += 1;
       const id = String(sequence).padStart(12, "0");
+      expect(spec.name).toBe(`matrix-mcp:${agent}:${spec.scope.projects[0]}`);
+      metadata.push({ ...spec, id });
       return new Response(JSON.stringify({ token: token(id), key: { id } }));
     }) as typeof fetch;
     const options = {
@@ -74,6 +86,17 @@ test("revocation failure preserves installed credentials and reports failure", a
   await writeFile(target.file, target.merge(""));
   const deleted: string[] = [];
   const fetchImpl = (async (input, init) => {
+    if (init?.method === "GET")
+      return new Response(
+        JSON.stringify([
+          {
+            id: "000000000001",
+            name: "matrix-mcp:claude-code:travel",
+            kind: "agent",
+            scope: { projects: ["travel"], actions: ["read"] },
+          },
+        ]),
+      );
     if (init?.method === "DELETE") {
       deleted.push(String(input));
       return new Response("{}", { status: 500 });
@@ -98,6 +121,132 @@ test("revocation failure preserves installed credentials and reports failure", a
   expect(deleted).toEqual([`${serverUrl}/v1/keys/000000000001`]);
   expect(await readFile(target.file, "utf8")).toContain(token("000000000002"));
 });
+
+test.each([
+  {
+    reason: "human admin",
+    kind: "human",
+    name: "matrix-mcp:claude-code:travel",
+    projects: ["travel"],
+    actions: ["admin"],
+  },
+  {
+    reason: "agent admin",
+    kind: "agent",
+    name: "matrix-mcp:claude-code:travel",
+    projects: ["travel"],
+    actions: ["admin"],
+  },
+  {
+    reason: "other project",
+    kind: "agent",
+    name: "matrix-mcp:claude-code:travel",
+    projects: ["work"],
+    actions: ["read"],
+  },
+  {
+    reason: "other agent",
+    kind: "agent",
+    name: "matrix-mcp:codex:travel",
+    projects: ["travel"],
+    actions: ["read"],
+  },
+  {
+    reason: "legacy unowned name",
+    kind: "agent",
+    name: "orca-claude-code",
+    projects: ["travel"],
+    actions: ["read"],
+  },
+  {
+    reason: "multiple projects",
+    kind: "agent",
+    name: "matrix-mcp:claude-code:travel",
+    projects: ["travel", "work"],
+    actions: ["read"],
+  },
+  {
+    reason: "global scope",
+    kind: "agent",
+    name: "matrix-mcp:claude-code:travel",
+    projects: "*",
+    actions: ["read"],
+  },
+])(
+  "copied $reason key is never revoked",
+  async ({ reason: _reason, kind, name, projects, actions }) => {
+    const home = await mkdtemp(join(tmpdir(), "matrix-copied-key-"));
+    const target = mcpConfigFor(
+      "claude-code",
+      home,
+      `${serverUrl}/mcp`,
+      token("000000000001"),
+      "travel",
+    );
+    await writeFile(target.file, target.merge(""));
+    const requests: string[] = [];
+    const logs: string[] = [];
+    const fetchImpl = (async (input, init) => {
+      requests.push(`${init?.method} ${input}`);
+      if (init?.method === "GET")
+        return new Response(
+          JSON.stringify([{ id: "000000000001", kind, name, scope: { projects, actions } }]),
+        );
+      return new Response(
+        JSON.stringify({ token: token("000000000002"), key: { id: "000000000002" } }),
+      );
+    }) as typeof fetch;
+    await registerMcp({
+      serverUrl,
+      home,
+      agents: ["claude-code"],
+      projects: ["travel"],
+      actions: ["read"],
+      adminKey: "admin",
+      apply: true,
+      fetchImpl,
+      log: (line) => logs.push(line),
+    });
+    expect(requests).toEqual([`POST ${serverUrl}/v1/keys`, `GET ${serverUrl}/v1/keys`]);
+    expect(logs.join("\n")).toContain("warning: skipped revocation of key 000000000001");
+    expect(await readFile(target.file, "utf8")).toContain(token("000000000002"));
+  },
+);
+
+test.each(["unavailable", "malformed", "missing"])(
+  "metadata %s fails closed without deleting a key",
+  async (failure) => {
+    const home = await mkdtemp(join(tmpdir(), "matrix-metadata-"));
+    const target = mcpConfigFor("codex", home, `${serverUrl}/mcp`, token("000000000001"), "travel");
+    await mkdir(join(home, ".codex"));
+    await writeFile(target.file, target.merge(""));
+    const deleted: string[] = [];
+    const logs: string[] = [];
+    const fetchImpl = (async (input, init) => {
+      if (init?.method === "GET")
+        return failure === "unavailable"
+          ? new Response("{}", { status: 403 })
+          : new Response(failure === "malformed" ? "not json" : "[]");
+      if (init?.method === "DELETE") deleted.push(String(input));
+      return new Response(
+        JSON.stringify({ token: token("000000000002"), key: { id: "000000000002" } }),
+      );
+    }) as typeof fetch;
+    await registerMcp({
+      serverUrl,
+      home,
+      agents: ["codex"],
+      projects: ["travel"],
+      actions: ["read"],
+      adminKey: "admin",
+      apply: true,
+      fetchImpl,
+      log: (line) => logs.push(line),
+    });
+    expect(deleted).toEqual([]);
+    expect(logs.join("\n")).toContain("warning: skipped revocation of key 000000000001");
+  },
+);
 
 test("unsafe IDs fail before requests or writes", async () => {
   for (const project of ["../travel", "travel.dot", "travel\n[evil]", "", "*"]) {
