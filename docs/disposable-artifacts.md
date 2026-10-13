@@ -5,23 +5,33 @@ the agent's worktree or HEAD. The config must be a static object, optionally
 wrapped in `defineConfig`, or a static variable exported by the generated config.
 No config code is executed. Unsupported declarations fail closed.
 
-Declare additional paths with `process.disposableArtifacts`, for example:
+Only explicit trusted-BASE `process.disposableArtifacts` declarations authorize
+disposables. Stack selection, tracked `package.json` files, and native build
+markers never grant exemptions during handover. For example:
 
 ```ts
-process: { disposableArtifacts: ["**/generated-cache/", "backend/tmp/*.json"] }
+process: { disposableArtifacts: ["node_modules/", "app/node_modules/", "web/dist/", "backend/tmp/*.json"] }
 ```
 
 Globs are repository-relative: `*` and `?` match within one path segment; `**/`
 matches any number of directories. A trailing `/` matches directory contents.
-Absolute paths, traversal, backslashes, negation, and bracket/brace patterns
+Patterns starting with `**/`, absolute paths, traversal, backslashes, negation, and bracket/brace patterns
 are rejected. Commit declarations on the trusted base before starting a ticket;
 worktree edits cannot authorize artifacts for that ticket.
 
-Node, React, Expo, and Tauri stacks permit nested `node_modules/`,
-`coverage/`, `.turbo/`, and `*.tsbuildinfo`. Generic names such as `dist/` and
-`build/` can hold authored source (`src/build/…`), so declare them explicitly with
-an anchored path such as `web/dist/`. Next additionally permits
-`.next/`; Expo permits `.expo/`, `android/app/build/`, and `ios/Pods/`.
+`matrix init` proposes explicit anchored declarations from generated package
+manifests and tracked package/native/Next anchors. `--existing` onboarding reads
+only tracked anchors, not stray untracked manifests. Package roots produce
+entries such as `node_modules/`, `web/dist/`, `web/build/`, and `web/coverage/`;
+Next roots add `web/.next/`; Expo/RN roots add `app/.expo/` (Expo only),
+`app/android/app/build/`, and `app/ios/Pods/`. Native Podfile/Gradle anchors also
+identify their respective output paths. These are generator suggestions, not
+runtime defaults. Humans must review the declarations in the onboarding PR and
+commit them on the trusted base before handing over a ticket.
+
+Authored `src/coverage/secret.ts` is not disposable, even when `src/package.json`
+is tracked, unless the reviewed BASE declaration explicitly covers it. Review
+generator suggestions for packages under authored-source directories carefully.
 
 Disposable artifacts absent from HEAD are excluded from the candidate tree and preserved
 on disk, including during `cleanForChecks`. Undeclared ignored files refuse

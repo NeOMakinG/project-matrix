@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +33,13 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(config: string, artifacts: string[], ignored = true, staged = false) {
+async function fixture(
+  config: string,
+  artifacts: string[],
+  ignored = true,
+  staged = false,
+  extraTracked: Record<string, string> = {},
+) {
   const root = await mkdtemp(join(tmpdir(), "matrix-artifact-fake-"));
   roots.push(root);
   const workdir = join(root, "worktree");
@@ -42,6 +49,10 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
   await writeFile(join(workdir, ".git"), `gitdir: ${gitdir}\n`);
   await writeFile(join(workdir, "matrix.config.ts"), config);
   await writeFile(join(workdir, "src/answer.ts"), "export const answer = 2;\n");
+  for (const [path, content] of Object.entries(extraTracked)) {
+    await mkdir(join(workdir, path, ".."), { recursive: true });
+    await writeFile(join(workdir, path), content);
+  }
   for (const path of artifacts) {
     await mkdir(join(workdir, path, ".."), { recursive: true });
     await writeFile(join(workdir, path), "preserve artifact");
@@ -54,8 +65,19 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
   const sourceSha = "f".repeat(40);
   blobs.set(configSha, config);
   blobs.set(sourceSha, "export const answer = 2;\n");
-  const records =
-    `100644 blob ${configSha}\tmatrix.config.ts\0` + `100644 blob ${sourceSha}\tsrc/answer.ts\0`;
+  const baseEntries = new Map([
+    ["matrix.config.ts", configSha],
+    ["src/answer.ts", sourceSha],
+  ]);
+  for (const [path, content] of Object.entries(extraTracked)) {
+    const sha = createHash("sha1").update(content).digest("hex");
+    blobs.set(sha, content);
+    baseEntries.set(path, sha);
+  }
+  const candidateEntries = new Map(baseEntries);
+  const records = (entries: Map<string, string>) =>
+    [...entries].map(([path, sha]) => `100644 blob ${sha}\t${path}\0`).join("");
+  const trackedPaths = [...baseEntries.keys()].map((path) => `${path}\0`).join("");
   let committed = false;
   const executor: LineExecutor = async (spec, onLine) => {
     const commands = [
@@ -82,8 +104,17 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
       case "config":
       case "rev-list":
       case "diff":
-      case "add":
         break;
+      case "add": {
+        const staging = spec.cmd[spec.cmd.indexOf("--work-tree") + 1]!;
+        for (const path of args.slice(args.indexOf("--") + 1)) {
+          const content = await readFile(join(staging, path), "utf8");
+          const sha = createHash("sha1").update(content).digest("hex");
+          candidateEntries.set(path, sha);
+          blobs.set(sha, content);
+        }
+        break;
+      }
       case "read-tree":
         if (!spec.env.GIT_INDEX_FILE) staged = false;
         break;
@@ -91,17 +122,17 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
         output = args.includes("matrix.config.ts")
           ? `100644 blob ${configSha}\tmatrix.config.ts\0`
           : args.includes("--name-only")
-            ? "matrix.config.ts\0src/answer.ts\0package.json\0backend/package.json\0web/package.json\0"
-            : records;
+            ? trackedPaths
+            : records(args.includes(tree) ? candidateEntries : baseEntries);
         break;
       case "ls-files":
         if (args.includes("--stage")) {
-          output = records.replaceAll(" blob ", " ").replaceAll("\t", " 0\t");
+          output = records(spec.env.GIT_INDEX_FILE ? candidateEntries : baseEntries)
+            .replaceAll(" blob ", " ")
+            .replaceAll("\t", " 0\t");
         } else {
           if (args.includes("--cached"))
-            output +=
-              "matrix.config.ts\0src/answer.ts\0" +
-              (staged ? artifacts.map((path) => `${path}\0`).join("") : "");
+            output += trackedPaths + (staged ? artifacts.map((path) => `${path}\0`).join("") : "");
           if (
             args.includes("--others") &&
             !staged &&
@@ -150,10 +181,7 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
   await trusted.record(workdir, { gitdir, commonDir: gitdir, baseSha: base });
   const port = new WorktreeGitPort({ trusted, executor });
   const scan = vi.fn(async (snapshot: string, binding: { objects: Array<{ path: string }> }) => {
-    expect(binding.objects.map((object) => object.path)).toEqual([
-      "matrix.config.ts",
-      "src/answer.ts",
-    ]);
+    expect(binding.objects.map((object) => object.path)).toEqual([...baseEntries.keys()]);
     expect(await readFile(join(snapshot, "src/answer.ts"), "utf8")).toContain("= 2");
     return { kind: "secret-scan" as const, ok: true, summary: "fake scanner" };
   });
@@ -162,6 +190,39 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
 }
 
 describe("handover artifact regressions with fake Git, no subprocesses", () => {
+  test.each([true, false])(
+    "BASE-tracked src/package.json never exempts src/coverage (ignored=%s)",
+    async (ignored) => {
+      const { workdir, port, options } = await fixture(
+        'export default { backend: { kind: "node-api" } };',
+        ["src/coverage/secret.ts"],
+        ignored,
+        false,
+        { "src/package.json": "{}" },
+      );
+      let scanned = false;
+      await expect(
+        port.commitImplementation(workdir, {
+          ...options,
+          scan: async (snapshot, binding) => {
+            expect(binding.objects.some((object) => object.path === "src/coverage/secret.ts")).toBe(
+              true,
+            );
+            expect(await readFile(join(snapshot, "src/coverage/secret.ts"), "utf8")).toBe(
+              "preserve artifact",
+            );
+            scanned = true;
+            return { kind: "secret-scan", ok: false, summary: "authored source must be scanned" };
+          },
+        }),
+      ).rejects.toThrow(ignored ? /ignored artifact/ : /secret scan/);
+      expect(scanned).toBe(!ignored);
+      expect(await port.headSha(workdir)).toBe(options.expectedHead);
+      expect(await readFile(join(workdir, "src/coverage/secret.ts"), "utf8")).toBe(
+        "preserve artifact",
+      );
+    },
+  );
   test("newly staged disposables are excluded without excluding tracked source", async () => {
     const { workdir, port, options, next } = await fixture(
       'export default { backend: { kind: "node-api" }, process: { disposableArtifacts: ["dist/"] } };',
@@ -200,7 +261,7 @@ describe("handover artifact regressions with fake Git, no subprocesses", () => {
         "web/dist/bundle.js",
       ];
       const { workdir, port, options, next } = await fixture(
-        'export default { mobile: { framework: "expo" }, process: { disposableArtifacts: ["web/dist/"] } };',
+        'export default { mobile: { framework: "expo" }, process: { disposableArtifacts: ["node_modules/", "backend/node_modules/", "web/dist/"] } };',
         artifacts,
         ignored,
       );

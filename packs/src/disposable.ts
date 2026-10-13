@@ -1,28 +1,53 @@
-// A default applies only under a root whose anchor file is tracked in the trusted base commit,
-// so authored folders such as src/coverage/ or src/node_modules/ never qualify.
-export interface AnchoredArtifact {
-  /** Directory (trailing slash) or file glob relative to the anchored root. */
-  readonly path: string;
-  /** Files relative to the same root; at least one must be tracked in the trusted base. */
-  readonly anchors: readonly string[];
+const packageArtifacts = [
+  "node_modules/",
+  "dist/",
+  "build/",
+  "coverage/",
+  ".turbo/",
+  "*.tsbuildinfo",
+];
+
+export function suggestDisposableArtifacts(files: Readonly<Record<string, string>>): string[] {
+  const artifacts = new Set<string>();
+  const add = (root: string, paths: string[]) => {
+    for (const path of paths) artifacts.add(`${root}${path}`);
+  };
+  for (const [path, content] of Object.entries(files)) {
+    if (
+      /[\\\x00-\x1f\x7f*?!\[\]{}:]/.test(path) ||
+      path.split("/").some((part) => !part || part === "." || part === "..")
+    )
+      continue;
+    const root = path.slice(0, path.lastIndexOf("/") + 1);
+    if (path === `${root}package.json`) {
+      add(root, packageArtifacts);
+      try {
+        const pkg = JSON.parse(content);
+        const dependencies = new Set<string>();
+        for (const field of [
+          "dependencies",
+          "devDependencies",
+          "peerDependencies",
+          "optionalDependencies",
+        ])
+          for (const dependency of Object.keys(pkg?.[field] ?? {})) dependencies.add(dependency);
+        if (dependencies.has("next")) add(root, [".next/"]);
+        if (dependencies.has("expo")) add(root, [".expo/"]);
+        if (dependencies.has("expo") || dependencies.has("react-native"))
+          add(root, ["ios/Pods/", "android/app/build/"]);
+      } catch {}
+    }
+    if (/^next\.config\.(?:js|cjs|mjs|ts)$/.test(path.slice(root.length))) add(root, [".next/"]);
+    for (const marker of [
+      "ios/Podfile",
+      "android/app/build.gradle",
+      "android/app/build.gradle.kts",
+    ]) {
+      if (path === marker || path.endsWith(`/${marker}`)) {
+        const nativeRoot = path.slice(0, -marker.length);
+        add(nativeRoot, [marker === "ios/Podfile" ? "ios/Pods/" : "android/app/build/"]);
+      }
+    }
+  }
+  return [...artifacts].sort();
 }
-
-const packageRoot = ["package.json"] as const;
-
-export const stackDisposableArtifacts = {
-  node: [
-    { path: "node_modules/", anchors: packageRoot },
-    { path: "coverage/", anchors: packageRoot },
-    { path: ".turbo/", anchors: packageRoot },
-    { path: "*.tsbuildinfo", anchors: packageRoot },
-  ],
-  next: [{ path: ".next/", anchors: packageRoot }],
-  expo: [
-    { path: ".expo/", anchors: packageRoot },
-    {
-      path: "android/app/build/",
-      anchors: ["android/app/build.gradle", "android/app/build.gradle.kts"],
-    },
-    { path: "ios/Pods/", anchors: ["ios/Podfile"] },
-  ],
-} as const satisfies Record<string, readonly AnchoredArtifact[]>;

@@ -2,16 +2,9 @@ import { describe, expect, test } from "vitest";
 import { disposablePolicy } from "./artifact-policy.js";
 
 describe("trusted BASE disposable policy (no Git)", () => {
-  test("stack defaults match root and nested workspaces only", () => {
+  test("stack selection never authorizes artifacts without explicit declarations", () => {
     const matches = disposablePolicy(
       'export default defineConfig({ mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" } });',
-      new Set([
-        "package.json",
-        "app/package.json",
-        "web/package.json",
-        "app/android/app/build.gradle",
-        "app/ios/Podfile",
-      ]),
     );
     for (const path of [
       "node_modules/pkg/index.js",
@@ -24,7 +17,7 @@ describe("trusted BASE disposable policy (no Git)", () => {
       ".turbo/cache",
       "web/tsconfig.tsbuildinfo",
     ])
-      expect(matches(path), path).toBe(true);
+      expect(matches(path), path).toBe(false);
     for (const path of [
       "src/new.ts",
       "src/build/secret.ts",
@@ -42,6 +35,34 @@ describe("trusted BASE disposable policy (no Git)", () => {
       "/node_modules/pkg/index.js",
     ])
       expect(matches(path), path).toBe(false);
+  });
+
+  test("explicit anchored declarations do not match authored source elsewhere", () => {
+    const matches = disposablePolicy(
+      'export default { process: { disposableArtifacts: ["node_modules/", "app/node_modules/", "web/coverage/", "app/.expo/", "web/.next/", "app/ios/Pods/", "app/android/app/build/"] } };',
+    );
+    for (const path of [
+      "node_modules/pkg/index.js",
+      "app/node_modules/pkg/index.js",
+      "web/coverage/report",
+      "app/.expo/state.json",
+      "web/.next/cache",
+      "app/ios/Pods/lib/file",
+      "app/android/app/build/output",
+    ])
+      expect(matches(path), path).toBe(true);
+    for (const path of [
+      "src/coverage/secret.ts",
+      "src/node_modules/secret.ts",
+      "src/web/coverage/secret.ts",
+      "backend/node_modules/pkg/index.js",
+    ])
+      expect(matches(path), path).toBe(false);
+    expect(
+      disposablePolicy('export default { process: { disposableArtifacts: ["src/coverage/"] } };')(
+        "src/coverage/secret.ts",
+      ),
+    ).toBe(true);
   });
 
   test("generated config supports static declarations without enabling unrelated defaults", () => {
@@ -64,6 +85,7 @@ describe("trusted BASE disposable policy (no Git)", () => {
     "cache//file",
     "./cache/",
     "cache/[ab]",
+    "**/x/",
   ])("rejects unsafe or unsupported glob %s", (pattern) => {
     expect(() =>
       disposablePolicy(

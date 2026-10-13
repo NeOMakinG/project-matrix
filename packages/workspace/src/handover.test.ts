@@ -68,11 +68,11 @@ async function fixture(policy?: {
 
 describe("host-mediated handover (real git, explicitly fake scanner)", () => {
   test.each([true, false])(
-    "BASE stack defaults exclude nested artifacts (ignored=%s)",
+    "explicit BASE declarations exclude nested artifacts (ignored=%s)",
     async (ignored) => {
       const { prepared, port, options } = await fixture({
         config:
-          'export default { mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" }, process: { disposableArtifacts: ["web/dist/"] } };',
+          'export default { mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" }, process: { disposableArtifacts: ["node_modules/", "backend/node_modules/", "web/dist/", "app/.expo/", "web/.next/"] } };',
         ...(ignored ? { ignore: "node_modules/\ndist/\n.expo/\n.next/\n" } : {}),
         packageRoots: [".", "backend", "app", "web"],
       });
@@ -384,6 +384,34 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
 });
 
 describe("generic build directories are not disposable by default", () => {
+  test("a legitimate src/package.json does not exempt authored src/coverage source", async () => {
+    const { prepared, port, options, head } = await fixture({
+      config: 'export default { backend: { kind: "node-api" } };',
+      packageRoots: ["src"],
+    });
+    await mkdir(join(prepared.workdir, "src/coverage"), { recursive: true });
+    const target = join(prepared.workdir, "src/coverage/secret.ts");
+    await writeFile(target, "authored secret source\n");
+    let scanned = false;
+    await expect(
+      port.commitImplementation(prepared.workdir, {
+        ...options,
+        scan: async (snapshot, binding) => {
+          expect(binding.objects.some((object) => object.path === "src/coverage/secret.ts")).toBe(
+            true,
+          );
+          expect(await readFile(join(snapshot, "src/coverage/secret.ts"), "utf8")).toContain(
+            "authored secret",
+          );
+          scanned = true;
+          return { kind: "secret-scan", ok: false, summary: "secret found" };
+        },
+      }),
+    ).rejects.toThrow(/secret scan/);
+    expect(scanned).toBe(true);
+    expect(await port.headSha(prepared.workdir)).toBe(head);
+    expect(await readFile(target, "utf8")).toBe("authored secret source\n");
+  }, 30_000);
   test("a new file under src/build is committed and scanned, not skipped", async () => {
     const { prepared, port, options } = await fixture({
       config: 'export default { backend: { kind: "node-api" } };',

@@ -17,8 +17,10 @@ import {
   type Question,
   resolve,
 } from "@matrix/packs";
+import { suggestDisposableArtifacts } from "@matrix/packs/disposable";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
 import { assertSafePath } from "@matrix/tickets/adapters/safe-fs";
+import { trackedArtifactFiles } from "./disposable-artifacts";
 import { planWrites, SafePathError, safeWrite } from "./fs-safe";
 import {
   adrPath,
@@ -250,6 +252,20 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   if (!(await stat(opts.outDir)).isDirectory())
     throw new Error(`${opts.outDir} is not a directory`);
   const existingMode = opts.existingRepo !== undefined;
+  const scaffold = opts.scaffold ? scaffoldFiles(config) : undefined;
+  const artifactFiles = {
+    ...scaffold?.files,
+    ...(await trackedArtifactFiles(opts.existingRepo ?? opts.outDir)),
+  };
+  config.process = {
+    ...config.process,
+    disposableArtifacts: [
+      ...new Set([
+        ...(config.process.disposableArtifacts ?? []),
+        ...suggestDisposableArtifacts(artifactFiles),
+      ]),
+    ].sort(),
+  };
 
   const adrs = await planAdrs(opts.outDir, config.process.adrDir, ds, date);
 
@@ -272,11 +288,13 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     ...(await skillFiles(skills)),
   };
   const warnings: string[] = [];
-  if (opts.scaffold) {
-    const s = scaffoldFiles(config);
-    files = { ...s.files, ...files };
-    warnings.push(...s.warnings);
+  if (scaffold) {
+    files = { ...scaffold.files, ...files };
+    warnings.push(...scaffold.warnings);
   }
+  warnings.push(
+    "Review process.disposableArtifacts in the onboarding PR before trusting the new config as BASE.",
+  );
 
   // The backlog is written by the ticket store; refuse unsafe backlog paths before writing anything.
   const root = await realpath(opts.outDir);
