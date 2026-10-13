@@ -13,10 +13,10 @@ The dashboard imports generated `@matrix/sdk` `paths` / `components` directly.
 The descriptor extension is currently present in the integration owner's
 uncommitted source and generated SDK, not in the ancestry commit above. Only
 `packages/sdk/openapi.json` and `packages/sdk/src/schema.d.ts` were overlaid from
-that worktree, byte-for-byte. Explicit snapshot pins (SHA-256):
+that worktree, byte-for-byte (SHA-256 prefixes `222c686f` and `36b2e481`).
 
-- OpenAPI: `222c686fa24391958847a9fb81f4e1557772d7f2a971d78ffec6a3ea24a5555e`.
-- Types: `36b2e481d7fe3aeafc882d2059ab694757d120a96a31a78c4b88a3579130d11b`.
+Superseded: this branch now merges `feat/integration`, so the SDK arrives through
+history instead of an overlay. See `round2-real-browser.md`.
 
 PR27 must include this descriptor extension and generated SDK before PR26 is
 rebased/merged. This is a real unmerged dependency, not a mock replacement.
