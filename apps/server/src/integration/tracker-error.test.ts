@@ -6,6 +6,8 @@ import { createServer } from "../http/app.js";
 import { ErrorBody, Project as ProjectSchema } from "../http/schemas.js";
 import { createFactory } from "./factory.js";
 
+const commands = vi.hoisted(() => ({ hanging: vi.fn() }));
+
 vi.mock("node:child_process", async (load) => {
   const original = await load<typeof import("node:child_process")>();
   const { promisify } = await import("node:util");
@@ -16,10 +18,14 @@ vi.mock("node:child_process", async (load) => {
         throw new Error("unexpected non-promisified execution");
       },
       {
-        [promisify.custom]: async (binary: string, args: string[], options: object) =>
-          binary === "git"
-            ? { stdout: "", stderr: "" }
-            : promisify(original.execFile)(binary, args, options),
+        [promisify.custom]: async (binary: string, args: string[], options: object) => {
+          if (binary === "git") return { stdout: "", stderr: "" };
+          if (binary === "bd-hanging-fixture") {
+            commands.hanging(options);
+            return new Promise(() => {});
+          }
+          return promisify(original.execFile)(binary, args, options);
+        },
       },
     ),
   };
@@ -94,3 +100,49 @@ test.each(["missing", "failed"])(
     }
   },
 );
+
+test("bd init deadline aborts execution, returns typed HTTP 503 and removes the unpublished repo", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "matrix-tracker-timeout-"));
+  const factory = await createFactory({
+    runtime: "fake",
+    dataDir: directory,
+    host: "test",
+    binaries: { bd: "bd-hanging-fixture" },
+    log: () => {},
+  });
+  const server = createServer({ core: factory.core });
+  const { token } = server.keys.create({
+    name: "admin",
+    scope: { projects: "*", actions: ["admin"] },
+  });
+  try {
+    vi.useFakeTimers();
+    const pending = server.app.request("/v1/projects", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name: "timeout", description: "", workspace: "native" }),
+    });
+    await vi.waitFor(() => expect(commands.hanging).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(10_001);
+    const response = await pending;
+    expect(response.status).toBe(503);
+    const body = ErrorBody.parse(await response.json());
+    expect(body.error.code).toBe("tracker_unavailable");
+    expect(body.error.message).toContain("initialization timed out");
+    expect(JSON.stringify(body)).not.toContain(directory);
+    const options = commands.hanging.mock.calls[0]![0] as {
+      signal: AbortSignal;
+      killSignal: string;
+    };
+    expect(options.signal.aborted).toBe(true);
+    expect(options.killSignal).toBe("SIGKILL");
+    expect(await factory.store.listProjects()).toEqual([]);
+    expect(await readdir(join(directory, "projects"))).toEqual([]);
+  } finally {
+    vi.useRealTimers();
+    await factory.stateOwner.close();
+    await server.close();
+    await factory.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});

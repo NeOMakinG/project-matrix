@@ -1,12 +1,21 @@
 import { spawn } from "node:child_process";
-import { lstat, realpath, statfs } from "node:fs/promises";
+import { lstat, readFile, realpath, statfs } from "node:fs/promises";
 import { connect } from "node:net";
 import { freemem, release, tmpdir } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 export const OUTPUT_CAP = 16_384;
 const SYSTEM_TOOL_DIRECTORIES = ["/usr/bin", "/bin"];
-const TOOL_NAMES = new Set(["bun", "git", "podman", "bwrap", "gitleaks", "orca", "tailscale"]);
+const TOOL_NAMES = new Set([
+  "bun",
+  "git",
+  "bd",
+  "podman",
+  "bwrap",
+  "gitleaks",
+  "orca",
+  "tailscale",
+]);
 export interface DoctorAdapters {
   platform: string;
   release: string;
@@ -15,6 +24,7 @@ export interface DoctorAdapters {
   postgres(host: string, port: number, signal: AbortSignal): Promise<void>;
   get(url: URL, token: string | undefined, signal: AbortSignal): Promise<string>;
   resources(): Promise<{ ram: number; disk: number }>;
+  config?(signal: AbortSignal): Promise<string | null>;
 }
 
 function inside(root: string, target: string): boolean {
@@ -34,6 +44,19 @@ export function localAdapters(approvedDirectories: readonly string[] = []): Doct
     platform: process.platform,
     release: release(),
     env,
+    async config(signal) {
+      try {
+        const text = await readFile(join(process.cwd(), "matrix.config.ts"), {
+          encoding: "utf8",
+          signal,
+        });
+        if (Buffer.byteLength(text) > OUTPUT_CAP) throw new Error("config limit");
+        return text;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+        throw error;
+      }
+    },
     async command(name, args, signal) {
       if (!TOOL_NAMES.has(name)) throw new Error("tool unavailable");
       const roots = [process.cwd(), await realpath(process.cwd())];

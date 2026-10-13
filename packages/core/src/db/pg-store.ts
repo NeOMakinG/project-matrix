@@ -177,17 +177,7 @@ export class PgStore implements Store {
     return { ...config, autonomy };
   }
 
-  async indexTicket(
-    projectId: string,
-    t: {
-      id: string;
-      title: string;
-      status: string;
-      priority?: number;
-      labels: string[];
-      url?: string;
-    },
-  ) {
+  async indexTicket(projectId: string, t: Parameters<Store["indexTicket"]>[1]) {
     const row = {
       projectId,
       ticketId: t.id,
@@ -197,6 +187,7 @@ export class PgStore implements Store {
       labels: t.labels,
       url: t.url ?? null,
       syncedAt: new Date(),
+      ...(t.snapshot ? { snapshot: t.snapshot } : {}),
     };
     await this.db
       .insert(s.ticketIndex)
@@ -210,6 +201,22 @@ export class PgStore implements Store {
       .from(s.ticketIndex)
       .where(and(eq(s.ticketIndex.projectId, projectId), eq(s.ticketIndex.ticketId, ticketId)));
     return row?.title ?? null;
+  }
+
+  async listIndexedTickets(projectId: string) {
+    const rows = await this.db
+      .select({ snapshot: s.ticketIndex.snapshot })
+      .from(s.ticketIndex)
+      .where(eq(s.ticketIndex.projectId, projectId));
+    return rows.flatMap((row) => (row.snapshot ? [row.snapshot] : []));
+  }
+
+  async getIndexedTicket(projectId: string, ticketId: string) {
+    const [row] = await this.db
+      .select({ snapshot: s.ticketIndex.snapshot })
+      .from(s.ticketIndex)
+      .where(and(eq(s.ticketIndex.projectId, projectId), eq(s.ticketIndex.ticketId, ticketId)));
+    return row?.snapshot ?? null;
   }
 
   async getWorkflow(projectId: string, ticketId: string) {

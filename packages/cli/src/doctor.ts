@@ -1,4 +1,6 @@
 import { parseArgs } from "node:util";
+import { processConfig } from "@matrix/config";
+import { type ParseError, parse } from "jsonc-parser";
 import { type DoctorAdapters, localAdapters, OUTPUT_CAP } from "./doctor-adapters";
 
 export const DOCTOR_USAGE = `matrix doctor [--json] [--optional] [--trusted-tools-dir <absolute-directory>]
@@ -7,6 +9,7 @@ export const DOCTOR_USAGE = `matrix doctor [--json] [--optional] [--trusted-tool
   --trusted-tools-dir explicitly approves an operator install directory; repeatable.
   Directories/binaries must be canonical, nonsymlink, not project-local or group/world-writable.
   Only the running Bun executable is implicitly trusted, never its sibling tools.
+  Reads generated matrix.config.ts/JSON without executing it; beads projects require bd version.
   --optional also checks Orca and Tailscale. Exit 2 means blocked; warnings are not readiness.
   Postgres: MATRIX_DOCTOR_POSTGRES_URL or DATABASE_URL (protocol reachability only).
   Gateway: MATRIX_DOCTOR_GATEWAY_URL (loopback /v1/models); optional
@@ -116,6 +119,54 @@ export async function diagnose(adapters: DoctorAdapters, optional = false): Prom
       return "Git >=2.40 available.";
     },
     "Install or upgrade Git to >=2.40 (Windows: use the Linux toolchain inside WSL2).",
+  );
+
+  let beadsRequired = false;
+  if (adapters.config) {
+    try {
+      const text = await bounded(
+        adapters.config.bind(adapters),
+        Math.min(3_000, deadline - Date.now()),
+      );
+      if (text !== null) {
+        if (Buffer.byteLength(text) > OUTPUT_CAP) throw new Error("config limit");
+        const generated = text.match(
+          /export\s+default\s+defineConfig\s*\(\s*(\{[\s\S]*\})\s*\);?\s*$/,
+        );
+        const literal = (generated?.[1] ?? text).replace(
+          /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|([A-Za-z_$][\w$]*)(\s*:)/g,
+          (token: string, property: string | undefined, colon: string | undefined) => {
+            if (property) return `${JSON.stringify(property)}${colon}`;
+            if (token.startsWith("'"))
+              return `"${token.slice(1, -1).replace(/\\'/g, "'").replace(/"/g, '\\"')}"`;
+            return token;
+          },
+        );
+        const errors: ParseError[] = [];
+        const config = parse(literal, errors, { allowTrailingComma: true });
+        const tracker = processConfig.shape.tickets.safeParse(config?.process?.tickets);
+        if (errors.length || !tracker.success) throw new Error("static config required");
+        beadsRequired = tracker.data === "beads";
+      }
+    } catch {
+      add(
+        "tracker-config",
+        "warn",
+        "Tracker configuration could not be read statically; no config code was executed. Verify tracker prerequisites manually.",
+      );
+    }
+  }
+  await check(
+    "bd",
+    async (signal) => {
+      if (!/\bbd(?: version)?\s+v?\d+\.\d+\.\d+\b/i.test(await command("bd", ["version"], signal)))
+        throw new Error("version");
+      return "Beads bd available; database/runtime readiness still requires verification.";
+    },
+    beadsRequired
+      ? "Beads project requires bd: install it in a trusted tools directory and verify bd version, or choose another tracker."
+      : "Optional bd probe failed or timed out; required only for beads projects.",
+    beadsRequired,
   );
 
   if (adapters.platform !== "linux") {

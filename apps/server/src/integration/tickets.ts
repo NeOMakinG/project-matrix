@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { hostExecutor, type LineExecutor } from "@matrix/sandbox";
 import type { TicketStore } from "@matrix/tickets";
 import { BeadsStore } from "@matrix/tickets/adapters/beads";
 import { GitHubStore } from "@matrix/tickets/adapters/github";
@@ -19,6 +20,44 @@ export interface TicketBinaries {
   gh?: string;
 }
 
+export class TrackerTimeoutError extends Error {
+  constructor() {
+    super("tracker timed out");
+    this.name = "TrackerTimeoutError";
+  }
+}
+
+export async function trackerDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+  timeoutMs = 10_000,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort = () => {};
+  try {
+    if (signal?.aborted) throw signal.reason;
+    return await Promise.race([
+      new Promise<never>((_resolve, reject) => {
+        abort = () => {
+          controller.abort(signal?.reason);
+          reject(signal?.reason ?? new Error("tracker cancelled"));
+        };
+        signal?.addEventListener("abort", abort, { once: true });
+        timer = setTimeout(() => {
+          controller.abort(new TrackerTimeoutError());
+          reject(controller.signal.reason);
+        }, timeoutMs);
+      }),
+      operation(controller.signal),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", abort);
+    controller.abort();
+  }
+}
+
 /**
  * Picks the ticket adapter a project chose at init: beads (default, `.beads` in the project repo),
  * markdown (`.matrix/tickets` in the repo) or GitHub Issues.
@@ -29,6 +68,12 @@ export function ticketStoreFor(
   binaries: TicketBinaries = {},
   owner?: PrivateStateOwner,
 ): TicketStore {
+  const executor: LineExecutor = (spec, onLine, signal) =>
+    trackerDeadline(
+      (boundedSignal) => hostExecutor(spec, onLine, boundedSignal),
+      owner ? AbortSignal.any([signal, owner.signal]) : signal,
+      Math.min(spec.timeoutMs, 10_000),
+    );
   switch (settings.kind) {
     case "markdown":
       return new MarkdownTicketStore(join(repoPath, ".matrix", "tickets"), {
@@ -36,12 +81,17 @@ export function ticketStoreFor(
         ...(owner ? { publish: (input) => publishOwnedFile({ ...input, owner }) } : {}),
       });
     case "beads":
-      return new BeadsStore({ cwd: repoPath, ...(binaries.bd ? { bdBinary: binaries.bd } : {}) });
+      return new BeadsStore({
+        cwd: repoPath,
+        executor,
+        ...(binaries.bd ? { bdBinary: binaries.bd } : {}),
+      });
     case "github":
       if (!settings.repo) throw new Error("the github ticket adapter needs `repo` (owner/name)");
       return new GitHubStore({
         repo: settings.repo,
         cwd: repoPath,
+        executor,
         ...(binaries.gh ? { ghBinary: binaries.gh } : {}),
       });
   }

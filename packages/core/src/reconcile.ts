@@ -198,6 +198,7 @@ export class Reconciler {
         labels: t.labels,
         ...(t.priority !== undefined ? { priority: t.priority } : {}),
         ...(t.url ? { url: t.url } : {}),
+        snapshot: t,
       });
       const created = await this.o.store.createWorkflow({
         projectId: project.id,

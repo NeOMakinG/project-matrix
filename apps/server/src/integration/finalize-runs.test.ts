@@ -72,8 +72,9 @@ test.each(trackers)(
         state: "completed",
         result: { status: "ok" },
       });
-      await bounded(factory.reconciler.tick(), "tick");
+      await bounded(factory.reconciler.tick(), "tick", kind === "beads" ? 12_000 : 2_000);
       await bounded(factory.reconciler.idle(), "idle", kind === "beads" ? 60_000 : 2_000);
+      await bounded(factory.core.syncTickets(project.id), "ticket sync", 12_000);
       const records = await bounded(factory.store.listRuns(), "raw runs");
       expect(records.length).toBeGreaterThan(0);
       await factory.store.createApproval({
@@ -91,6 +92,29 @@ test.each(trackers)(
       const ticket = await tracker.get(records[0]!.ticketId);
       expect(ticket).not.toBeNull();
       const get = vi.spyOn(tracker, "get").mockImplementation(() => new Promise(() => {}));
+      const list = vi.spyOn(tracker, "list").mockImplementation(() => new Promise(() => {}));
+      const ready = vi.spyOn(tracker, "ready").mockImplementation(() => new Promise(() => {}));
+      const tickets = await bounded(factory.core.listTickets(project.id), "board tickets");
+      expect(tickets.length).toBeGreaterThan(0);
+      expect(tickets).toContainEqual(ticket);
+      expect(
+        await bounded(factory.core.getTicket(project.id, ticket!.id), "indexed ticket"),
+      ).toEqual(ticket);
+      const board = await bounded(
+        call("GET", `/v1/projects/${project.id}/tickets`),
+        "board endpoint",
+      );
+      expect(board.status).toBe(200);
+      expect(await board.json()).toHaveLength(tickets.length);
+      expect(
+        await bounded(
+          factory.core.listTickets(project.id, {
+            status: [ticket!.status],
+            labels: ticket!.labels,
+          }),
+          "filtered board",
+        ),
+      ).toContainEqual(ticket);
       const runs = await bounded(factory.core.listRuns(), "listRuns");
       const [response, overview] = await bounded(
         Promise.all([call("GET", "/v1/runs"), call("GET", "/v1/overview")]),
@@ -112,6 +136,8 @@ test.each(trackers)(
       ).not.toHaveProperty("title");
       title.mockRestore();
       expect(get).not.toHaveBeenCalled();
+      expect(list).not.toHaveBeenCalled();
+      expect(ready).not.toHaveBeenCalled();
       get.mockRestore();
     } finally {
       vi.restoreAllMocks();

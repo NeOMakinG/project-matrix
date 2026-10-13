@@ -24,7 +24,12 @@ import { OwnedHoldoutStore } from "./owned-holdout.js";
 import { ownedExternalTickets } from "./owned-tickets.js";
 import { RealCore } from "./real-core.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
-import type { TicketBinaries, TicketSettings } from "./tickets.js";
+import {
+  type TicketBinaries,
+  type TicketSettings,
+  TrackerTimeoutError,
+  trackerDeadline,
+} from "./tickets.js";
 import { TrackerUnavailableError } from "./tracker-error.js";
 
 export interface FactoryOptions {
@@ -59,9 +64,17 @@ export async function initProjectRepo(
   binaries: TicketBinaries = {},
   owner?: PrivateStateOwner,
 ): Promise<void> {
-  const execute = async (binary: string, args: string[], options: { cwd?: string } = {}) => {
+  const execute = async (
+    binary: string,
+    args: string[],
+    options: { cwd?: string; signal?: AbortSignal } = {},
+  ) => {
     owner?.assertOwned();
-    const result = await run(binary, args, { ...options, signal: owner?.signal });
+    const signal =
+      options.signal && owner
+        ? AbortSignal.any([options.signal, owner.signal])
+        : (options.signal ?? owner?.signal);
+    const result = await run(binary, args, { ...options, signal, killSignal: "SIGKILL" });
     owner?.assertOwned();
     return result;
   };
@@ -72,17 +85,23 @@ export async function initProjectRepo(
   await git("commit", "--allow-empty", "-q", "-m", "chore: initial commit");
   if (tickets.kind === "beads") {
     try {
-      await execute(
-        binaries.bd ?? "bd",
-        ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
-        { cwd: repoPath },
+      await trackerDeadline(
+        (signal) =>
+          execute(
+            binaries.bd ?? "bd",
+            ["init", "--non-interactive", "--quiet", "--stealth", "--prefix", "mx"],
+            { cwd: repoPath, signal },
+          ),
+        owner?.signal,
       );
     } catch (error) {
       owner?.assertOwned();
       throw new TrackerUnavailableError(
-        error && typeof error === "object" && "code" in error && error.code === "ENOENT"
-          ? "missing"
-          : "failed",
+        error instanceof TrackerTimeoutError
+          ? "timeout"
+          : error && typeof error === "object" && "code" in error && error.code === "ENOENT"
+            ? "missing"
+            : "failed",
       );
     }
   }

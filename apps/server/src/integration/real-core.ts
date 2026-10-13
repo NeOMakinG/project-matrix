@@ -42,6 +42,7 @@ import {
   type TicketBinaries,
   type TicketSettings,
   ticketStoreFor,
+  trackerDeadline,
 } from "./tickets.js";
 
 export interface KnowledgePort {
@@ -96,6 +97,8 @@ export class RealCore implements CorePort {
   readonly modelHealth: ModelHealth[] = [];
   private readonly state: PrivateState<{ inits: InitSession[]; settings: Record<string, unknown> }>;
   private readonly mutations = new Map<string, Promise<unknown>>();
+  private readonly ticketSyncs = new Map<string, Promise<void>>();
+  private readonly hydratedTickets = new Set<string>();
 
   constructor(private readonly o: RealCoreOptions) {
     this.state = new PrivateState(o.stateFile, o.stateOwner);
@@ -140,7 +143,28 @@ export class RealCore implements CorePort {
           this.o.stateOwner,
         );
     this.o.stateOwner?.assertOwned();
-    const owned = this.o.stateOwner?.fence(store) ?? store;
+    const indexed: TicketStore = {
+      kind: store.kind,
+      list: (query) => store.list(query),
+      get: (id) => store.get(id),
+      ready: async () => {
+        await this.syncTickets(projectId);
+        return store.ready();
+      },
+      comment: (id, body) => store.comment(id, body),
+      link: (from, to, type) => store.link(from, to, type),
+      create: async (input) => {
+        const ticket = await store.create(input);
+        await this.index(projectId, ticket);
+        return ticket;
+      },
+      update: async (id, patch) => {
+        const ticket = await store.update(id, patch);
+        await this.index(projectId, ticket);
+        return ticket;
+      },
+    };
+    const owned = this.o.stateOwner?.fence(indexed) ?? indexed;
     this.ticketStores.set(projectId, owned);
     return owned;
   }
@@ -203,6 +227,8 @@ export class RealCore implements CorePort {
       };
     if (input.checks) config.checks = input.checks;
     await this.o.store.upsertProject(config);
+    if (config.matrix?.tickets.kind !== "github" && !this.o.ticketsFor)
+      this.hydratedTickets.add(id);
     return toProject(config);
   }
 
@@ -243,11 +269,61 @@ export class RealCore implements CorePort {
       labels: ticket.labels,
       ...(ticket.priority === undefined ? {} : { priority: ticket.priority }),
       ...(ticket.url ? { url: ticket.url } : {}),
+      snapshot: ticket,
     });
   }
 
   async listTickets(projectId: string, query?: TicketQuery): Promise<Ticket[]> {
-    return (await this.ticketStore(projectId)).list(query);
+    await this.config(projectId);
+    await this.hydrateTickets(projectId);
+    return (await this.o.store.listIndexedTickets(projectId)).filter(
+      (ticket) =>
+        (!query?.status || query.status.includes(ticket.status)) &&
+        (!query?.labels || query.labels.every((label) => ticket.labels.includes(label))),
+    );
+  }
+
+  async getTicket(projectId: string, ticketId: string): Promise<Ticket | null> {
+    await this.config(projectId);
+    await this.hydrateTickets(projectId);
+    return this.o.store.getIndexedTicket(projectId, ticketId);
+  }
+
+  private async hydrateTickets(projectId: string): Promise<void> {
+    if (this.hydratedTickets.has(projectId)) return;
+    try {
+      await this.syncTickets(projectId);
+    } catch {
+      this.o.stateOwner?.assertOwned();
+      throw new CoreError(
+        "tracker_unavailable",
+        "Ticket snapshot unavailable: tracker hydration failed or timed out. Retry after the tracker recovers.",
+      );
+    }
+  }
+
+  async syncTickets(projectId?: string): Promise<void> {
+    const projects = projectId ? [await this.config(projectId)] : await this.o.store.listProjects();
+    await Promise.all(
+      projects.map((project) => {
+        const active = this.ticketSyncs.get(project.id);
+        if (active) return active;
+        const pending = trackerDeadline(async (signal) => {
+          const tickets = await (await this.ticketStore(project.id)).list();
+          for (const ticket of tickets) {
+            signal.throwIfAborted();
+            await this.index(project.id, ticket);
+          }
+          signal.throwIfAborted();
+          this.o.stateOwner?.assertOwned();
+          this.hydratedTickets.add(project.id);
+        }, this.o.stateOwner?.signal);
+        this.ticketSyncs.set(project.id, pending);
+        return pending.finally(() => {
+          if (this.ticketSyncs.get(project.id) === pending) this.ticketSyncs.delete(project.id);
+        });
+      }),
+    );
   }
 
   async createTicket(projectId: string, input: NewTicket): Promise<Ticket> {
@@ -258,7 +334,8 @@ export class RealCore implements CorePort {
 
   async updateTicket(projectId: string, id: string, patch: TicketPatch): Promise<Ticket> {
     const store = await this.ticketStore(projectId);
-    if (!(await store.get(id))) throw new CoreError("not_found", `ticket ${id} not found`);
+    if (!(await this.getTicket(projectId, id)))
+      throw new CoreError("not_found", `ticket ${id} not found`);
     const ticket = await store.update(id, patch);
     await this.index(projectId, ticket);
     return ticket;
@@ -298,8 +375,7 @@ export class RealCore implements CorePort {
     input: { projectId: string; ticketId: string; phase: Phase },
     _actor: Actor,
   ): Promise<Run> {
-    const store = await this.ticketStore(input.projectId);
-    const ticket = await store.get(input.ticketId);
+    const ticket = await this.getTicket(input.projectId, input.ticketId);
     if (!ticket)
       throw new CoreError("not_found", `ticket ${input.ticketId} not found in this project`);
     if (input.phase !== "spike") {
@@ -521,6 +597,8 @@ export class RealCore implements CorePort {
           ? join(this.o.projectsRoot, `${project.id}.init.json`)
           : undefined,
       });
+      if (result.status === "ok" && (await this.ticketStore(session.projectId)).kind === "markdown")
+        await this.syncTickets(session.projectId);
       this.o.stateOwner?.assertOwned();
       const updated: InitSession = {
         ...session,
