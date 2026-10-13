@@ -50,7 +50,13 @@ export interface ProjectConfig {
   repoPath: string;
   baseBranch: string;
   host: string;
-  models: Partial<Record<Phase, PhaseModel>> & { review: PhaseModel; implement: PhaseModel };
+  models: Partial<Record<Phase, PhaseModel | undefined>> & {
+    review: PhaseModel;
+    implement: PhaseModel;
+    tiers?: { large: PhaseModel; small: PhaseModel } | undefined;
+    smallEstimateThreshold?: number;
+    aliases?: Record<string, string>;
+  };
   reviewerFallbacks: PhaseModel[];
   autonomy: { default: AutonomyMode } & Partial<Record<Phase, AutonomyMode>>;
   reviewLanes: ReviewLane[];

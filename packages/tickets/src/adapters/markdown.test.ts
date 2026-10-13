@@ -23,6 +23,16 @@ test("create, link, ready and update round-trip through markdown files", async (
   expect(await store.list({ labels: ["setup"] })).toHaveLength(1);
 });
 
+test("estimates survive creation, disk reload and updates for model routing", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "tickets-estimate-"));
+  const store = new MarkdownTicketStore(directory);
+  const ticket = await store.create({ title: "small task", body: "", estimate: 2 });
+  const reopened = new MarkdownTicketStore(directory);
+  expect((await reopened.get(ticket.id))?.estimate).toBe(2);
+  await reopened.update(ticket.id, { estimate: 3 });
+  expect((await store.get(ticket.id))?.estimate).toBe(3);
+});
+
 test("ids stay monotonic after a ticket file is deleted, and parallel creates never collide", async () => {
   const { rm, readdir } = await import("node:fs/promises");
   const dir = await mkdtemp(join(tmpdir(), "tickets-"));

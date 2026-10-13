@@ -120,7 +120,21 @@ export type BuildResult =
   | { ok: false; issues: { path: string; message: string }[] };
 
 export function buildConfig(packs: Pack[], answers: Answers): BuildResult {
-  const parsed = matrixConfig.safeParse(buildConfigInput(packs, answers));
+  let input: Record<string, unknown>;
+  try {
+    input = buildConfigInput(packs, answers);
+  } catch {
+    return {
+      ok: false,
+      issues: [
+        {
+          path: "answers",
+          message: "An answer could not be converted to config; check JSON model plans.",
+        },
+      ],
+    };
+  }
+  const parsed = matrixConfig.safeParse(input);
   if (parsed.success) return { ok: true, config: parsed.data };
   return {
     ok: false,

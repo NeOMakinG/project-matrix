@@ -52,32 +52,41 @@ export function hasJsoncPath(file: string, text: string, path: string[]): boolea
   return node !== undefined;
 }
 
-const TABLE = "mcp_servers.matrix";
-const HEADER = /^\s*\[\s*mcp_servers\s*\.\s*(?:matrix|"matrix")\s*\]\s*(?:#.*)?$/;
 const ANY_HEADER = /^\s*\[/;
+
+function tableHeader(name: string): RegExp {
+  return new RegExp(`^\\s*\\[\\s*mcp_servers\\s*\\.\\s*(?:${name}|"${name}")\\s*\\]\\s*(?:#.*)?$`);
+}
 
 /**
  * Replaces or appends only the `[mcp_servers.matrix]` table in a TOML file, leaving every other
  * line untouched. Refuses files where a line-based edit could be wrong: multi-line strings, or the
  * matrix server defined via dotted keys / inline tables / sub-tables.
  */
-export function setTomlMatrixTable(file: string, text: string, block: string): string {
+export function setTomlMatrixTable(
+  file: string,
+  text: string,
+  block: string,
+  name = "matrix",
+): string {
   if (/"""|'''/.test(text))
     throw new ConfigError(`${file} uses multi-line strings; add the matrix table by hand`);
   const lines = text.split("\n");
   for (const [i, line] of lines.entries()) {
     const trimmed = line.trim();
     if (
-      /^\[\s*mcp_servers\s*\.\s*(?:matrix|"matrix")\s*\.[^\]]*\]/.test(trimmed) ||
-      /^mcp_servers\s*\.\s*matrix\b/.test(trimmed) ||
-      /^matrix\s*=\s*\{/.test(trimmed)
+      new RegExp(`^\\[\\s*mcp_servers\\s*\\.\\s*(?:${name}|"${name}")\\s*\\.`).test(trimmed) ||
+      new RegExp(`^mcp_servers\\s*\\.\\s*(?:${name}|"${name}")\\s*[.=]`).test(trimmed) ||
+      new RegExp(`^(?:${name}|"${name}")\\s*=\\s*\\{`).test(trimmed)
     ) {
       throw new ConfigError(
-        `${file} defines ${TABLE} in a form Matrix can't edit safely (line ${i + 1}); add it by hand`,
+        `${file} defines mcp_servers.${name} in a form Matrix can't edit safely (line ${i + 1}); add it by hand`,
       );
     }
   }
-  const start = lines.findIndex((l) => HEADER.test(l));
+  const start = lines.findIndex((line) => tableHeader(name).test(line));
+  if (lines.filter((line) => tableHeader(name).test(line)).length > 1)
+    throw new ConfigError(`${file} has duplicate mcp_servers.${name} tables`);
   if (start === -1) return `${text.replace(/\s*$/, "")}${text.trim() ? "\n\n" : ""}${block}`;
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
@@ -94,6 +103,14 @@ export function setTomlMatrixTable(file: string, text: string, block: string): s
   ].join("\n");
 }
 
-export function hasTomlMatrixTable(text: string): boolean {
-  return text.split("\n").some((l) => HEADER.test(l));
+export function hasTomlMatrixTable(text: string, name = "matrix"): boolean {
+  return text.split("\n").some((line) => tableHeader(name).test(line));
+}
+
+export function tomlMatrixTable(text: string, name: string): string {
+  const lines = text.split("\n");
+  const start = lines.findIndex((line) => tableHeader(name).test(line));
+  if (start < 0) return "";
+  const end = lines.findIndex((line, index) => index > start && ANY_HEADER.test(line));
+  return lines.slice(start, end < 0 ? undefined : end).join("\n");
 }

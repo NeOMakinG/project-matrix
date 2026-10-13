@@ -11,7 +11,9 @@ import {
   type Receipt,
   type Runner,
   type RunnerId,
+  resolveModel,
   type ScenarioEvidence,
+  selectModel,
 } from "@matrix/core";
 import { scanSecretText, secretNeedles } from "@matrix/sandbox";
 import { z } from "zod";
@@ -58,10 +60,10 @@ export function scenarioQaDriver(options: {
       };
       check();
       if (!request) throw new FactoryToolingError("QA requires private holdout scenario context");
-      if (
-        request.reviewer.model ===
-        (ctx.workflow.implementerModel ?? ctx.project.models.implement.model)
-      )
+      const implementer =
+        ctx.workflow.implementerModel ?? selectModel(ctx.project, "implement", ctx.ticket).model;
+      const reviewerModel = resolveModel(ctx.project, request.reviewer.model);
+      if (reviewerModel === implementer || reviewerModel === resolveModel(ctx.project, implementer))
         throw new FactoryToolingError(
           "QA probes require a reviewer model distinct from the implementer",
         );
@@ -181,7 +183,7 @@ export function scenarioQaDriver(options: {
             ticketId: ctx.ticket.id,
             phase: "qa",
             runner: request.reviewer.runner,
-            model: request.reviewer.model,
+            model: reviewerModel,
             workdir: snapshot.directory,
             readOnly: true,
             timeoutMs: ctx.project.runTimeoutMs,

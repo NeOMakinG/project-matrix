@@ -143,6 +143,40 @@ export const phase = z.enum([
 ]);
 export const autonomyLevel = z.enum(["human", "gated-auto", "autonomous"]);
 
+export const phaseModel = z.object({
+  runner: z.enum(["claude-code", "codex", "opencode"]),
+  model: z.string().min(1),
+});
+
+export const recommendedModels = {
+  smallEstimateThreshold: 3,
+  aliases: {},
+  tiers: {
+    large: { runner: "claude-code", model: "claude-opus-5-5" },
+    small: { runner: "claude-code", model: "claude-sonnet-5-5" },
+  },
+  implement: { runner: "claude-code", model: "claude-opus-5-5" },
+  spike: { runner: "claude-code", model: "claude-opus-5-5" },
+  design: { runner: "claude-code", model: "claude-opus-5-5" },
+  review: { runner: "codex", model: "gpt-6-sol" },
+  qa: { runner: "codex", model: "gpt-6-sol" },
+} as const;
+
+export const modelsConfig = z.object({
+  spike: phaseModel.optional(),
+  design: phaseModel.optional(),
+  checks: phaseModel.optional(),
+  qa: phaseModel.optional(),
+  merge: phaseModel.optional(),
+  deploy: phaseModel.optional(),
+  verify: phaseModel.optional(),
+  implement: phaseModel.default(recommendedModels.implement),
+  review: phaseModel.default(recommendedModels.review),
+  tiers: z.object({ large: phaseModel, small: phaseModel }).optional(),
+  smallEstimateThreshold: z.number().positive().default(3),
+  aliases: z.record(z.string().min(1), z.string().min(1)).default({}),
+});
+
 export const processConfig = z.object({
   tickets: z.enum(["beads", "github", "linear", "markdown"]),
   adrDir: z.string().default("docs/adr"),
@@ -233,6 +267,7 @@ export const matrixConfig = z.object({
   process: processConfig,
   agents: agentCapabilities,
   design,
+  models: modelsConfig.default(recommendedModels),
   knowledge: knowledge.optional(),
 });
 

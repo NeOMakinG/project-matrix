@@ -29,6 +29,37 @@ const scenarios: HoldoutScenario[] = [
     then: "same sum and no side effects",
   },
 ];
+
+test("model alias is resolved when calling the probe planner", async () => {
+  const setup = await fixture(true);
+  try {
+    setup.context.project.models.aliases = { "gpt-6-sol": "gateway-review" };
+    await setup.driver.run(setup.context, {
+      scenarios,
+      reviewer: { runner: "codex", model: "gpt-6-sol" },
+    });
+    expect(setup.runner.calls[0]?.model).toBe("gateway-review");
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test("model aliases cannot disguise a probe planner that is the implementer", async () => {
+  const setup = await fixture(true);
+  try {
+    setup.context.project.models.aliases = { "gpt-6-sol": "gpt-6.1-sol" };
+    await expect(
+      setup.driver.run(setup.context, {
+        scenarios,
+        reviewer: { runner: "codex", model: "gpt-6-sol" },
+      }),
+    ).rejects.toThrow("distinct from the implementer");
+    expect(setup.runner.calls).toHaveLength(0);
+    expect(setup.executions).toHaveLength(0);
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
 const probes = [
   ...[
     [0, 0, 0],

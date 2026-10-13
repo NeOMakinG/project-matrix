@@ -36,7 +36,7 @@ function serialize(t: Ticket): string {
     createdAt: t.createdAt,
     updatedAt: t.updatedAt,
   };
-  for (const key of ["priority", "parent", "assignee", "phase", "url"] as const) {
+  for (const key of ["priority", "parent", "assignee", "phase", "url", "estimate"] as const) {
     if (t[key] !== undefined) meta[key] = t[key];
   }
   const lines = Object.entries(meta).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
@@ -164,6 +164,7 @@ export class MarkdownTicketStore implements TicketStore {
       createdAt: at,
       updatedAt: at,
       ...(input.priority !== undefined ? { priority: input.priority } : {}),
+      ...(input.estimate !== undefined ? { estimate: input.estimate } : {}),
       ...(input.parent !== undefined ? { parent: input.parent } : {}),
     };
     await this.createFile(join(this.dir, `${id}-${slug(input.title)}.md`), serialize(ticket));

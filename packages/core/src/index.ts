@@ -5,6 +5,7 @@ export * from "./design.js";
 export * from "./handlers.js";
 export * from "./holdout.js";
 export * from "./machine.js";
+export * from "./models.js";
 export * from "./ports.js";
 export type * from "./ports-internal.js";
 export * from "./qa-evidence.js";

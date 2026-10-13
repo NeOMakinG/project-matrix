@@ -16,6 +16,7 @@ import {
 } from "./design.js";
 import { HoldoutStore, holdoutReceipt, parseScenarios, parseVerdicts } from "./holdout.js";
 import { findingsOf } from "./machine.js";
+import { resolveModel, selectModel } from "./models.js";
 import type {
   FigmaMcpCapability,
   Phase,
@@ -86,7 +87,7 @@ export async function callModel(
         ticketId: ctx.ticket.id,
         phase: options.phase ?? ctx.workflow.phase,
         runner: model.runner,
-        model: model.model,
+        model: resolveModel(ctx.project, model.model),
         prompt,
         workdir: options.workdir ?? ctx.workdir,
         timeoutMs: ctx.project.runTimeoutMs,
@@ -119,7 +120,7 @@ function outcomeFrom(result: RunResult, model: PhaseModel, extra: Receipt[] = []
 }
 
 function modelFor(ctx: PhaseContext, phase: Phase): PhaseModel {
-  return ctx.project.models[phase] ?? ctx.project.models.implement;
+  return selectModel(ctx.project, phase, ctx.ticket);
 }
 
 const spike =
@@ -166,7 +167,7 @@ const spike =
     await ctx.tickets.comment(ctx.ticket.id, `Spike plan\n\n${plan.summary}`);
 
     // Scenarios come from a different model than the implementer and are stored outside the worktree.
-    const author = pickReviewer(ctx.project, ctx.project.models.implement.model);
+    const author = pickReviewer(ctx.project, modelFor(ctx, "implement").model);
     deps.holdout.assertOutside(ctx.workdir);
     // The author sees only the ticket, in an empty directory outside the worktree.
     const authorDir = await ctx.scratchDir();
@@ -327,6 +328,7 @@ const implement =
   (deps: HandlerDeps): PhaseHandler =>
   async (ctx) => {
     const model = modelFor(ctx, "implement");
+    const implementerModel = resolveModel(ctx.project, model.model);
     let references: string | undefined;
     await ctx.validateDesign?.();
     if (ctx.designRequired && !ctx.designEvidence?.length)
@@ -399,7 +401,7 @@ const implement =
         .filter(Boolean)
         .join("\n\n"),
     );
-    return outcomeFrom(result, model);
+    return outcomeFrom(result, { ...model, model: implementerModel });
   };
 
 const checks =

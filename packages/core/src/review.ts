@@ -1,4 +1,5 @@
 import { extractJson } from "./holdout.js";
+import { resolveModel } from "./models.js";
 import type { Receipt } from "./ports.js";
 import type { PhaseModel, ProjectConfig, ReviewFinding, ReviewLane, Severity } from "./types.js";
 
@@ -21,9 +22,19 @@ export function pickReviewer(
 ): PhaseModel {
   // Exclude both the model that actually implemented and the configured implementer model,
   // so an unknown implementer can never silently be reviewed by itself.
-  const excluded = new Set([config.models.implement.model, implementerModel].filter(Boolean));
+  const excluded = new Set(
+    [
+      config.models.implement.model,
+      config.models.tiers?.large.model,
+      config.models.tiers?.small.model,
+      implementerModel,
+    ]
+      .filter((model): model is string => Boolean(model))
+      .map((model) => resolveModel(config, model)),
+  );
   const candidates = [config.models.review, ...config.reviewerFallbacks];
-  const pick = candidates.find((c) => !excluded.has(c.model));
+  if (implementerModel) excluded.add(implementerModel);
+  const pick = candidates.find((candidate) => !excluded.has(resolveModel(config, candidate.model)));
   if (!pick) {
     throw new Error(`no reviewer model differs from the implementer (${[...excluded].join(", ")})`);
   }

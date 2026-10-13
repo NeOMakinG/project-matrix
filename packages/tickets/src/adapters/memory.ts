@@ -42,6 +42,7 @@ export class MemoryStore implements TicketStore {
       body: input.body,
       status: "open",
       labels: input.labels ?? [],
+      ...(input.estimate !== undefined ? { estimate: input.estimate } : {}),
       deps: input.deps ?? [],
       createdAt: at,
       updatedAt: at,
