@@ -1,10 +1,27 @@
 import type { InitProgress } from "@/api/view";
 
-type Question = NonNullable<InitProgress["question"]>;
+type Question = NonNullable<InitProgress["question"]> & InitProgress["round"][number];
 
 const QUESTIONS: Question[] = [
   {
+    id: "business.name",
+    pack: "Business",
+    index: 1,
+    total: 3,
+    context: "business",
+    prompt: "Product name?",
+    rationale: "Name the product.",
+    facts: "",
+    options: [],
+    kind: "text",
+    recommended: null,
+    dependsOn: [],
+  },
+  {
     id: "stack.web.data",
+    kind: "select",
+    recommended: "query-trpc",
+    dependsOn: [],
     pack: "Stack",
     index: 7,
     total: 14,
@@ -36,6 +53,9 @@ const QUESTIONS: Question[] = [
   },
   {
     id: "stack.web.forms",
+    kind: "select",
+    recommended: "tanstack-form",
+    dependsOn: [],
     pack: "Stack",
     index: 8,
     total: 14,
@@ -60,81 +80,93 @@ const QUESTIONS: Question[] = [
   },
 ];
 
-const BASE_ANSWERED: InitProgress["answered"] = [
+const CONFIRMED_QUESTIONS: InitProgress["round"] = [
   {
-    questionId: "stack.web.framework",
-    label: "Web framework",
-    value: "React 19 + Vite",
-    id: "stack.web.framework",
-    pack: "Stack",
-    prompt: "Web framework",
+    id: "backend.orm",
+    pack: "backend",
     kind: "select",
-    rationale: "",
-    recommended: "react-vite",
-    options: [{ id: "react-vite", label: "React 19 + Vite", description: "", recommended: true }],
+    prompt: "backend.orm",
+    rationale: "Keep SQL visible and types exact.",
+    recommended: "drizzle",
     dependsOn: [],
+    options: [
+      { id: "drizzle", label: "Drizzle", description: "Typed SQL.", recommended: true },
+      { id: "none", label: "None", description: "No ORM.", recommended: false },
+    ],
   },
   {
-    questionId: "stack.web.router",
-    label: "Routing",
-    value: "TanStack Router (typed routes)",
-    id: "stack.web.router",
-    pack: "Stack",
-    prompt: "Routing",
+    id: "hosting.api",
+    pack: "hosting",
     kind: "select",
-    rationale: "",
-    recommended: "tanstack-router",
+    prompt: "hosting.api",
+    rationale: "Choose API hosting.",
+    recommended: "fly",
+    dependsOn: ["backend.orm"],
     options: [
-      {
-        id: "tanstack-router",
-        label: "TanStack Router (typed routes)",
-        description: "",
-        recommended: true,
-      },
+      { id: "fly", label: "Fly", description: "Managed hosting.", recommended: true },
+      { id: "none", label: "None", description: "No hosting.", recommended: false },
     ],
-    dependsOn: [],
   },
   {
-    questionId: "stack.web.styling",
-    label: "Styling",
-    value: "Tailwind v4 + shadcn/ui",
-    id: "stack.web.styling",
-    pack: "Stack",
-    prompt: "Styling",
-    kind: "select",
-    rationale: "",
-    recommended: "tailwind-shadcn",
+    id: "process.reviewLanes",
+    pack: "process",
+    kind: "multiselect",
+    prompt: "Review lanes on every change?",
+    rationale: "Each lane reviews a different concern.",
+    recommended: ["correctness-security"],
+    dependsOn: [],
     options: [
       {
-        id: "tailwind-shadcn",
-        label: "Tailwind v4 + shadcn/ui",
-        description: "",
+        id: "correctness-security",
+        label: "Correctness + security",
+        description: "Review correctness and security.",
         recommended: true,
       },
+      {
+        id: "architecture-adr",
+        label: "Architecture / ADR",
+        description: "Review architecture.",
+        recommended: false,
+      },
     ],
+  },
+  {
+    id: "business.goals",
+    pack: "business",
+    kind: "list",
+    prompt: "Business goals?",
+    rationale: "Describe success.",
+    recommended: null,
     dependsOn: [],
+    options: [],
   },
 ];
 
-export function makeProgress(answers: Record<string, string>): InitProgress {
-  const answered: InitProgress["answered"] = [
-    ...BASE_ANSWERED,
-    ...QUESTIONS.filter((q) => answers[q.id]).map<InitProgress["answered"][number]>((q) => ({
-      questionId: q.id,
-      label: q.prompt,
-      value: q.options.find((o) => o.id === answers[q.id])?.label ?? String(answers[q.id]),
-      id: q.id,
-      pack: q.pack,
-      prompt: q.prompt,
-      kind: "select",
-      rationale: q.rationale,
-      recommended: q.options.find((option) => option.recommended)?.id ?? null,
-      options: q.options,
-      dependsOn: [],
-    })),
-  ];
-  const question = QUESTIONS.find((q) => !answers[q.id]) ?? null;
-  const stackAnswered = 6 + QUESTIONS.filter((q) => answers[q.id]).length;
+export function makeProgress(answers: Record<string, unknown>): InitProgress {
+  // Mirrors the server: one row per stored answer, keyed by question id.
+  const answered = [...QUESTIONS, ...CONFIRMED_QUESTIONS]
+    .filter((question) => question.id in answers)
+    .map((question) => {
+      const raw = answers[question.id];
+      const values = Array.isArray(raw) ? raw : [String(raw)];
+      return {
+        id: question.id,
+        pack: question.pack,
+        kind: question.kind,
+        prompt: question.prompt,
+        rationale: question.rationale,
+        recommended: question.recommended,
+        options: question.options,
+        dependsOn: question.dependsOn,
+        questionId: question.id,
+        label: question.prompt,
+        value: values
+          .map((value) => question.options.find((option) => option.id === value)?.label ?? value)
+          .join(", "),
+      };
+    });
+  const question = QUESTIONS.find((question) => !(question.id in answers)) ?? null;
+  const stackAnswered = 6 + QUESTIONS.filter((question) => question.id in answers).length;
   return {
     packs: [
       { id: "business", label: "Business", answered: 9, total: 9, state: "done" },
@@ -151,12 +183,12 @@ export function makeProgress(answers: Record<string, string>): InitProgress {
           {
             id: question.id,
             pack: question.pack,
-            kind: "select" as const,
+            kind: question.kind,
             prompt: question.prompt,
             rationale: question.rationale,
-            recommended: question.options.find((o) => o.recommended)?.id ?? null,
+            recommended: question.recommended,
             options: question.options,
-            dependsOn: [],
+            dependsOn: question.dependsOn,
           },
         ]
       : [],

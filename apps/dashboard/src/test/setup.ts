@@ -1,7 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll } from "vitest";
+import { setCsrfToken } from "@/api/http";
 import { resetMockDb } from "@/mocks/handlers";
+import { clearRenderedRoutes } from "./render";
 import { server } from "./server";
 
 class NoopResizeObserver {
@@ -12,8 +14,10 @@ class NoopResizeObserver {
 globalThis.ResizeObserver ??= NoopResizeObserver as unknown as typeof ResizeObserver;
 
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await clearRenderedRoutes();
+  setCsrfToken(null);
   server.resetHandlers();
   resetMockDb();
 });

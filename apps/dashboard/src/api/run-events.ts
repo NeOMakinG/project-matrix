@@ -24,13 +24,14 @@ export function truncateBytes(text: string, max = MAX_MESSAGE_BYTES): string {
 /** Frames bigger than this are not even parsed; a placeholder line is logged instead. */
 export const MAX_FRAME_CHARS = 1024 * 1024;
 
-const eventBytes = (e: RunEvent) => byteSize(e.message) + e.at.length + e.kind.length;
+const eventBytes = (event: RunEvent) =>
+  byteSize(event.message + event.runId + event.at + event.kind);
 const MAX_RECONNECTS = 8;
 const EVENT_KINDS = ["log", "tool", "file", "cost", "error", "done"] as const;
 
 const runEventSchema = z.object({
-  runId: z.string(),
-  at: z.string(),
+  runId: z.string().max(256),
+  at: z.string().max(64),
   kind: z.enum(EVENT_KINDS),
   message: z.string(),
 });
@@ -45,7 +46,16 @@ export function parseRunEvent(raw: string): RunEvent | null {
   }
 }
 
-const eventKey = (e: RunEvent) => `${e.at}|${e.kind}|${e.message}`;
+const eventKey = (event: RunEvent) => {
+  let firstHash = 2166136261;
+  let secondHash = 5381;
+  for (let index = 0; index < event.message.length; index += 1) {
+    const code = event.message.charCodeAt(index);
+    firstHash = Math.imul(firstHash ^ code, 16777619);
+    secondHash = Math.imul(secondHash, 33) ^ code;
+  }
+  return `${event.at}|${event.kind}|${event.message.length}|${firstHash >>> 0}|${secondHash >>> 0}`;
+};
 
 type Source = Pick<EventSource, "addEventListener" | "close" | "readyState"> & {
   onerror: ((this: EventSource, ev: Event) => unknown) | null;
@@ -110,17 +120,20 @@ export class RunEventStream {
     });
     for (const kind of EVENT_KINDS) {
       source.addEventListener(kind, (message) => {
+        if (this.stopped || this.source !== source) return;
         const raw = message as MessageEvent<string>;
         if (raw.lastEventId) this.lastEventId = raw.lastEventId;
+        const data = typeof raw.data === "string" ? raw.data : "";
+        if (!data) return;
         const event =
-          raw.data.length > MAX_FRAME_CHARS
+          byteSize(data) > MAX_FRAME_CHARS
             ? {
                 runId: this.runId,
                 at: new Date().toISOString(),
                 kind: "error" as const,
-                message: `event ${raw.lastEventId || ""} dropped: ${raw.data.length} characters is over the limit`,
+                message: `event ${raw.lastEventId || ""} dropped: frame is over the byte limit`,
               }
-            : parseRunEvent(raw.data);
+            : parseRunEvent(data);
         if (!event || event.runId !== this.runId) return;
         this.attempts = 0;
         if (this.state !== "live") this.state = "live";
@@ -129,13 +142,14 @@ export class RunEventStream {
       });
     }
     source.addEventListener("close", (message) => {
+      if (this.stopped || this.source !== source) return;
       const parsed = closeSchema.safeParse(safeJson((message as MessageEvent<string>).data));
       const reason = parsed.success ? parsed.data.reason : "closed";
       if (reason === "overflow") this.retry();
       else this.finish("closed");
     });
     source.onerror = () => {
-      if (this.stopped) return;
+      if (this.stopped || this.source !== source) return;
       // EventSource retries on its own while CONNECTING; we take over once it gives up.
       if (source.readyState === 2) this.retry();
       else this.setState("reconnecting");
@@ -154,6 +168,8 @@ export class RunEventStream {
   }
 
   private finish(state: "ended" | "closed"): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
     this.source?.close();
     this.source = null;
     this.setState(state);

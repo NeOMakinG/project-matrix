@@ -61,18 +61,20 @@ test("runs list sorts by column", async ({ page }) => {
   await expect(page.locator("tbody tr").first()).toContainText("MX-131");
 });
 
-test("init interview confirms the recommended answer", async ({ page }) => {
+test("init interview asks a full round with recommendations and live preview", async ({ page }) => {
   await page.goto("/p/ledgerly/init");
   await settle(page);
   await page.getByRole("button", { name: "Start interview" }).click();
-  await expect(page.getByRole("heading", { name: "New project · Init interview" })).toBeVisible();
-  await expect(page.getByRole("radio", { name: /TanStack Query \+ tRPC/ })).toBeChecked();
+  await expect(page.getByRole("heading", { name: "ledgerly · Init interview" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Product name?" })).toBeVisible();
+  await expect(page.getByText("Recommended").first()).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/04-init-interview.png`, fullPage: true });
-  await page.keyboard.press("Tab");
-  await page.getByRole("button", { name: "Confirm & next" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Which form library should the web app use?" }),
-  ).toBeVisible();
+  for (const input of await page.getByRole("textbox").all()) {
+    if ((await input.inputValue()) === "") await input.fill("Answer");
+  }
+  await expect(page.getByLabel("matrix.config.ts preview")).toContainText('"name": "Answer"');
+  await page.getByRole("button", { name: /^Confirm \d+ answers$/ }).click();
+  await expect(page.getByRole("heading", { name: "Product name?" })).toHaveCount(0);
 });
 
 test("knowledge renders the product graph and ADR rules", async ({ page }) => {
@@ -137,14 +139,13 @@ test("custom radios show a visible keyboard focus ring", async ({ page }) => {
   await page.goto("/p/ledgerly/init");
   await settle(page);
   await page.getByRole("button", { name: "Start interview" }).click();
-  const radio = page.getByRole("radio", { name: /TanStack Query \+ tRPC/ });
-  await expect(radio).toBeChecked();
-  await radio.focus();
+  const group = page.getByRole("radiogroup").first();
+  const checked = group.locator("input[type=radio]:checked");
+  await expect(checked).toHaveCount(1);
+  await checked.focus();
   await page.keyboard.press("ArrowDown");
-  const label = page.locator("label", {
-    has: page.getByRole("radio", { name: /TanStack Query \+ REST/ }),
-  });
-  await expect(label).toHaveCSS("outline-style", "solid");
+  const focusedLabel = group.locator("label:has(input:focus-visible)");
+  await expect(focusedLabel).toHaveCSS("outline-style", "solid");
 });
 
 test("unsafe links from the API are never rendered", async ({ page }) => {

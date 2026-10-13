@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --config vitest.config.ts",
     "test:e2e": "playwright test",
-    "dev:mocks": "VITE_USE_MOCKS=1 vite"
+    "dev:mocks": "VITE_USE_MOCKS=1 vite",
+    "test:e2e:real": "playwright test --config playwright.real.config.ts"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
@@ -35,7 +36,8 @@
     "react-dom": "^19",
     "tailwind-merge": "^3.7.0",
     "zod": "^4.6.6",
-    "@matrix/sdk": "workspace:*"
+    "@matrix/sdk": "workspace:*",
+    "@matrix/packs": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.0",
