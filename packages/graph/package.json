@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@matrix/config": "workspace:*",
+    "@matrix/safe-fs": "workspace:*",
     "picomatch": "^4.0.3",
     "typescript": "^5.9.0",
     "zod": "^4"

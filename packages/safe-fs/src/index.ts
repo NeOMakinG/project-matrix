@@ -137,7 +137,12 @@ export async function appendFileSafe(base: string, target: string, data: string)
 }
 
 /** Reads `target` below `base` without following symlinks; `null` when missing. */
-export async function readFileSafe(base: string, target: string): Promise<string | null> {
+export async function readFileSafe(
+  base: string,
+  target: string,
+  opts: { maxBytes?: number } = {},
+): Promise<string | null> {
+  safeJoin(base, relative(resolve(base), resolve(target)));
   await assertNoSymlinkChain(base, dirname(target));
   let handle: Awaited<ReturnType<typeof open>>;
   try {
@@ -149,6 +154,20 @@ export async function readFileSafe(base: string, target: string): Promise<string
     throw error;
   }
   try {
+    if (opts.maxBytes !== undefined) {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > opts.maxBytes)
+        throw new Error("file exceeds read limit or is not a regular file");
+      const buffer = Buffer.alloc(opts.maxBytes + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+        if (bytesRead === 0) break;
+        length += bytesRead;
+      }
+      if (length > opts.maxBytes) throw new Error("file exceeds read limit");
+      return buffer.subarray(0, length).toString("utf8");
+    }
     return await handle.readFile("utf8");
   } finally {
     await handle.close();

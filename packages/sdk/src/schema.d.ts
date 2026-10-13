@@ -4001,12 +4001,24 @@ export interface components {
         id: string;
         kind: string;
         label: string;
+        data?: {
+          [key: string]: unknown;
+        };
       }[];
       edges: {
         from: string;
         to: string;
         kind: string;
       }[];
+      context?: {
+        [key: string]: unknown;
+      };
+      architecture?: {
+        path: string;
+        /** @enum {boolean} */
+        readOnly: true;
+        graph?: unknown;
+      };
     };
     InitAnswers: {
       answers: {

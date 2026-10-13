@@ -76,6 +76,12 @@ export function resolve(
 /** Drops answers that belong to inactive branches of the design tree. */
 export function activeAnswers(packs: Pack[], answers: Answers): Answers {
   const out: Answers = {};
+  for (const field of [
+    "knowledge.productContext.path",
+    "knowledge.productContext.format",
+    "knowledge.architectureGraph.path",
+  ])
+    if (answers[field] !== undefined) out[field] = answers[field];
   for (const q of allQuestions(packs)) {
     const v = answers[q.id];
     if (v !== undefined && isActive(q, answers)) out[q.id] = v;
@@ -95,6 +101,12 @@ function setPath(target: Record<string, unknown>, path: string, value: unknown):
 
 export function buildConfigInput(packs: Pack[], answers: Answers): Record<string, unknown> {
   const config: Record<string, unknown> = { version: 1 };
+  for (const field of [
+    "knowledge.productContext.path",
+    "knowledge.productContext.format",
+    "knowledge.architectureGraph.path",
+  ])
+    if (answers[field] !== undefined) setPath(config, field, answers[field]);
   for (const q of allQuestions(packs)) {
     const v = answers[q.id];
     if (v === undefined || !isActive(q, answers)) continue;
