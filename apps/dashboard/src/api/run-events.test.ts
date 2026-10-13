@@ -210,4 +210,10 @@ describe("run event stream", () => {
     expect(() => t.sources[0]?.emit("log", undefined as never)).not.toThrow();
     expect(t.events()).toEqual([]);
   });
+
+  it("ignores events that carry no data", () => {
+    const t = setup("r1");
+    expect(() => t.sources[0]?.emit("log", undefined as never)).not.toThrow();
+    expect(t.events()).toEqual([]);
+  });
 });
