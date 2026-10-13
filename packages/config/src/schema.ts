@@ -144,6 +144,7 @@ export const phase = z.enum([
 export const autonomyLevel = z.enum(["human", "gated-auto", "autonomous"]);
 
 export const processConfig = z.object({
+  disposableArtifacts: z.array(z.string().min(1)).optional(),
   tickets: z.enum(["beads", "github", "linear", "markdown"]),
   adrDir: z.string().default("docs/adr"),
   branching: z.enum(["trunk-with-prs", "gitflow"]),
