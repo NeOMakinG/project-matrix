@@ -10,7 +10,12 @@ import { scanSourceSnapshot } from "../../../apps/server/src/integration/source-
 import { WorktreeGitPort } from "./git-port.js";
 import { NativeWorkspace } from "./native.js";
 
-async function fixture(policy?: { ignore?: string; attributes?: string }) {
+async function fixture(policy?: {
+  ignore?: string;
+  attributes?: string;
+  config?: string;
+  packageRoots?: string[];
+}) {
   const repo = await mkdtemp(join(tmpdir(), "matrix-handover-test-"));
   const git = (...args: string[]) =>
     execFileSync(
@@ -22,6 +27,11 @@ async function fixture(policy?: { ignore?: string; attributes?: string }) {
   await mkdir(join(repo, "src"));
   if (policy?.ignore) await writeFile(join(repo, ".gitignore"), policy.ignore);
   if (policy?.attributes) await writeFile(join(repo, ".gitattributes"), policy.attributes);
+  if (policy?.config) await writeFile(join(repo, "matrix.config.ts"), policy.config);
+  for (const root of policy?.packageRoots ?? []) {
+    await mkdir(join(repo, root), { recursive: true });
+    await writeFile(join(repo, root, "package.json"), "{}\n");
+  }
   await writeFile(
     join(repo, "src/answer.ts"),
     Buffer.from(
@@ -57,6 +67,92 @@ async function fixture(policy?: { ignore?: string; attributes?: string }) {
 }
 
 describe("host-mediated handover (real git, explicitly fake scanner)", () => {
+  test.each([true, false])(
+    "explicit BASE declarations exclude nested artifacts (ignored=%s)",
+    async (ignored) => {
+      const { prepared, port, options } = await fixture({
+        config:
+          'export default { mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" }, process: { disposableArtifacts: ["node_modules/", "backend/node_modules/", "web/dist/", "app/.expo/", "web/.next/"] } };',
+        ...(ignored ? { ignore: "node_modules/\ndist/\n.expo/\n.next/\n" } : {}),
+        packageRoots: [".", "backend", "app", "web"],
+      });
+      const artifacts = [
+        "node_modules/dependency/index.js",
+        "backend/node_modules/dependency/index.js",
+        "web/dist/bundle.js",
+        "app/.expo/state.json",
+        "web/.next/cache.json",
+      ];
+      for (const path of artifacts) {
+        await mkdir(join(prepared.workdir, path, ".."), { recursive: true });
+        await writeFile(join(prepared.workdir, path), "disposable");
+      }
+      await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+      const result = await port.commitImplementation(prepared.workdir, {
+        ...options,
+        scan: async (snapshot, binding) => {
+          expect(binding.objects.map((object) => object.path)).toEqual(
+            [
+              ".gitignore",
+              "app/package.json",
+              "backend/package.json",
+              "matrix.config.ts",
+              "package.json",
+              "src/answer.ts",
+              "web/package.json",
+            ].filter((path) => ignored || path !== ".gitignore"),
+          );
+          for (const path of artifacts) expect(existsSync(join(snapshot, path))).toBe(false);
+          return options.scan();
+        },
+      });
+      expect(await port.cleanForChecks(prepared.workdir)).toBe(result.headSha);
+      for (const path of artifacts)
+        expect(await readFile(join(prepared.workdir, path), "utf8")).toBe("disposable");
+    },
+    30_000,
+  );
+
+  test("only BASE declarations authorize custom ignored artifacts", async () => {
+    const { prepared, port, options } = await fixture({
+      config:
+        'const config = { process: { disposableArtifacts: ["cache/"] } } as const; export default config;',
+      ignore: "cache/\nsrc/private.ts\n",
+    });
+    await mkdir(join(prepared.workdir, "cache"));
+    await writeFile(join(prepared.workdir, "cache/result"), "preserve");
+    await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+    const result = await port.commitImplementation(prepared.workdir, options);
+    expect(await port.cleanForChecks(prepared.workdir)).toBe(result.headSha);
+    await writeFile(
+      join(prepared.workdir, "matrix.config.ts"),
+      'export default { process: { disposableArtifacts: ["src/"] } };',
+    );
+    await writeFile(join(prepared.workdir, "src/private.ts"), "preserve source");
+    await expect(
+      port.commitImplementation(prepared.workdir, { ...options, expectedHead: result.headSha }),
+    ).rejects.toThrow(/ignored artifact/);
+    await expect(port.cleanForChecks(prepared.workdir)).rejects.toThrow(/ignored artifact/);
+    expect(await readFile(join(prepared.workdir, "src/private.ts"), "utf8")).toBe(
+      "preserve source",
+    );
+    expect(await readFile(join(prepared.workdir, "cache/result"), "utf8")).toBe("preserve");
+  }, 30_000);
+
+  test("tracked disposable-looking source remains scanned", async () => {
+    const { prepared, port, options } = await fixture({
+      config: 'export default { process: { disposableArtifacts: ["src/"] } };',
+    });
+    await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+    await port.commitImplementation(prepared.workdir, {
+      ...options,
+      scan: async (snapshot, binding) => {
+        expect(binding.objects.some((object) => object.path === "src/answer.ts")).toBe(true);
+        expect(await readFile(join(snapshot, "src/answer.ts"), "utf8")).toContain("= 2");
+        return options.scan();
+      },
+    });
+  }, 30_000);
   test.each(["src/new.ts", "unknown.bin", "node_modules/package/index.js"])(
     "preserves ignored %s during handover and cleanup",
     async (path) => {
@@ -285,4 +381,55 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
     },
     30_000,
   );
+});
+
+describe("generic build directories are not disposable by default", () => {
+  test("a legitimate src/package.json does not exempt authored src/coverage source", async () => {
+    const { prepared, port, options, head } = await fixture({
+      config: 'export default { backend: { kind: "node-api" } };',
+      packageRoots: ["src"],
+    });
+    await mkdir(join(prepared.workdir, "src/coverage"), { recursive: true });
+    const target = join(prepared.workdir, "src/coverage/secret.ts");
+    await writeFile(target, "authored secret source\n");
+    let scanned = false;
+    await expect(
+      port.commitImplementation(prepared.workdir, {
+        ...options,
+        scan: async (snapshot, binding) => {
+          expect(binding.objects.some((object) => object.path === "src/coverage/secret.ts")).toBe(
+            true,
+          );
+          expect(await readFile(join(snapshot, "src/coverage/secret.ts"), "utf8")).toContain(
+            "authored secret",
+          );
+          scanned = true;
+          return { kind: "secret-scan", ok: false, summary: "secret found" };
+        },
+      }),
+    ).rejects.toThrow(/secret scan/);
+    expect(scanned).toBe(true);
+    expect(await port.headSha(prepared.workdir)).toBe(head);
+    expect(await readFile(target, "utf8")).toBe("authored secret source\n");
+  }, 30_000);
+  test("a new file under src/build is committed and scanned, not skipped", async () => {
+    const { prepared, port, options } = await fixture({
+      config: 'export default { backend: { kind: "node-api" } };',
+    });
+    await mkdir(join(prepared.workdir, "src/build"), { recursive: true });
+    await writeFile(join(prepared.workdir, "src/build/secret.ts"), "export const value = 1;\n");
+    let scanned = false;
+    await port.commitImplementation(prepared.workdir, {
+      ...options,
+      scan: async (snapshot, binding) => {
+        expect(binding.objects.some((object) => object.path === "src/build/secret.ts")).toBe(true);
+        expect(await readFile(join(snapshot, "src/build/secret.ts"), "utf8")).toContain(
+          "value = 1",
+        );
+        scanned = true;
+        return options.scan();
+      },
+    });
+    expect(scanned).toBe(true);
+  }, 30_000);
 });

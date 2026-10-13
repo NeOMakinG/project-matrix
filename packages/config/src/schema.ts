@@ -178,6 +178,7 @@ export const modelsConfig = z.object({
 });
 
 export const processConfig = z.object({
+  disposableArtifacts: z.array(z.string().min(1)).optional(),
   tickets: z.enum(["beads", "github", "linear", "markdown"]),
   adrDir: z.string().default("docs/adr"),
   branching: z.enum(["trunk-with-prs", "gitflow"]),

@@ -15,6 +15,7 @@ import {
   safeGitEnv,
   verifyWorktreeLink,
 } from "@matrix/sandbox";
+import { disposablePolicy } from "./artifact-policy.js";
 import type { TrustedWorktrees } from "./trusted.js";
 
 const exec = promisify(execFile);
@@ -174,31 +175,56 @@ export class WorktreeGitPort implements GitPort {
   }
 
   /**
-   * Requires the committed tree before checks. The trusted BASE policy classifies no disposable
-   * artifacts, so unknown and ignored files are preserved rather than blanket-cleaned.
+   * Requires the committed tree before checks; preserves artifacts authorized by trusted BASE.
    */
   async cleanForChecks(workdir: string): Promise<string> {
-    await this.#assertNoHiddenArtifacts(workdir);
+    const disposable = await this.#assertNoHiddenArtifacts(workdir);
     const others = await this.#git(workdir, ["ls-files", "--others", "-z"], true);
-    if (others) throw new Error("untracked artifacts preserved; cleanup refused");
+    if (others.split("\0").some((path) => path && !disposable.has(path)))
+      throw new Error("untracked artifacts preserved; cleanup refused");
+    const cached = await this.#git(workdir, ["ls-files", "--cached", "-z"]);
+    const stagedArtifacts = cached.split("\0").filter((path) => disposable.has(path));
+    if (stagedArtifacts.length)
+      await this.#git(workdir, ["update-index", "--force-remove", "--", ...stagedArtifacts]);
     if (!(await this.isClean(workdir)))
       throw new Error("worktree has uncommitted changes after clean");
     return this.headSha(workdir);
   }
 
-  async #assertNoHiddenArtifacts(workdir: string): Promise<void> {
+  async #assertNoHiddenArtifacts(workdir: string, refuseHidden = true): Promise<Set<string>> {
     const { baseSha } = await this.#trusted.lookup(workdir);
     if (!baseSha) throw new Error("trusted BASE required for artifact policy");
+    const tree = await this.#git(workdir, ["ls-tree", "-z", baseSha, "--", "matrix.config.ts"]);
+    const record = tree.split("\0").filter(Boolean)[0];
+    let matches = (_path: string) => false;
+    if (record) {
+      if (!/^100644 blob [0-9a-f]{40,64}\tmatrix\.config\.ts$/.test(record))
+        throw new Error("invalid trusted BASE artifact config entry");
+      const sha = record.split(" ")[2]!.split("\t")[0]!;
+      const size = Number((await this.#git(workdir, ["cat-file", "-s", sha])).trim());
+      if (!Number.isSafeInteger(size) || size > 1024 * 1024)
+        throw new Error("trusted BASE artifact config exceeds size limit");
+      matches = disposablePolicy(await this.#git(workdir, ["cat-file", "blob", sha]));
+    }
+    const tracked = new Set(
+      (await this.#git(workdir, ["ls-tree", "-r", "--name-only", "-z", "HEAD"])).split("\0"),
+    );
+    const disposable = new Set<string>();
     const all = await this.#git(workdir, ["ls-files", "--others", "-z"], true);
+    const cached = await this.#git(workdir, ["ls-files", "--cached", "-z"]);
+    for (const path of `${all}${cached}`.split("\0").filter(Boolean)) {
+      if (!tracked.has(path) && matches(path)) disposable.add(path);
+    }
     const visible = new Set(
       (await this.#git(workdir, ["ls-files", "--others", "--exclude-standard", "-z"], true)).split(
         "\0",
       ),
     );
     for (const path of all.split("\0").filter(Boolean)) {
-      if (!visible.has(path))
+      if (refuseHidden && !disposable.has(path) && !visible.has(path))
         throw new Error(`ignored artifact preserved; trusted BASE deny-clean policy: ${path}`);
     }
+    return disposable;
   }
 
   async commitImplementation(
@@ -216,7 +242,7 @@ export class WorktreeGitPort implements GitPort {
     },
   ): Promise<{ headSha: string; receipt: Receipt }> {
     options.signal?.throwIfAborted();
-    await this.#assertNoHiddenArtifacts(workdir);
+    const disposable = await this.#assertNoHiddenArtifacts(workdir);
     const head = await this.headSha(workdir);
     if (head !== options.expectedHead)
       throw new Error("implementation HEAD changed before handover");
@@ -232,6 +258,7 @@ export class WorktreeGitPort implements GitPort {
     const paths = status
       .split("\0")
       .filter(Boolean)
+      .filter((entry) => !disposable.has(entry.slice(3)))
       .map((entry) => {
         if (entry.slice(0, 2).includes("U")) throw new Error("unmerged implementation files");
         return entry.slice(3);
@@ -263,6 +290,7 @@ export class WorktreeGitPort implements GitPort {
       await mkdir(staging, { mode: 0o700 });
       const files = await this.#git(workdir, ["ls-files", "--cached", "--others", "-z"], true);
       for (const path of new Set(files.split("\0").filter(Boolean))) {
+        if (disposable.has(path)) continue;
         options.signal?.throwIfAborted();
         const stat = await lstat(join(workdir, path)).catch((error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return undefined;
@@ -407,7 +435,11 @@ export class WorktreeGitPort implements GitPort {
           env,
           options.signal,
         );
-        if (matches.exitCode !== 0 || untracked.exitCode !== 0 || untracked.stdout)
+        if (
+          matches.exitCode !== 0 ||
+          untracked.exitCode !== 0 ||
+          untracked.stdout.split("\0").some((path) => path && !disposable.has(path))
+        )
           throw new Error("implementation differs from scanned final tree");
         finalState = await this.treeState(workdir);
       }
@@ -455,17 +487,23 @@ export class WorktreeGitPort implements GitPort {
 
   /** Uncommitted or untracked changes, gitignored files excluded. */
   async status(workdir: string): Promise<string> {
-    return this.#git(
+    const disposable = await this.#assertNoHiddenArtifacts(workdir, false);
+    const status = await this.#git(
       workdir,
       [
         "status",
         "--porcelain=v1",
+        "-z",
         "--untracked-files=all",
         "--no-renames",
         "--ignore-submodules=all",
       ],
       true,
     );
+    return status
+      .split("\0")
+      .filter((entry) => !disposable.has(entry.slice(3)))
+      .join("\n");
   }
 
   /** Exit-status comparison against the trusted gitdir (0 = same, 1 = different). */
@@ -498,10 +536,12 @@ export class WorktreeGitPort implements GitPort {
   }
 
   async treeState(workdir: string): Promise<string> {
+    const disposable = await this.#assertNoHiddenArtifacts(workdir, false);
     const hash = createHash("sha256");
     hash.update(await this.headSha(workdir));
     const untracked = await this.#git(workdir, ["ls-files", "-z", "--cached", "--others"], true);
     for (const path of [...new Set(untracked.split("\0").filter(Boolean))].sort()) {
+      if (disposable.has(path)) continue;
       hash.update(`\0${path}\0`);
       const full = join(workdir, path);
       const stat = await lstat(full).catch((error: NodeJS.ErrnoException) => {

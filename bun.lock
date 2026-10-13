@@ -250,6 +250,7 @@
       "dependencies": {
         "@matrix/core": "workspace:*",
         "@matrix/sandbox": "workspace:*",
+        "typescript": "^5.9.0",
       },
     },
     "packs": {
