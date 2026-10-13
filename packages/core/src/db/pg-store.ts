@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import type { Ticket } from "@matrix/tickets";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -201,6 +202,37 @@ export class PgStore implements Store {
       .from(s.ticketIndex)
       .where(and(eq(s.ticketIndex.projectId, projectId), eq(s.ticketIndex.ticketId, ticketId)));
     return row?.title ?? null;
+  }
+  async replaceIndexedTickets(projectId: string, tickets: Ticket[], signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(s.ticketIndex)
+        .set({ snapshot: null })
+        .where(eq(s.ticketIndex.projectId, projectId));
+      for (const ticket of tickets) {
+        signal?.throwIfAborted();
+        const row = {
+          projectId,
+          ticketId: ticket.id,
+          title: ticket.title,
+          status: ticket.status,
+          priority: ticket.priority ?? null,
+          labels: ticket.labels,
+          url: ticket.url ?? null,
+          syncedAt: new Date(),
+          snapshot: ticket,
+        };
+        await tx
+          .insert(s.ticketIndex)
+          .values(row)
+          .onConflictDoUpdate({
+            target: [s.ticketIndex.projectId, s.ticketIndex.ticketId],
+            set: row,
+          });
+      }
+      signal?.throwIfAborted();
+    });
   }
 
   async listIndexedTickets(projectId: string) {

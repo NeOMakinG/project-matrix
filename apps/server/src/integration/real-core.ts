@@ -37,6 +37,7 @@ import { PrivateState } from "../private-state.js";
 import type { PrivateStateOwner } from "../state-owner.js";
 import { type FinalizeJournal, finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
+import { TicketSnapshotLock } from "./ticket-snapshot-lock.js";
 import {
   DEFAULT_TICKETS,
   type TicketBinaries,
@@ -100,6 +101,14 @@ export class RealCore implements CorePort {
   private readonly ticketSyncs = new Map<string, Promise<void>>();
   private readonly hydratedTickets = new Set<string>();
   private readonly finalizingProjects = new Set<string>();
+  private readonly ticketSnapshotLock = new TicketSnapshotLock();
+
+  withTicketSnapshotLock<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
+    return this.ticketSnapshotLock.run(projectId, () => {
+      this.o.stateOwner?.assertOwned();
+      return operation();
+    });
+  }
 
   projectDispatchAllowed(projectId: string): boolean {
     if (this.finalizingProjects.has(projectId)) return false;
@@ -158,22 +167,30 @@ export class RealCore implements CorePort {
       kind: store.kind,
       list: (query) => store.list(query),
       get: (id) => store.get(id),
-      ready: async () => {
-        await this.syncTickets(projectId);
-        return store.ready();
-      },
-      comment: (id, body) => store.comment(id, body),
-      link: (from, to, type) => store.link(from, to, type),
-      create: async (input) => {
-        const ticket = await store.create(input);
-        await this.index(projectId, ticket);
-        return ticket;
-      },
-      update: async (id, patch) => {
-        const ticket = await store.update(id, patch);
-        await this.index(projectId, ticket);
-        return ticket;
-      },
+      ready: () =>
+        this.withTicketSnapshotLock(projectId, async () => {
+          await this.syncTicketsLocked(projectId);
+          return store.ready();
+        }),
+      comment: (id, body) => this.withTicketSnapshotLock(projectId, () => store.comment(id, body)),
+      link: (from, to, type) =>
+        this.withTicketSnapshotLock(projectId, async () => {
+          await store.link(from, to, type);
+          const ticket = await store.get(type === "related" ? from : to);
+          if (ticket) await this.index(projectId, ticket);
+        }),
+      create: (input) =>
+        this.withTicketSnapshotLock(projectId, async () => {
+          const ticket = await store.create(input);
+          await this.index(projectId, ticket);
+          return ticket;
+        }),
+      update: (id, patch) =>
+        this.withTicketSnapshotLock(projectId, async () => {
+          const ticket = await store.update(id, patch);
+          await this.index(projectId, ticket);
+          return ticket;
+        }),
     };
     const owned = this.o.stateOwner?.fence(indexed) ?? indexed;
     this.ticketStores.set(projectId, owned);
@@ -319,16 +336,9 @@ export class RealCore implements CorePort {
       projects.map((project) => {
         const active = this.ticketSyncs.get(project.id);
         if (active) return active;
-        const pending = trackerDeadline(async (signal) => {
-          const tickets = await (await this.ticketStore(project.id)).list();
-          for (const ticket of tickets) {
-            signal.throwIfAborted();
-            await this.index(project.id, ticket);
-          }
-          signal.throwIfAborted();
-          this.o.stateOwner?.assertOwned();
-          this.hydratedTickets.add(project.id);
-        }, this.o.stateOwner?.signal);
+        const pending = this.withTicketSnapshotLock(project.id, () =>
+          this.syncTicketsLocked(project.id),
+        );
         this.ticketSyncs.set(project.id, pending);
         return pending.finally(() => {
           if (this.ticketSyncs.get(project.id) === pending) this.ticketSyncs.delete(project.id);
@@ -337,19 +347,27 @@ export class RealCore implements CorePort {
     );
   }
 
+  private async syncTicketsLocked(projectId: string): Promise<void> {
+    await trackerDeadline(async (signal) => {
+      const tickets = await (await this.ticketStore(projectId)).list();
+      signal.throwIfAborted();
+      this.o.stateOwner?.assertOwned();
+      await this.o.store.replaceIndexedTickets(projectId, tickets, signal);
+      signal.throwIfAborted();
+      this.o.stateOwner?.assertOwned();
+      this.hydratedTickets.add(projectId);
+    }, this.o.stateOwner?.signal);
+  }
+
   async createTicket(projectId: string, input: NewTicket): Promise<Ticket> {
-    const ticket = await (await this.ticketStore(projectId)).create(input);
-    await this.index(projectId, ticket);
-    return ticket;
+    return (await this.ticketStore(projectId)).create(input);
   }
 
   async updateTicket(projectId: string, id: string, patch: TicketPatch): Promise<Ticket> {
     const store = await this.ticketStore(projectId);
     if (!(await this.getTicket(projectId, id)))
       throw new CoreError("not_found", `ticket ${id} not found`);
-    const ticket = await store.update(id, patch);
-    await this.index(projectId, ticket);
-    return ticket;
+    return store.update(id, patch);
   }
 
   // ── runs ────────────────────────────────────────────────────────────────────────────────────

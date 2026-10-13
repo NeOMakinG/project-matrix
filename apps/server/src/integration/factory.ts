@@ -183,6 +183,10 @@ async function createOwnedFactory(
     git: stateOwner.fence(runtime.git),
     tickets,
     projectDispatchAllowed: (projectId) => core?.projectDispatchAllowed(projectId) ?? false,
+    withTicketSnapshotLock: (projectId, operation) => {
+      if (!core) throw new Error("factory not ready");
+      return core.withTicketSnapshotLock(projectId, operation);
+    },
     limits: {
       perProject: options.runtime === "fake" ? 4 : 1,
       perModel: {},

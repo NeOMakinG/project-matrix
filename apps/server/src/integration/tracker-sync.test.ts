@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Ticket } from "@matrix/tickets";
@@ -6,6 +7,138 @@ import { expect, test, vi } from "vitest";
 import { createServer } from "../http/app.js";
 import { createFactory } from "./factory.js";
 import { trackerDeadline } from "./tickets.js";
+
+test("successful full sync removes deleted tickets but retains historical run titles", async () => {
+  const factory = await createFactory({
+    runtime: "fake",
+    dataDir: mkdtempSync(join(tmpdir(), "matrix-sync-delete-")),
+    host: "test",
+    log: () => {},
+  });
+  try {
+    const project = await factory.core.createProject({
+      name: "delete",
+      description: "",
+      workspace: "native",
+      tickets: { kind: "markdown" },
+    });
+    const removed = await factory.core.createTicket(project.id, {
+      title: "Deleted",
+      body: "",
+      labels: [],
+    });
+    const kept = await factory.core.createTicket(project.id, {
+      title: "Kept",
+      body: "",
+      labels: [],
+    });
+    const config = await factory.store.getProject(project.id);
+    const directory = join(config!.repoPath, ".matrix", "tickets");
+    const file = (await readdir(directory)).find((name) => name.startsWith(`${removed.id}-`))!;
+    await rm(join(directory, file));
+    await factory.core.syncTickets(project.id);
+    expect(await factory.core.listTickets(project.id)).toEqual([kept]);
+    expect(await factory.core.getTicket(project.id, removed.id)).toBeNull();
+    expect(await factory.store.getIndexedTicketTitle(project.id, removed.id)).toBe("Deleted");
+    await rm(
+      join(directory, (await readdir(directory)).find((name) => name.startsWith(`${kept.id}-`))!),
+    );
+    await factory.core.syncTickets(project.id);
+    expect(await factory.core.listTickets(project.id)).toEqual([]);
+  } finally {
+    await factory.stop();
+  }
+});
+
+test("failed full sync preserves all previous snapshot membership", async () => {
+  const factory = await createFactory({
+    runtime: "fake",
+    dataDir: mkdtempSync(join(tmpdir(), "matrix-sync-failed-")),
+    host: "test",
+    log: () => {},
+  });
+  try {
+    const project = await factory.core.createProject({
+      name: "failed",
+      description: "",
+      workspace: "native",
+      tickets: { kind: "markdown" },
+    });
+    const first = await factory.core.createTicket(project.id, {
+      title: "First",
+      body: "",
+      labels: [],
+    });
+    const second = await factory.core.createTicket(project.id, {
+      title: "Second",
+      body: "",
+      labels: [],
+    });
+    const tracker = await factory.core.ticketStore(project.id);
+    const list = vi.spyOn(tracker, "list").mockRejectedValue(new Error("tracker list failed"));
+    const replace = vi.spyOn(factory.store, "replaceIndexedTickets");
+    await expect(factory.core.syncTickets(project.id)).rejects.toThrow("tracker list failed");
+    expect(replace).not.toHaveBeenCalled();
+    expect(await factory.core.listTickets(project.id)).toEqual([first, second]);
+    list.mockResolvedValue([first]);
+    await factory.core.syncTickets(project.id);
+    expect(await factory.core.listTickets(project.id)).toEqual([first]);
+  } finally {
+    vi.restoreAllMocks();
+    await factory.stop();
+  }
+});
+
+test("a mutation interleaved with a captured sync list publishes the newer snapshot last", async () => {
+  const factory = await createFactory({
+    runtime: "fake",
+    dataDir: mkdtempSync(join(tmpdir(), "matrix-sync-race-")),
+    host: "test",
+    log: () => {},
+  });
+  let release = () => {};
+  try {
+    const project = await factory.core.createProject({
+      name: "race",
+      description: "",
+      workspace: "native",
+      tickets: { kind: "markdown" },
+    });
+    const original = await factory.core.createTicket(project.id, {
+      title: "Old",
+      body: "",
+      labels: [],
+    });
+    const tracker = await factory.core.ticketStore(project.id);
+    let entered = () => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    vi.spyOn(tracker, "list").mockImplementation(
+      () =>
+        new Promise<Ticket[]>((resolve) => {
+          release = () => resolve([original]);
+          entered();
+        }),
+    );
+    const lock = vi.spyOn(factory.core, "withTicketSnapshotLock");
+    const sync = factory.core.syncTickets(project.id);
+    await started;
+    const mutation = factory.core.updateTicket(project.id, original.id, { title: "New" });
+    await vi.waitFor(() => expect(lock).toHaveBeenCalledTimes(2));
+    expect((await tracker.get(original.id))?.title).toBe("Old");
+    release();
+    await sync;
+    const updated = await mutation;
+    expect(updated.title).toBe("New");
+    expect(await factory.core.getTicket(project.id, original.id)).toEqual(updated);
+    expect(await factory.store.getIndexedTicketTitle(project.id, original.id)).toBe("New");
+  } finally {
+    release();
+    vi.restoreAllMocks();
+    await factory.stop();
+  }
+});
 
 async function restartProject(empty = false) {
   const options = {
@@ -213,7 +346,7 @@ test("ownership loss cancels sync before any snapshot writes", async () => {
           entered();
         }),
     );
-    const writes = vi.spyOn(factory.store, "indexTicket");
+    const writes = vi.spyOn(factory.store, "replaceIndexedTickets");
     const sync = factory.core.syncTickets(project.id);
     const rejected = expect(sync).rejects.toThrow("ownership lost");
     await started;
@@ -223,6 +356,59 @@ test("ownership loss cancels sync before any snapshot writes", async () => {
     await Promise.resolve();
     expect(writes).not.toHaveBeenCalled();
   } finally {
+    vi.restoreAllMocks();
+    await factory.stop();
+  }
+});
+
+test("reconciler readiness publication shares the mutation lock", async () => {
+  const factory = await createFactory({
+    runtime: "fake",
+    dataDir: mkdtempSync(join(tmpdir(), "matrix-ready-race-")),
+    host: "test",
+    log: () => {},
+  });
+  let release = () => {};
+  try {
+    const project = await factory.core.createProject({
+      name: "ready",
+      description: "",
+      workspace: "native",
+      tickets: { kind: "markdown" },
+    });
+    const original = await factory.core.createTicket(project.id, {
+      title: "Old",
+      body: "",
+      labels: [],
+    });
+    const tracker = await factory.core.ticketStore(project.id);
+    let entered = () => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    vi.spyOn(tracker, "ready").mockImplementation(
+      () =>
+        new Promise<Ticket[]>((resolve) => {
+          release = () => resolve([{ ...original, status: "ready" }]);
+          entered();
+        }),
+    );
+    vi.spyOn(factory.core, "projectDispatchAllowed")
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+    const lock = vi.spyOn(factory.core, "withTicketSnapshotLock");
+    const tick = factory.reconciler.tick();
+    await started;
+    const mutation = factory.core.updateTicket(project.id, original.id, { title: "New" });
+    await vi.waitFor(() => expect(lock).toHaveBeenCalledTimes(2));
+    expect((await tracker.get(original.id))?.title).toBe("Old");
+    release();
+    await tick;
+    const updated = await mutation;
+    expect(await factory.core.getTicket(project.id, original.id)).toEqual(updated);
+    expect(updated.title).toBe("New");
+  } finally {
+    release();
     vi.restoreAllMocks();
     await factory.stop();
   }
