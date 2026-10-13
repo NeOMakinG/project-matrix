@@ -8,6 +8,7 @@ import { DOCTOR_USAGE, doctorCommand } from "./doctor";
 import { GRAPH_USAGE, graphCommand } from "./graph";
 import { runInit } from "./init";
 import { interview } from "./interactive";
+import { MODELS_USAGE, modelsCommand } from "./models";
 import { ORCA_USAGE, orcaCommand } from "./orca/command";
 import { redact } from "./orca/mcp";
 
@@ -30,6 +31,7 @@ async function main(argv: string[]): Promise<number> {
   if (argv[0] === "doctor") return doctorCommand(argv.slice(1));
   if (argv[0] === "check") return checkCommand(argv.slice(1));
   if (argv[0] === "graph") return graphCommand(argv.slice(1));
+  if (argv[0] === "models") return modelsCommand(argv.slice(1));
   if (argv[0] === "orca") {
     // Config and network errors may quote input; only redacted messages ever reach the terminal.
     return orcaCommand(argv.slice(1)).catch((e: unknown) => {
@@ -51,7 +53,9 @@ async function main(argv: string[]): Promise<number> {
   });
   const [command, sub, maybeDir] = positionals;
   if (values.help || command !== "init") {
-    console.log(`${USAGE}\n\n${CHECK_USAGE}\n\n${GRAPH_USAGE}\n\n${ORCA_USAGE}\n\n${DOCTOR_USAGE}`);
+    console.log(
+      `${USAGE}\n\n${CHECK_USAGE}\n\n${GRAPH_USAGE}\n\n${ORCA_USAGE}\n\n${MODELS_USAGE}\n\n${DOCTOR_USAGE}`,
+    );
     return command === "init" || values.help ? 0 : 1;
   }
 

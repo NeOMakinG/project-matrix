@@ -16,6 +16,7 @@ export interface Ticket {
   body: string;
   status: TicketStatus;
   labels: string[];
+  estimate?: number;
   priority?: 0 | 1 | 2 | 3 | 4;
   deps: string[];
   parent?: string;
@@ -30,6 +31,7 @@ export interface NewTicket {
   title: string;
   body: string;
   labels?: string[];
+  estimate?: number;
   priority?: Ticket["priority"];
   parent?: string;
   deps?: string[];

@@ -161,7 +161,7 @@ describe("register-mcp", () => {
     const text = logs.join("\n") + JSON.stringify(out);
     expect(text).not.toContain("hunter2");
     expect(text).not.toContain("sk-live");
-    expect(text).toContain('MCP server "matrix" -> https://matrix.example/mcp');
+    expect(text).toContain('MCP server "matrix-ledgerly" -> https://matrix.example/mcp');
   });
 
   test("apply: 0600 configs and backups, scoped keys, merged entries, no tokens logged", async () => {
@@ -174,7 +174,7 @@ describe("register-mcp", () => {
     await mkdir(join(home, ".codex"));
     await writeFile(
       join(home, ".codex", "config.toml"),
-      'model = "gpt"\n\n[mcp_servers.matrix]\nurl = "old"\n',
+      'model = "gpt"\n\n[mcp_servers.matrix-ledgerly]\nurl = "old"\n',
     );
     const bodies: Array<Record<string, unknown>> = [];
     const logs: string[] = [];
@@ -200,9 +200,11 @@ describe("register-mcp", () => {
     expect(bak && statSync(join(home, bak)).mode & 0o777).toBe(0o600);
     const claude = JSON.parse(await readFile(join(home, ".claude.json"), "utf8"));
     expect(claude.mcpServers.other).toEqual({ url: "x" });
-    expect(claude.mcpServers.matrix.headers.Authorization).toBe("Bearer mx_tok_orca-claude-code");
+    expect(claude.mcpServers["matrix-ledgerly"].headers.Authorization).toBe(
+      "Bearer mx_tok_orca-claude-code",
+    );
     const codex = await readFile(join(home, ".codex", "config.toml"), "utf8");
-    expect(codex.match(/\[mcp_servers\.matrix\]/g)).toHaveLength(1);
+    expect(codex.match(/\[mcp_servers\.matrix-ledgerly\]/g)).toHaveLength(1);
     expect(codex).not.toContain('url = "old"');
     expect(logs.join("\n")).not.toContain("mx_tok_");
   });
@@ -336,14 +338,14 @@ describe("round 2: parser errors and structure-preserving edits", () => {
     const { parse: parseJsonc } = await import("jsonc-parser");
     expect(parseJsonc(after).mcp.other).toEqual({ type: "local" });
     expect(parseJsonc(after).theme).toBe("opencode");
-    expect(after).toContain('"matrix"');
+    expect(after).toContain('"matrix-p"');
   });
 
   test("Codex TOML: other tables and comments untouched; unsafe forms refused before any key", async () => {
     const home = await mkdtemp(join(tmpdir(), "mx-home-"));
     await mkdir(join(home, ".codex"));
     const toml =
-      '# top comment\nmodel = "gpt"\n\n[mcp_servers.matrix]\nurl = "old"\n\n[profiles.fast]\nmodel = "mini" # inline\n';
+      '# top comment\nmodel = "gpt"\n\n[mcp_servers.matrix-p]\nurl = "old"\n\n[profiles.fast]\nmodel = "mini" # inline\n';
     await writeFile(join(home, ".codex", "config.toml"), toml);
     const bodies: Array<Record<string, unknown>> = [];
     await registerMcp({
@@ -357,7 +359,7 @@ describe("round 2: parser errors and structure-preserving edits", () => {
     expect(after).toContain('# top comment\nmodel = "gpt"');
     expect(after).toContain('[profiles.fast]\nmodel = "mini" # inline');
     expect(after).not.toContain('url = "old"');
-    expect(after.match(/\[mcp_servers\.matrix\]/g)).toHaveLength(1);
+    expect(after.match(/\[mcp_servers\.matrix-p\]/g)).toHaveLength(1);
 
     const home2 = await mkdtemp(join(tmpdir(), "mx-home-"));
     await mkdir(join(home2, ".codex"));
@@ -373,7 +375,7 @@ describe("round 2: parser errors and structure-preserving edits", () => {
       }),
     ).rejects.toThrow(/multi-line strings/);
     expect(calls).toHaveLength(0);
-    await writeFile(join(home2, ".codex", "config.toml"), 'mcp_servers.matrix.url = "x"\n');
+    await writeFile(join(home2, ".codex", "config.toml"), 'mcp_servers.matrix-p.url = "x"\n');
     await expect(registerMcp({ ...opts(home2), agents: ["codex"] })).rejects.toThrow(
       /can't edit safely/,
     );

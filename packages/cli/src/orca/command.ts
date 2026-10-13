@@ -10,7 +10,7 @@ export const ORCA_USAGE = `matrix orca hooks install|uninstall [--apply] [--dir 
   Writes ONLY Matrix-owned files under --dir (default ~/.matrix/orca) and prints the exact agent
   config change to make. Dry run unless --apply. Secret: --secret-file or MATRIX_ORCA_HOOK_SECRET.
 matrix orca register-mcp [--apply] --server <url> [--agents claude-code,codex,opencode]
-                         --project <id> [--actions read,tickets:write] [--home <dir>]
+                         --project <id[,id...]> (repeatable) [--actions read,tickets:write] [--home <dir>]
                          [--allow-tailnet-http]
   Gives each agent the Matrix MCP server with its own scoped API key (needs MATRIX_ADMIN_KEY with
   --apply; https, or http to loopback / Tailscale with --allow-tailnet-http) and installs the matrix
@@ -38,7 +38,7 @@ export async function orcaCommand(argv: string[]): Promise<number> {
       server: { type: "string" },
       "secret-file": { type: "string" },
       agents: { type: "string" },
-      project: { type: "string" },
+      project: { type: "string", multiple: true },
       "allow-tailnet-http": { type: "boolean", default: false },
       actions: { type: "string" },
       home: { type: "string" },
@@ -80,7 +80,7 @@ export async function orcaCommand(argv: string[]): Promise<number> {
     await registerMcp({
       serverUrl: server,
       agents,
-      projects: [values.project],
+      projects: values.project.flatMap((value) => value.split(",")),
       allowTailnetHttp: values["allow-tailnet-http"],
       actions: values.actions?.split(",") ?? ["read", "tickets:write"],
       home: values.home ?? homedir(),
