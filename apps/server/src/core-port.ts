@@ -285,7 +285,7 @@ export interface CorePort {
 
 export class CoreError extends Error {
   constructor(
-    readonly code: "not_found" | "conflict" | "invalid_state" | "forbidden",
+    readonly code: "not_found" | "conflict" | "invalid_state" | "forbidden" | "tracker_unavailable",
     message: string,
   ) {
     super(message);

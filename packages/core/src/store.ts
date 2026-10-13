@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Ticket } from "@matrix/tickets";
 import type { AutonomyMode, Phase, Receipt, RunEvent, RunnerId } from "./ports.js";
 import { PHASES } from "./ports.js";
 import type { ProjectConfig, WorkflowState } from "./types.js";
@@ -144,8 +145,13 @@ export interface Store {
       priority?: number;
       labels: string[];
       url?: string;
+      snapshot?: Ticket;
     },
   ): Promise<void>;
+
+  getIndexedTicketTitle(projectId: string, ticketId: string): Promise<string | null>;
+  listIndexedTickets(projectId: string): Promise<Ticket[]>;
+  getIndexedTicket(projectId: string, ticketId: string): Promise<Ticket | null>;
 
   getWorkflow(projectId: string, ticketId: string): Promise<WorkflowState | null>;
   createWorkflow(state: WorkflowState): Promise<boolean>;
@@ -222,7 +228,7 @@ export class MemoryStore implements Store {
   private history: AutonomyChange[] = [];
   private spend = new Map<string, number>();
   private lessons: Lesson[] = [];
-  readonly tickets = new Map<string, unknown>();
+  readonly tickets = new Map<string, Parameters<Store["indexTicket"]>[1]>();
 
   async upsertProject(config: ProjectConfig) {
     this.projects.set(config.id, clone(config));
@@ -234,8 +240,20 @@ export class MemoryStore implements Store {
   async listProjects() {
     return [...this.projects.values()].map(clone);
   }
-  async indexTicket(projectId: string, ticket: { id: string }) {
+  async indexTicket(projectId: string, ticket: Parameters<Store["indexTicket"]>[1]) {
     this.tickets.set(key(projectId, ticket.id), clone(ticket));
+  }
+  async getIndexedTicketTitle(projectId: string, ticketId: string) {
+    return this.tickets.get(key(projectId, ticketId))?.title ?? null;
+  }
+  async listIndexedTickets(projectId: string) {
+    return [...this.tickets.entries()].flatMap(([entryKey, ticket]) =>
+      entryKey.startsWith(`${projectId}\u0000`) && ticket.snapshot ? [clone(ticket.snapshot)] : [],
+    );
+  }
+  async getIndexedTicket(projectId: string, ticketId: string) {
+    const ticket = this.tickets.get(key(projectId, ticketId))?.snapshot;
+    return ticket ? clone(ticket) : null;
   }
   async getWorkflow(projectId: string, ticketId: string) {
     const w = this.workflows.get(key(projectId, ticketId));

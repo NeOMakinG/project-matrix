@@ -35,6 +35,7 @@ export function projectRoutes(app: App, ops: Operations) {
       path: "/v1/projects",
       tag: "projects",
       summary: "Create a project",
+      unavailable: true,
       body: S.CreateProject,
       response: S.Project,
     }),

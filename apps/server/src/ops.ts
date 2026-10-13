@@ -40,6 +40,7 @@ async function core<T>(fn: () => Promise<T>): Promise<T> {
     if (error instanceof AutonomyConflictError)
       throw new HttpError(412, "precondition_failed", error.message);
     if (error instanceof CoreError) {
+      if (error.code === "tracker_unavailable") throw new HttpError(503, error.code, error.message);
       const status = error.code === "not_found" ? 404 : error.code === "forbidden" ? 403 : 409;
       throw new HttpError(status, error.code, error.message);
     }

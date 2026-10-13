@@ -29,6 +29,7 @@ export function route<
   query?: Q;
   body?: B;
   response: R;
+  unavailable?: boolean;
 }) {
   return createRoute({
     method: def.method,
@@ -55,6 +56,14 @@ export function route<
         content: { "application/json": { schema: def.response } },
       },
       ...errors,
+      ...(def.unavailable
+        ? {
+            503: {
+              description: "Service unavailable",
+              content: { "application/json": { schema: ErrorBody } },
+            },
+          }
+        : {}),
     } as { 200: { description: string; content: { "application/json": { schema: R } } } },
   });
 }

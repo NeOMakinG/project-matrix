@@ -15,6 +15,28 @@ export const agentsPack: Pack = {
       rationale: "Web QA needs screenshots and videos from a real browser.",
     },
     {
+      id: "agents.browserDriver",
+      pack: "agents",
+      kind: "select",
+      field: "agents.browserDriver",
+      prompt: "Which browser driver do agents use?",
+      dependsOn: ["agents.browserControl", "agents.workspace"],
+      when: (a) => a["agents.browserControl"] === true,
+      recommended: (a) => (a["agents.workspace"] === "native" ? "playwright" : "orca-browser"),
+      rationale:
+        "Orca's built-in browser lets you watch and take over; Playwright is the headless, CI-reproducible fallback.",
+      options: [
+        opt("orca-browser", "Orca browser", "Visible in Orca, shares the run's worktree."),
+        opt("agent-browser", "agent-browser", "CDP-driven, attaches to a real Chrome profile."),
+        opt("playwright", "Playwright", "Headless, scripted, runs in CI and containers."),
+      ],
+      adr: {
+        topic: "agent browser control",
+        context:
+          "Browser control produces QA receipts and drives logged-in flows; it never gets production credentials.",
+      },
+    },
+    {
       id: "agents.emulators",
       pack: "agents",
       kind: "multiselect",
@@ -25,6 +47,26 @@ export const agentsPack: Pack = {
         includes(a, "platforms.targets", "ios") || includes(a, "platforms.targets", "android"),
       recommended: (a) => ["android", "ios"].filter((p) => includes(a, "platforms.targets", p)),
       options: [opt("android", "Android emulator / device"), opt("ios", "iOS simulator")],
+    },
+    {
+      id: "agents.emulatorDriver",
+      pack: "agents",
+      kind: "select",
+      field: "agents.emulatorDriver",
+      prompt: "How do agents drive the emulators?",
+      dependsOn: ["agents.emulators"],
+      when: (a) => Array.isArray(a["agents.emulators"]) && a["agents.emulators"].length > 0,
+      recommended: (a) => (a["mobile.qa"] === "maestro" ? "maestro" : "orca"),
+      rationale: "Use the same driver as the mobile QA flows so agent receipts and CI runs match.",
+      options: [
+        opt("orca", "Orca emulators", "iOS simulator + Android emulator inside Orca."),
+        opt("agent-device", "agent-device", "Agent exploration on a physical or remote device."),
+        opt("maestro", "Maestro", "Replays committed YAML flows."),
+      ],
+      adr: {
+        topic: "agent device control",
+        context: "Mobile QA receipts come from emulators driven by agents.",
+      },
     },
     {
       id: "agents.figmaMcp",
@@ -54,9 +96,17 @@ export const agentsPack: Pack = {
       pack: "agents",
       kind: "list",
       field: "agents.extraClis",
-      prompt: "Extra CLIs or MCP servers agents may use (e.g. higgsfield, appllama)?",
+      prompt:
+        "Extra CLIs or MCP servers agents may use (e.g. higgsfield for media, appllama for app design research)?",
       recommended: [],
+      rationale:
+        "Every tool an agent can call is listed here and in an ADR, so reviews know what agents may touch.",
       toValue: list,
+      adr: {
+        topic: "extra agent tools",
+        context:
+          "Agents only call allow-listed tools; each needs its own scoped credential held outside the sandbox.",
+      },
     },
     {
       id: "agents.workspace",

@@ -26,7 +26,6 @@ describe("matrix init (non-interactive)", () => {
       "CONTEXT.md",
       ".matrix/graph/product.json",
       "docs/adr/0001-record-architecture-decisions.md",
-      "docs/adr/0008-server-state-management.md",
       "apps/web/src/main.tsx",
       "apps/api/src/index.ts",
       "apps/api/src/trpc.ts",
@@ -35,13 +34,22 @@ describe("matrix init (non-interactive)", () => {
       expect(r.files).toContain(f);
     }
     expect(r.files.filter((f) => f.startsWith("docs/adr/")).length).toBeGreaterThan(30);
+    // ADR numbers follow pack order; look the decision up by topic.
+    const serverState = r.files.find((f) =>
+      /^docs\/adr\/\d{4}-server-state-management\.md$/.test(f),
+    );
+    expect(serverState).toBeDefined();
+    // Stack skills are installed for agents and listed in the config.
+    for (const s of ["react", "node-api", "matrix-loop", "security"])
+      expect(r.files).toContain(`.claude/skills/${s}/SKILL.md`);
+    expect(parseConfig(r.config).agents.skills).toContain("react");
     expect(r.tickets).toHaveLength(7);
 
     const answers = JSON.parse(await readFile(join(out, ".matrix/answers.json"), "utf8"));
     expect(answers["frontend.data"]).toBe("tanstack-query");
     expect(parseConfig(r.config).business.name).toBe("Ledgerly");
 
-    const adr = await readFile(join(out, "docs/adr/0008-server-state-management.md"), "utf8");
+    const adr = await readFile(join(out, serverState ?? ""), "utf8");
     expect(adr).toContain("Use TanStack Query for server state management");
     expect(adr).toContain("```matrix-rules");
 
