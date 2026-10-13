@@ -6,6 +6,24 @@ export const designPack: Pack = {
   title: "Design",
   questions: [
     {
+      id: "design.componentLibrary",
+      pack: "design",
+      kind: "text",
+      field: "design.componentLibrary",
+      prompt: "Which existing component library and design system should Figma frames follow?",
+      dependsOn: ["agents.designFirst"],
+      when: (answers) => answers["agents.designFirst"] === true,
+    },
+    {
+      id: "design.figmaFileUrl",
+      pack: "design",
+      kind: "text",
+      field: "design.figmaFileUrl",
+      prompt: "Existing Figma file URL for this project's designs (HTTPS file/design URL)?",
+      dependsOn: ["agents.designFirst"],
+      when: (answers) => answers["agents.designFirst"] === true,
+    },
+    {
       id: "design.artDirection",
       pack: "design",
       kind: "text",

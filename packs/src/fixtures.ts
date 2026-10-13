@@ -15,4 +15,6 @@ export const sampleAnswers: Answers = {
   "product.coreFeatures":
     "invoices, automatic reminders, payment links, client portal, cash-flow dashboard",
   "platforms.targets": ["web"],
+  "design.componentLibrary": "Existing React design system",
+  "design.figmaFileUrl": "https://www.figma.com/design/Ledgerly123/Ledgerly",
 };

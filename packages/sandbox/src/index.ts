@@ -4,6 +4,7 @@ export * from "./broker.js";
 export * from "./bwrap.js";
 export * from "./capabilities.js";
 export * from "./credentials.js";
+export { isReadOnlyExecutor } from "./executor-isolation.js";
 export * from "./ip.js";
 export * from "./launch.js";
 export * from "./podman.js";

@@ -2,7 +2,15 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent, RunRequest } from "@matrix/core";
-import { asRunToken, type LineExecutor, type ProcessSpec } from "@matrix/sandbox";
+import {
+  asRunToken,
+  BwrapSandbox,
+  CredentialBroker,
+  hostExecutor,
+  isReadOnlyExecutor,
+  type LineExecutor,
+  type ProcessSpec,
+} from "@matrix/sandbox";
 import { describe, expect, test } from "vitest";
 import { claudeCodeRunner, codexRunner, createRunner, opencodeRunner } from "./index";
 
@@ -11,6 +19,64 @@ const gateway = {
   openaiBaseUrl: "http://127.0.0.1:18080/v1",
   apiKey: asRunToken("mxr_test123"),
 };
+
+describe("Figma MCP configuration", () => {
+  test("host capture policy binds capability without forwarding remote tools or credentials", async () => {
+    const { executor, calls } = fakeExecutor(['{"type":"turn.completed"}']);
+    const runner = codexRunner({
+      gateway,
+      executor,
+      figmaMcp: {
+        serverName: "figma",
+        url: "https://mcp.figma.com/mcp",
+        policySha256: "a".repeat(64),
+        hostCaptureOnly: true,
+      },
+    });
+    await runner.run({ ...req, runner: "codex" }, () => {}, new AbortController().signal);
+    expect(runner.figmaMcp?.policySha256).toBe("a".repeat(64));
+    expect(calls[0]!.cmd.join(" ")).not.toContain("mcp_servers.figma");
+    expect(calls[0]!.env).not.toHaveProperty("Authorization");
+  });
+  test("Codex exposes the exact configured MCP capability and passes it through config overrides", async () => {
+    const { executor, calls } = fakeExecutor([
+      '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}',
+      '{"type":"turn.completed"}',
+    ]);
+    const runner = codexRunner({
+      gateway,
+      executor,
+      figmaMcp: { serverName: "figma", url: "https://mcp.figma.com/mcp" },
+    });
+    expect(runner.figmaMcp).toMatchObject({
+      serverName: "figma",
+      url: "https://mcp.figma.com/mcp",
+      configurationSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    await runner.run(
+      { ...req, runner: "codex", model: "gpt-5.6-sol" },
+      () => {},
+      new AbortController().signal,
+    );
+    expect(calls[0]?.cmd).toContain('mcp_servers.figma.url="https://mcp.figma.com/mcp"');
+    expect(codexRunner({ gateway, executor }).figmaMcp).toBeUndefined();
+    expect(
+      opencodeRunner({
+        gateway,
+        executor,
+        figmaMcp: { serverName: "figma", url: "https://mcp.figma.com/mcp" },
+      }).figmaMcp,
+    ).toBeUndefined();
+  });
+  test.each([
+    { serverName: "figma.url", url: "https://mcp.figma.com/mcp" },
+    { serverName: "figma", url: "https://secret@mcp.figma.com/mcp" },
+    { serverName: "figma", url: "https://mcp.figma.com/mcp?token=secret" },
+    { serverName: "figma", url: "http://mcp.figma.com/mcp" },
+  ])("rejects unsafe or secret-bearing configuration %j", (figmaMcp) => {
+    expect(() => codexRunner({ gateway, figmaMcp })).toThrow("invalid Figma MCP configuration");
+  });
+});
 
 const req: RunRequest = {
   runId: "r1",
@@ -299,15 +365,71 @@ test("createRunner dispatches by id", () => {
   expect(createRunner("claude-code", { gateway }).id).toBe("claude-code");
 });
 
-test("readOnly requests reach the executor", async () => {
+test("unisolated readOnly requests fail before invoking the executor", async () => {
   const { executor, calls } = fakeExecutor(claudeLines);
-  await claudeCodeRunner({ gateway, executor }).run(
-    { ...req, readOnly: true },
-    () => {},
-    new AbortController().signal,
-  );
-  expect(calls[0]?.readOnly).toBe(true);
+  await expect(
+    claudeCodeRunner({ gateway, executor }).run(
+      { ...req, readOnly: true },
+      () => {},
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("OS isolation");
+  expect(calls).toHaveLength(0);
 });
+
+test.each([false, true])(
+  "design cannot run on the host/fake executor, readOnly=%s",
+  async (readOnly) => {
+    const { executor, calls } = fakeExecutor([]);
+    for (const selected of [executor, undefined]) {
+      const runner = codexRunner({
+        gateway,
+        ...(selected ? { executor: selected } : {}),
+        skipPermissions: true,
+      });
+      expect(runner.readOnlyIsolation).toBeUndefined();
+      await expect(
+        runner.run(
+          { ...req, runner: "codex", phase: "design", readOnly },
+          () => {},
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("OS isolation");
+    }
+    expect(calls).toHaveLength(0);
+    expect(isReadOnlyExecutor(hostExecutor)).toBe(false);
+  },
+);
+
+test.each([false, true])(
+  "isolated design uses OS read-only mount and never CLI bypass (readOnly=%s)",
+  async (readOnly) => {
+    const { executor, calls } = fakeExecutor(['{"type":"turn.completed"}']);
+    const sandbox = new BwrapSandbox({
+      executor,
+      broker: new CredentialBroker({
+        gatewayUrl: gateway.openaiBaseUrl,
+        gatewayKey: { value: "test-only-not-a-real-key" },
+      }),
+    });
+    const runner = codexRunner({
+      gateway,
+      executor: sandbox.lineExecutor({ runId: "readonly-test", network: "none" }),
+      skipPermissions: true,
+    });
+    expect(runner.readOnlyIsolation).toBe("os");
+    await runner.run(
+      { ...req, runner: "codex", phase: "design", readOnly },
+      () => {},
+      new AbortController().signal,
+    );
+    const command = calls[0]!.cmd;
+    expect(command).toContain("--ro-bind");
+    expect(command).toContain("read-only");
+    expect(command).not.toContain("workspace-write");
+    expect(command).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  },
+);
 
 test("a plain string can't be passed as the gateway apiKey", () => {
   // @ts-expect-error real keys are plain strings, not RunToken

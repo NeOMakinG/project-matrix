@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { Sandbox, SandboxExecResult, SandboxExecSpec } from "@matrix/core";
 import type { CredentialBroker, Grant } from "./broker.js";
+import { registerReadOnlyExecutor } from "./executor-isolation.js";
 import {
   assertEnvName,
   BRIDGE_ASSET,
@@ -76,7 +77,7 @@ export class BwrapSandbox implements Sandbox {
 
   lineExecutor(policy: RunPolicy): LineExecutor {
     const exec = this.#o.executor ?? hostExecutor;
-    return async (spec, onLine, signal) => {
+    return registerReadOnlyExecutor(async (spec, onLine, signal) => {
       const grant = await this.#o.broker.grant({
         runId: policy.runId,
         network: policy.network,
@@ -99,7 +100,7 @@ export class BwrapSandbox implements Sandbox {
       } finally {
         await grant.close();
       }
-    };
+    });
   }
 
   async exec(

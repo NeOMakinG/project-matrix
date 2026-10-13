@@ -58,3 +58,19 @@ test("ordinary failed checks still retain the implement loop and staleness gate"
   );
   expect(transition.state).toMatchObject({ phase: "implement", status: "pending", loops: 1 });
 });
+test("factory tooling failures take priority over design restart without consuming loops", () => {
+  const transition = advance(
+    { ...initialState("fixture", "ticket"), phase: "qa", status: "running" },
+    {
+      ok: false,
+      summary: "host tooling unavailable",
+      receipts: [],
+      failureClass: "factory-tooling",
+      restartDesign: true,
+    },
+    testProject({ agents: { designFirst: true } }),
+    { baseMs: 1, maxMs: 1 },
+    new Date(),
+  );
+  expect(transition.state).toMatchObject({ phase: "qa", status: "blocked", loops: 0, attempt: 0 });
+});

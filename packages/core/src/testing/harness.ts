@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type BusEvent, EventBus } from "../bus.js";
+import type { FigmaDesignPort, UiContextPort } from "../design.js";
 import { createDefaultHandlers, type HandlerDeps } from "../handlers.js";
 import { HoldoutStore } from "../holdout.js";
 import type { Receipt, RunRequest, RunResult } from "../ports.js";
@@ -20,6 +21,10 @@ import {
 } from "./fakes.js";
 
 export interface HarnessOptions {
+  uiContext?: UiContextPort | undefined;
+  spikePlan?: string;
+  design?: (req: RunRequest, call: number) => Partial<RunResult>;
+  figma?: FigmaDesignPort;
   project?: Partial<ProjectConfig>;
   limits?: Partial<Limits>;
   store?: Store;
@@ -60,14 +65,16 @@ export function createHarness(opts: HarnessOptions = {}) {
   const deploys: ActionRequest[] = [];
   let implementCalls = 0;
   let reviewCalls = 0;
+  let designCalls = 0;
 
   const implementer = new FakeRunner("claude-code", async (req, signal) => {
     if (req.phase === "implement") {
       return (await opts.implement?.(req, implementCalls++, signal)) ?? { summary: "implemented" };
     }
-    return { summary: "plan: 3 steps" };
+    return { summary: opts.spikePlan ?? "plan: 3 steps" };
   });
   const reviewer = new FakeRunner("codex", (req) => {
+    if (req.phase === "design") return opts.design?.(req, designCalls++) ?? { summary: "" };
     if (req.prompt.includes("acceptance scenarios")) return { summary: SCENARIOS };
     if (req.phase === "review") {
       return { summary: opts.findings?.(req, reviewCalls++) ?? '{"findings":[]}' };
@@ -83,6 +90,7 @@ export function createHarness(opts: HarnessOptions = {}) {
   });
 
   const deps: HandlerDeps = {
+    ...(opts.figma ? { figma: opts.figma } : {}),
     runners: { "claude-code": implementer, codex: reviewer },
     sandbox,
     holdout,
@@ -106,6 +114,7 @@ export function createHarness(opts: HarnessOptions = {}) {
   const project = testProject(opts.project);
   const makeReconciler = (ownerId: string) =>
     new Reconciler({
+      ...(opts.uiContext ? { uiContext: opts.uiContext } : {}),
       store,
       bus,
       handlers: createDefaultHandlers(deps),

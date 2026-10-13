@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type {
+  FigmaMcpCapability,
   Receipt,
   RunEvent,
   RunEventKind,
@@ -10,7 +11,13 @@ import type {
   RunRequest,
   RunResult,
 } from "@matrix/core";
-import { hostExecutor, type LineExecutor, type SandboxApiKey } from "@matrix/sandbox";
+import { figmaConfigurationHash } from "@matrix/core";
+import {
+  hostExecutor,
+  isReadOnlyExecutor,
+  type LineExecutor,
+  type SandboxApiKey,
+} from "@matrix/sandbox";
 
 export interface ParsedEvent {
   kind: RunEventKind;
@@ -39,6 +46,7 @@ export interface GatewayConfig {
 }
 
 export interface CliRunnerOptions {
+  figmaMcp?: { serverName: string; url: string; policySha256?: string; hostCaptureOnly?: boolean };
   gateway: GatewayConfig;
   executor?: LineExecutor;
   /** Absolute binary path or name resolved on PATH inside the execution environment. */
@@ -59,6 +67,7 @@ export interface CommandSpec {
 }
 
 export interface CliRunnerDefinition {
+  supportsFigmaMcp?: boolean;
   id: RunnerId;
   defaultBinary: string;
   command(
@@ -91,14 +100,54 @@ export function createCliRunner(
 ): Runner {
   const executor = options.executor ?? hostExecutor;
   const now = options.now ?? (() => new Date());
+  let figmaMcp: FigmaMcpCapability | undefined;
+  if (options.figmaMcp && definition.supportsFigmaMcp) {
+    const { serverName, url, policySha256 } = options.figmaMcp;
+    const endpoint = new URL(url);
+    if (
+      !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(serverName) ||
+      endpoint.protocol !== "https:" ||
+      endpoint.username ||
+      endpoint.password ||
+      endpoint.search ||
+      endpoint.hash
+    )
+      throw new Error("invalid Figma MCP configuration");
+    figmaMcp = Object.freeze({
+      serverName,
+      url,
+      ...(policySha256 ? { policySha256 } : {}),
+      configurationSha256: figmaConfigurationHash({
+        serverName,
+        url,
+        ...(policySha256 ? { policySha256 } : {}),
+      }),
+    });
+  }
+  const configuredOptions = figmaMcp
+    ? {
+        ...options,
+        figmaMcp: {
+          serverName: figmaMcp.serverName,
+          url: figmaMcp.url,
+          ...(options.figmaMcp?.hostCaptureOnly ? { hostCaptureOnly: true } : {}),
+        },
+      }
+    : options;
   return {
     id: definition.id,
+    ...(isReadOnlyExecutor(executor) ? { readOnlyIsolation: "os" as const } : {}),
+    ...(figmaMcp ? { figmaMcp } : {}),
     async run(
       req: RunRequest,
       onEvent: (event: RunEvent) => void,
       signal: AbortSignal,
     ): Promise<RunResult> {
-      const spec = definition.command(req, options);
+      if ((req.readOnly || req.phase === "design") && !isReadOnlyExecutor(executor))
+        throw new Error(
+          "read-only run requires executor-enforced OS isolation; host fallback is forbidden",
+        );
+      const spec = definition.command(req, configuredOptions);
       const parser = definition.parser();
       const raw: string[] = [];
       let rawBytes = 0;
@@ -113,7 +162,7 @@ export function createCliRunner(
           env,
           ...(spec.stdin !== undefined ? { stdin: spec.stdin } : {}),
           timeoutMs: req.timeoutMs,
-          ...(req.readOnly ? { readOnly: true } : {}),
+          ...(req.readOnly || req.phase === "design" ? { readOnly: true } : {}),
         },
         (line) => {
           rawBytes += line.length + 1;

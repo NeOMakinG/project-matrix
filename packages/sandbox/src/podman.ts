@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { NetworkPolicy, Sandbox, SandboxExecResult, SandboxExecSpec } from "@matrix/core";
 import type { CredentialBroker, Grant } from "./broker.js";
+import { registerReadOnlyExecutor } from "./executor-isolation.js";
 import {
   assertEnvName,
   BRIDGE_ASSET,
@@ -119,7 +120,7 @@ export class PodmanSandbox implements Sandbox {
 
   lineExecutor(policy: RunPolicy): LineExecutor {
     const exec = this.#o.executor ?? hostExecutor;
-    return async (spec, onLine, signal) => {
+    return registerReadOnlyExecutor(async (spec, onLine, signal) => {
       const grant = await this.#o.broker.grant({
         runId: policy.runId,
         network: policy.network,
@@ -174,7 +175,7 @@ export class PodmanSandbox implements Sandbox {
         await rm(envDir, { recursive: true, force: true });
         await grant.close();
       }
-    };
+    });
   }
 
   /**

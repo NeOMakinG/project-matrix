@@ -1,3 +1,4 @@
+import type { DesignInput } from "./design.js";
 import type { AutonomyMode, Phase, Receipt, RunnerId, RunStatus } from "./ports.js";
 
 export type WorkflowStatus = "pending" | "running" | "waiting_approval" | "blocked" | "done";
@@ -42,6 +43,8 @@ export interface CheckCommand {
 }
 
 export interface ProjectConfig {
+  agents?: { designFirst?: boolean; figmaMcp?: boolean };
+  design?: DesignInput;
   id: string;
   name: string;
   repoPath: string;
@@ -71,6 +74,10 @@ export interface ReviewFinding {
 }
 
 export interface PhaseOutcome {
+  restartDesign?: boolean;
+  targetsUi?: boolean;
+  designApproved?: boolean;
+  blocked?: boolean;
   ok: boolean;
   summary: string;
   receipts: Receipt[];

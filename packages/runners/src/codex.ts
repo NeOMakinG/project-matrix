@@ -114,6 +114,7 @@ export interface CodexOptions extends CliRunnerOptions {
 export function codexDefinition(wireApi: "responses" | "chat"): CliRunnerDefinition {
   return {
     id: "codex",
+    supportsFigmaMcp: true,
     defaultBinary: "codex",
     command(req, opts) {
       const cmd = [
@@ -140,10 +141,18 @@ export function codexDefinition(wireApi: "responses" | "chat"): CliRunnerDefinit
         "-c",
         `model_providers.matrix.wire_api="${wireApi}"`,
       ];
+      if (opts.figmaMcp && !opts.figmaMcp.hostCaptureOnly) {
+        cmd.push(
+          "-c",
+          `mcp_servers.${opts.figmaMcp.serverName}.url=${JSON.stringify(opts.figmaMcp.url)}`,
+        );
+      }
       cmd.push(
-        ...(opts.skipPermissions
-          ? ["--dangerously-bypass-approvals-and-sandbox"]
-          : ["-s", "workspace-write"]),
+        ...(req.readOnly || req.phase === "design"
+          ? ["-s", "read-only"]
+          : opts.skipPermissions
+            ? ["--dangerously-bypass-approvals-and-sandbox"]
+            : ["-s", "workspace-write"]),
       );
       cmd.push("-");
       return { cmd, stdin: req.prompt, env: { MATRIX_GATEWAY_KEY: opts.gateway.apiKey } };

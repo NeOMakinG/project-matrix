@@ -4,6 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TicketStatus, TicketStore } from "@matrix/tickets";
 import type { EventBus } from "./bus.js";
+import {
+  canonicalFigmaFile,
+  classifyDesignScope,
+  DesignBindingChangedError,
+  type DesignEvidence,
+  type DesignScope,
+  designComparisonSchema,
+  designEvidence,
+  figmaConfigurationHash,
+  spikePlanSchema,
+  type UiContextPort,
+} from "./design.js";
 import type { PhaseHandlers } from "./handlers.js";
 import { isTrustedHoldout } from "./holdout.js";
 import {
@@ -28,6 +40,7 @@ import {
 import type { BackoffPolicy, Limits, PhaseOutcome, ProjectConfig, WorkflowState } from "./types.js";
 
 export interface ReconcilerOptions {
+  uiContext?: UiContextPort;
   store: Store;
   bus: EventBus;
   handlers: PhaseHandlers;
@@ -69,6 +82,7 @@ export interface TickReport {
 
 const TICKET_STATUS: Partial<Record<Phase, TicketStatus>> = {
   spike: "in_progress",
+  design: "in_progress",
   implement: "in_progress",
   checks: "in_progress",
   review: "review",
@@ -78,8 +92,8 @@ const TICKET_STATUS: Partial<Record<Phase, TicketStatus>> = {
 const IRREVERSIBLE = new Set<Phase>(["merge", "deploy"]);
 const AFTER_REVIEW = new Set<Phase>(["qa", "merge", "deploy"]);
 /** Phases that validate or act on the code: they run only on a clean tree and record its commit. */
-const CLEAN_TREE = new Set<Phase>(["checks", "review", "qa", "merge", "deploy"]);
-const VALIDATING = new Set<Phase>(["checks", "review", "qa"]);
+const CLEAN_TREE = new Set<Phase>(["design", "checks", "review", "qa", "merge", "deploy"]);
+const VALIDATING = new Set<Phase>(["design", "checks", "review", "qa"]);
 
 const hash = (...parts: (string | number)[]) =>
   createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 32);
@@ -164,10 +178,19 @@ export class Reconciler {
       if (this.o.projectDispatchAllowed?.(project.id) !== false) await this.syncReady(project);
 
     const now = this.clock();
-    const pending = (await this.o.store.listWorkflows({ status: ["pending"] }))
+    const byId = new Map(projects.map((project) => [project.id, project]));
+    const pending = (await this.o.store.listWorkflows({ status: ["pending", "waiting_approval"] }))
+      .filter((workflow) => {
+        if (workflow.status === "pending") return true;
+        const project = byId.get(workflow.projectId);
+        return (
+          workflow.phase === "design" &&
+          project &&
+          !requiresApproval(autonomyFor(project, "design"), "design")
+        );
+      })
       .filter((w) => !w.nextAttemptAt || w.nextAttemptAt <= now)
       .sort((a, b) => a.priority - b.priority);
-    const byId = new Map(projects.map((p) => [p.id, p]));
 
     for (const w of pending) {
       const project = byId.get(w.projectId);
@@ -275,7 +298,107 @@ export class Reconciler {
 
   /** The run whose result an approval covers: the QA run for merge, the merge run for deploy. */
   private async candidateRun(w: WorkflowState, phase: Phase): Promise<RunRecord | undefined> {
-    return this.latestRun(w, phase === "merge" ? "qa" : "merge");
+    const run = await this.latestRun(
+      w,
+      phase === "design" ? "design" : phase === "merge" ? "qa" : "merge",
+    );
+    return phase === "design" && run?.stepKey !== stepKey(w) ? undefined : run;
+  }
+
+  private async designRequired(project: ProjectConfig, w: WorkflowState): Promise<boolean> {
+    if (!project.agents?.designFirst) return false;
+    if (await this.latestRun(w, "design")) return true;
+    return (await this.designScope(project, w)).required;
+  }
+
+  private async designScope(
+    project: ProjectConfig,
+    w: WorkflowState,
+    planned?: string[],
+  ): Promise<DesignScope> {
+    const ticket = await this.o.tickets(project.id).get(w.ticketId);
+    if (!ticket) throw new Error("ticket is missing for host UI classification");
+    const spike = await this.latestRun(w, "spike");
+    const receipts = spike ? await this.o.store.listReceipts(spike.id) : [];
+    const paths = receipts.flatMap((receipt) => {
+      const data = receipt.data as { provenance?: string; affectedPaths?: unknown } | undefined;
+      if (receipt.kind !== "log" || !receipt.ok || data?.provenance !== "matrix:spike-plan:v1")
+        return [];
+      const parsed = spikePlanSchema.safeParse({
+        plan: "recorded",
+        affectedPaths: data.affectedPaths,
+      });
+      return parsed.success ? parsed.data.affectedPaths : [];
+    });
+    let context: unknown;
+    try {
+      context = await this.o.uiContext?.inspect(project, w);
+    } catch {
+      context = undefined;
+    }
+    return classifyDesignScope(ticket, planned ?? paths, context);
+  }
+
+  private async verifiedDesign(
+    project: ProjectConfig,
+    w: WorkflowState,
+  ): Promise<DesignEvidence[]> {
+    const run = await this.latestRun(w, "design");
+    if (!run || run.status !== "ok" || !run.headSha)
+      throw new Error("missing successful design run");
+    const receipts = await this.o.store.listReceipts(run.id);
+    if (!gate("design", { ok: true, summary: "", receipts }, project).pass)
+      throw new Error("invalid design receipts");
+    const evidence = receipts
+      .filter((receipt) => receipt.kind === "design")
+      .map((receipt) => designEvidence(receipt)!);
+    if (
+      evidence.some(
+        (item) =>
+          item.runId !== run.id ||
+          item.projectId !== project.id ||
+          item.ticketId !== w.ticketId ||
+          item.headSha !== run.headSha ||
+          item.model !== run.model ||
+          item.runner !== run.runner,
+      )
+    )
+      throw new Error("design evidence scope mismatch");
+    const capability = this.o.handlers.getDesignCapability?.(project);
+    if (
+      !project.design ||
+      !capability ||
+      figmaConfigurationHash(capability) !== capability.configurationSha256
+    )
+      throw new Error("current Figma MCP configuration cannot be verified");
+    const fileIdentity = canonicalFigmaFile(project.design.figmaFileUrl);
+    if (
+      evidence.some(
+        (item) =>
+          item.fileIdentity !== fileIdentity ||
+          canonicalFigmaFile(item.frameUrl) !== fileIdentity ||
+          item.configurationSha256 !== capability.configurationSha256 ||
+          item.runner !== project.models.design?.runner ||
+          item.model !== project.models.design?.model,
+      )
+    )
+      throw new DesignBindingChangedError(
+        "Figma file or runner MCP configuration changed; new design and approval required",
+      );
+    return evidence;
+  }
+
+  private async approvedDesign(
+    project: ProjectConfig,
+    w: WorkflowState,
+  ): Promise<DesignEvidence[]> {
+    const evidence = await this.verifiedDesign(project, w);
+    if (requiresApproval(autonomyFor(project, "design"), "design")) {
+      const run = (await this.latestRun(w, "design"))!;
+      const { approved } = await this.approvalFor(w, "design", run.id, run.headSha!);
+      if (!approved) throw new Error("design requires a human approval bound to its phase/run/SHA");
+    }
+    return evidence;
   }
 
   private async approvalFor(
@@ -307,8 +430,15 @@ export class Reconciler {
   ): Promise<void> {
     if (!w.workdir) throw new Error("cannot request an approval without a workspace");
     const run = await this.candidateRun(w, phase);
-    if (!run) throw new Error(`no ${phase === "merge" ? "qa" : "merge"} run to approve`);
+    if (!run)
+      throw new Error(
+        `no ${phase === "design" ? "design" : phase === "merge" ? "qa" : "merge"} run to approve`,
+      );
     const headSha = await this.o.git.headSha(w.workdir);
+    if (phase === "design" && run.headSha !== headSha)
+      throw new Error("design commit changed before approval request");
+    const existing = await this.approvalFor(w, phase, run.id, headSha);
+    if (existing.pending?.runId === run.id && existing.pending.headSha === headSha) return;
     const approvalId = this.ids();
     await this.o.store.createApproval({
       id: approvalId,
@@ -369,6 +499,13 @@ export class Reconciler {
     w: WorkflowState,
     phase: "merge" | "deploy",
   ): Promise<string | null> {
+    if (await this.designRequired(project, w)) {
+      try {
+        await this.approvedDesign(project, w);
+      } catch (error) {
+        return (error as Error).message;
+      }
+    }
     const needed: Phase[] =
       phase === "merge" ? ["checks", "review", "qa"] : ["checks", "review", "qa", "merge"];
     if (!w.workdir) return "no workspace";
@@ -387,6 +524,33 @@ export class Reconciler {
         return "QA has no judge-produced holdout score";
       const result = gate(p, { ok: true, summary: "", receipts }, project);
       if (!result.pass) return `${p} gate no longer passes: ${result.reason}`;
+      if (p === "qa" && (await this.designRequired(project, w))) {
+        const designs = await this.approvedDesign(project, w);
+        const comparison = receipts
+          .filter((receipt) => receipt.kind === "screenshot" && receipt.ok)
+          .map((receipt) => designComparisonSchema.safeParse(receipt.data))
+          .find(
+            (parsed) =>
+              parsed.success &&
+              parsed.data.matches &&
+              parsed.data.runId === run.id &&
+              parsed.data.headSha === run.headSha &&
+              parsed.data.projectId === project.id &&
+              parsed.data.ticketId === w.ticketId &&
+              parsed.data.designs.length === designs.length &&
+              designs.every((design) =>
+                parsed.data.designs.some(
+                  (reference) =>
+                    reference.runId === design.runId &&
+                    reference.frameUrl === design.frameUrl &&
+                    reference.contentSha256 === design.contentSha256 &&
+                    reference.screenshot.sha256 === design.screenshot.sha256,
+                ),
+              ),
+          );
+        if (!comparison)
+          return "QA has no host-produced screenshot comparison against approved designs";
+      }
     }
     const checks = await this.latestRun(w, "checks");
     for (const p of ["review", "qa"] as const) {
@@ -405,9 +569,94 @@ export class Reconciler {
     project: ProjectConfig,
     w: WorkflowState,
   ): Promise<"dispatched" | "replayed" | "approval" | "conflict" | "looped"> {
+    project = (await this.o.store.getProject(project.id)) ?? project;
+    if (w.phase === "design") {
+      const run = await this.latestRun(w, "design");
+      if (run?.status === "ok" && run.stepKey === stepKey(w)) {
+        try {
+          if (!w.workdir || run.headSha !== (await this.o.git.headSha(w.workdir)))
+            throw new Error("design commit changed before acceptance");
+          if (!(await this.o.git.isClean(w.workdir)))
+            throw new Error("design tree changed before acceptance");
+          await this.verifiedDesign(project, w);
+        } catch (error) {
+          if (error instanceof DesignBindingChangedError) {
+            await this.loopTo(project, w, "design", error.message);
+            return "looped";
+          }
+          await this.transition(project, w, {
+            ok: false,
+            blocked: true,
+            summary: (error as Error).message,
+            receipts: [],
+          });
+          return "looped";
+        }
+        const receipts = await this.o.store.listReceipts(run.id);
+        const { approved } = await this.approvalFor(w, "design", run.id, run.headSha!);
+        const designApproved =
+          !requiresApproval(autonomyFor(project, "design"), "design") || !!approved;
+        await this.transition(project, w, {
+          ok: true,
+          summary: "verified design",
+          receipts,
+          designApproved,
+        });
+        return designApproved ? "replayed" : "approval";
+      }
+    }
+    if (
+      ["implement", "qa", "merge", "deploy"].includes(w.phase) &&
+      (await this.designRequired(project, w))
+    ) {
+      try {
+        await this.approvedDesign(project, w);
+      } catch (error) {
+        if (error instanceof DesignBindingChangedError) {
+          await this.loopTo(project, w, "design", error.message);
+          return "looped";
+        }
+        await this.transition(project, w, {
+          ok: false,
+          blocked: true,
+          summary: (error as Error).message,
+          receipts: [],
+        });
+        return "looped";
+      }
+    }
     const key = stepKey(w);
     const done = await this.o.store.getStep(key);
     if (done?.completedAt && done.output) {
+      if (w.phase === "design") {
+        const run = await this.latestRun(w, "design");
+        const evidence = (done.output as PhaseOutcome).receipts
+          .filter((receipt) => receipt.kind === "design")
+          .map(designEvidence);
+        if (
+          !run ||
+          run.status !== "ok" ||
+          !w.workdir ||
+          run.headSha !== (await this.o.git.headSha(w.workdir)) ||
+          !evidence.length ||
+          evidence.some(
+            (item) =>
+              !item ||
+              item.runId !== run.id ||
+              item.headSha !== run.headSha ||
+              item.projectId !== w.projectId ||
+              item.ticketId !== w.ticketId,
+          )
+        ) {
+          await this.transition(project, w, {
+            ok: false,
+            blocked: true,
+            summary: "stale or invalid design replay evidence",
+            receipts: [],
+          });
+          return "looped";
+        }
+      }
       // Idempotency: this exact step already finished (crash before the transition was saved).
       await this.transition(project, w, done.output as PhaseOutcome);
       return "replayed";
@@ -632,7 +881,26 @@ export class Reconciler {
         ? actionKey(w, await this.o.git.headSha(workdir))
         : key;
       const current = w;
+      project = (await this.o.store.getProject(project.id)) ?? project;
+      const designRequired = await this.designRequired(project, w);
+      const evidence =
+        designRequired && ["implement", "qa", "merge", "deploy"].includes(w.phase)
+          ? await this.approvedDesign(project, w)
+          : [];
       const ctx: PhaseContext = {
+        classifyDesign: (paths) => this.designScope(project, current, paths),
+        validateDesign: async () => {
+          const fresh = (await this.o.store.getProject(project.id)) ?? project;
+          if (await this.designRequired(fresh, current)) {
+            const designs = await this.approvedDesign(fresh, current);
+            ctx.project = fresh;
+            ctx.designRequired = true;
+            ctx.designEvidence = designs;
+          }
+        },
+        ...(validatedSha ? { headSha: validatedSha } : {}),
+        designRequired,
+        designEvidence: evidence,
         project,
         workflow: current,
         ticket,
@@ -659,6 +927,28 @@ export class Reconciler {
       };
       outcome = await this.o.handlers[w.phase](ctx);
       outcome = await this.enforceTree(w.phase, workdir, outcome, validatedSha);
+      if (outcome.ok && project.agents?.designFirst && w.phase === "implement") {
+        const scope = await this.designScope(project, w);
+        if (!scope.changesVerified)
+          outcome = {
+            ...outcome,
+            ok: false,
+            blocked: true,
+            summary:
+              "host implementation change inspection is missing; design policy cannot be waived",
+          };
+        else if (
+          (scope.required && !designRequired) ||
+          scope.uiChangedPaths.some((path) => !scope.paths.includes(path))
+        )
+          outcome = {
+            ...outcome,
+            ok: false,
+            restartDesign: true,
+            summary: "actual UI changes exceed the spike/design scope; new design required",
+          };
+      }
+      if (outcome.ok && ["implement", "qa"].includes(w.phase)) await ctx.validateDesign?.();
       if (signal.aborted) {
         outcome = {
           ok: false,
@@ -672,7 +962,9 @@ export class Reconciler {
         ok: false,
         summary: (error as Error).message,
         receipts: [],
-        runStatus: signal.aborted ? "timeout" : "failed",
+        ...(error instanceof DesignBindingChangedError
+          ? { restartDesign: true }
+          : { runStatus: signal.aborted ? ("timeout" as const) : ("failed" as const) }),
       };
     } finally {
       clearInterval(timer);
@@ -785,6 +1077,12 @@ export class Reconciler {
     w: WorkflowState,
     outcome: PhaseOutcome,
   ): Promise<void> {
+    project = (await this.o.store.getProject(project.id)) ?? project;
+    if (w.phase === "spike" && outcome.ok)
+      outcome = {
+        ...outcome,
+        targetsUi: outcome.targetsUi || (await this.designRequired(project, w)),
+      };
     const t = advance(w, outcome, project, this.o.backoff, this.clock());
     const next: WorkflowState = { ...t.state };
     if (w.phase === "review" && next.phase === "qa" && next.workdir) {
@@ -903,6 +1201,37 @@ export class Reconciler {
     }
     if (decision === "approved") {
       if (!run || run.status !== "ok") throw new Error("the approved run did not succeed");
+      if (approval.status !== "pending") throw new Error("approval has already been decided");
+      const candidate = await this.candidateRun(w, approval.phase);
+      if (
+        candidate?.id !== approval.runId ||
+        (approval.phase === "design" && candidate.headSha !== approval.headSha)
+      )
+        throw new Error("approval does not cover the current phase run/SHA");
+      if (approval.phase === "design") {
+        if (!w.workdir || !(await this.o.git.isClean(w.workdir)))
+          throw new Error("design tree changed since the approval request");
+        const receipts = await this.o.store.listReceipts(run.id);
+        const project = await this.o.store.getProject(approval.projectId);
+        if (project) await this.verifiedDesign(project, w);
+        if (
+          !project ||
+          !gate("design", { ok: true, summary: "", receipts }, project).pass ||
+          receipts
+            .filter((receipt) => receipt.kind === "design")
+            .some((receipt) => {
+              const evidence = designEvidence(receipt);
+              return (
+                !evidence ||
+                evidence.runId !== run.id ||
+                evidence.headSha !== approval.headSha ||
+                evidence.projectId !== approval.projectId ||
+                evidence.ticketId !== approval.ticketId
+              );
+            })
+        )
+          throw new Error("invalid design approval evidence");
+      }
       if (w.workdir && (await this.o.git.headSha(w.workdir)) !== approval.headSha) {
         throw new Error("HEAD moved since the approval was requested; request a new approval");
       }
