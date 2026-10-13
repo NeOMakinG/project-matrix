@@ -1,0 +1,15 @@
+[Unit]
+Description=Project Matrix server (REST, MCP, dashboard, reconciler)
+After=matrix-postgres.service network-online.target
+Requires=matrix-postgres.service
+
+[Service]
+WorkingDirectory=%h/Projects/project-matrix/apps/server
+EnvironmentFile=%h/.config/matrix/server.env
+ExecStart=%h/.bun/bin/bun src/main.ts
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target

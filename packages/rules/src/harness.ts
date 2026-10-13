@@ -1,4 +1,4 @@
-import { createResolver, isSource } from "@matrix/graph";
+import { createResolver, isSource, isText } from "@matrix/graph";
 import { parseAdr } from "./adr";
 import { createSourceIndex } from "./checks";
 import { checkAdrs, type RuleCheckResult } from "./engine";
@@ -31,7 +31,11 @@ export async function runRuleCase(c: RuleCase): Promise<RuleCheckResult & { hits
   const resolver = await createResolver(root, files, async (f) => c.files[f]);
   const result = await checkAdrs(
     [adr],
-    createSourceIndex(files, async (f) => c.files[f] ?? "", { root, resolver }),
+    createSourceIndex(files, async (f) => c.files[f] ?? "", {
+      root,
+      resolver,
+      textFiles: Object.keys(c.files).filter(isText).sort(),
+    }),
   );
   return { ...result, hits: result.violations.map((v) => `${v.adr} ${v.file}:${v.line}`) };
 }

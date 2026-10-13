@@ -29,6 +29,7 @@ import {
 } from "./machine.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
+import { publicQaReceipt } from "./qa-evidence.js";
 import {
   type Actor,
   type ApprovalRecord,
@@ -46,6 +47,8 @@ export interface ReconcilerOptions {
   workspace: Workspace;
   git: GitPort;
   tickets: (projectId: string) => TicketStore;
+  projectDispatchAllowed?: (projectId: string) => boolean;
+  withTicketSnapshotLock?: <T>(projectId: string, operation: () => Promise<T>) => Promise<T>;
   limits: Limits;
   backoff: BackoffPolicy;
   host: string;
@@ -171,7 +174,8 @@ export class Reconciler {
     };
     await this.reapExpired(report);
     const projects = await this.o.store.listProjects();
-    for (const project of projects) await this.syncReady(project);
+    for (const project of projects)
+      if (this.o.projectDispatchAllowed?.(project.id) !== false) await this.syncReady(project);
 
     const now = this.clock();
     const byId = new Map(projects.map((project) => [project.id, project]));
@@ -191,12 +195,17 @@ export class Reconciler {
     for (const w of pending) {
       const project = byId.get(w.projectId);
       if (!project) continue;
+      if (this.o.projectDispatchAllowed?.(project.id) === false) {
+        report.skipped.push({ ticketId: w.ticketId, reason: "project finalize incomplete" });
+        continue;
+      }
       if (this.isActive(w)) continue;
       const reason = await this.blockedBy(project, w);
       if (reason) {
         report.skipped.push({ ticketId: w.ticketId, reason });
         continue;
       }
+      if (this.o.projectDispatchAllowed?.(project.id) === false) continue;
       const result = await this.dispatch(project, w);
       if (result === "dispatched") report.dispatched.push(w.ticketId);
       else if (result === "replayed") report.replayed.push(w.ticketId);
@@ -212,6 +221,12 @@ export class Reconciler {
   }
 
   private async syncReady(project: ProjectConfig): Promise<void> {
+    if (this.o.withTicketSnapshotLock)
+      return this.o.withTicketSnapshotLock(project.id, () => this.syncReadyLocked(project));
+    return this.syncReadyLocked(project);
+  }
+
+  private async syncReadyLocked(project: ProjectConfig): Promise<void> {
     const store = this.o.tickets(project.id);
     for (const t of await store.ready()) {
       await this.o.store.indexTicket(project.id, {
@@ -221,6 +236,7 @@ export class Reconciler {
         labels: t.labels,
         ...(t.priority !== undefined ? { priority: t.priority } : {}),
         ...(t.url ? { url: t.url } : {}),
+        snapshot: t,
       });
       const created = await this.o.store.createWorkflow({
         projectId: project.id,
@@ -703,6 +719,7 @@ export class Reconciler {
       }
     }
 
+    if (this.o.projectDispatchAllowed?.(project.id) === false) return "conflict";
     const runId = this.ids();
     const now = this.clock();
     let state: WorkflowState;
@@ -1051,7 +1068,7 @@ export class Reconciler {
       runId,
       status,
       summary: outcome.summary,
-      receipts: outcome.receipts,
+      receipts: outcome.receipts.map(publicQaReceipt),
     });
   }
 

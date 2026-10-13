@@ -7,6 +7,8 @@ export type PackId =
   | "product"
   | "platforms"
   | "frontend"
+  | "mobile"
+  | "desktop"
   | "backend"
   | "hosting"
   | "observability"

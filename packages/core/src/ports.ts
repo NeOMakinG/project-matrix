@@ -97,6 +97,8 @@ export interface SandboxExecSpec {
   network: NetworkPolicy;
   allowHosts?: string[];
   timeoutMs: number;
+  maxOutputBytes?: number;
+  readOnly?: boolean;
 }
 
 export interface SandboxExecResult {

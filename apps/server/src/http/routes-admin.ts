@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import type { WebhookSecretStore } from "../auth/webhook-secrets.js";
 import type { Operations } from "../ops.js";
 import { settingsEtag } from "../settings-etag.js";
 import { type App, IdParam, route } from "./route.js";
@@ -100,6 +101,33 @@ export function adminRoutes(app: App, ops: Operations) {
           ...(q.projectId ? { projectId: q.projectId } : {}),
         }),
       );
+    },
+  );
+}
+
+/** Issues a per-project webhook secret (shown once). Attributed signals need one (see routes-hooks). */
+export function webhookSecretRoutes(app: App, ops: Operations, store: WebhookSecretStore) {
+  app.openapi(
+    route({
+      method: "post",
+      path: "/v1/projects/{projectId}/webhooks/{source}/secret",
+      tag: "admin",
+      summary: "Issue or rotate a project's webhook secret (returned once)",
+      params: z.object({
+        projectId: z.string().min(1),
+        source: z.enum(["sentry", "github", "posthog", "otel"]),
+      }),
+      response: z.object({ source: z.string(), secret: z.string(), url: z.string() }),
+    }),
+    async (c) => {
+      const { projectId, source } = c.req.valid("param");
+      await ops.authorizeProjectAdmin(
+        c.var.principal,
+        projectId,
+        `/projects/${projectId}/webhooks/${source}/secret`,
+      );
+      const secret = store.issue(projectId, source);
+      return c.json({ source, secret, url: `/hooks/${source}?project=${projectId}` });
     },
   );
 }

@@ -51,6 +51,23 @@ describe("notifiers", () => {
 });
 
 describe("gateway llm", () => {
+  test("ownership cancellation aborts the in-flight fetch and rejects subsequent completions", async () => {
+    const controller = new AbortController();
+    const { f, calls } = fakeFetch(() => json({ choices: [{ message: { content: "late" } }] }));
+    const llm = new GatewayLlm({
+      baseUrl: "http://fixture",
+      apiKey: "fixture",
+      fetch: f,
+      signal: controller.signal,
+    });
+    const request = { model: "fixture", system: "s", user: "u", maxTokens: 1 };
+    const pending = llm.complete(request);
+    controller.abort(new Error("ownership lost"));
+    await expect(pending).rejects.toThrow("ownership lost");
+    expect(calls[0]?.init?.signal?.aborted).toBe(true);
+    await expect(llm.complete(request)).rejects.toThrow("ownership lost");
+    expect(calls).toHaveLength(1);
+  });
   test("OpenAI-compatible request with temperature 0 and seed; errors surface status", async () => {
     const { f, calls } = fakeFetch(() => json({ choices: [{ message: { content: '{"ok":1}' } }] }));
     const llm = new GatewayLlm({ baseUrl: "http://gw:8317/v1/", apiKey: "k", fetch: f });

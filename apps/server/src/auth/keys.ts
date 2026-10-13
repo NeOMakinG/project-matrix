@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
+import type { PrivateStateOwner } from "../state-owner.js";
 
 export const ACTIONS = [
   "read",
@@ -113,6 +114,23 @@ export function withinLimits(parent: KeyLimits, child: KeyLimits): string | null
 export class KeyStore {
   private readonly keys = new Map<string, ApiKeyRecord>();
 
+  private readonly state: PrivateState<ApiKeyRecord[]>;
+
+  constructor(
+    file?: string,
+    readonly stateOwner?: PrivateStateOwner,
+  ) {
+    if (file && !stateOwner) throw new Error("durable keys require exclusive lifetime ownership");
+    if (file) stateOwner?.claimStore(file);
+    this.state = new PrivateState(file, stateOwner);
+    for (const record of this.state.load([])) this.keys.set(record.id, record);
+  }
+
+  private persist(): void {
+    this.stateOwner?.assertOwned();
+    this.state.save([...this.keys.values()]);
+  }
+
   private readonly revokeListeners = new Set<(id: string) => void>();
 
   create(input: {
@@ -125,6 +143,7 @@ export class KeyStore {
     token: string;
     key: PublicKey;
   } {
+    this.stateOwner?.assertOwned();
     const id = randomBytes(9)
       .toString("base64url")
       .toLowerCase()
@@ -142,15 +161,20 @@ export class KeyStore {
       createdAt: new Date().toISOString(),
     };
     this.keys.set(id, record);
+    this.persist();
     return { token: `mx_${id}_${secret}`, key: toPublic(record) };
   }
 
   /** Registers a key whose secret is held elsewhere (e.g. bootstrap admin key from the environment). */
   importHashed(record: ApiKeyRecord): void {
+    this.stateOwner?.assertOwned();
+    if (this.keys.has(record.id)) return;
     this.keys.set(record.id, record);
+    this.persist();
   }
 
   verify(token: string): ApiKeyRecord | null {
+    this.stateOwner?.assertOwned();
     const match = TOKEN_RE.exec(token);
     if (!match) return null;
     const [, id, secret] = match;
@@ -162,18 +186,22 @@ export class KeyStore {
   }
 
   list(): PublicKey[] {
+    this.stateOwner?.assertOwned();
     return [...this.keys.values()].map(toPublic);
   }
 
   revoke(id: string): boolean {
+    this.stateOwner?.assertOwned();
     const record = this.keys.get(id);
     if (!record || record.revokedAt) return false;
     record.revokedAt = new Date().toISOString();
+    this.persist();
     for (const listener of this.revokeListeners) listener(id);
     return true;
   }
 
   get(id: string): ApiKeyRecord | null {
+    this.stateOwner?.assertOwned();
     return this.keys.get(id) ?? null;
   }
 
@@ -181,15 +209,18 @@ export class KeyStore {
     id: string,
     patch: { name?: string; budget?: KeyBudget; ratePerMinute?: number },
   ): PublicKey | null {
+    this.stateOwner?.assertOwned();
     const record = this.keys.get(id);
     if (!record || record.revokedAt) return null;
     if (patch.name !== undefined) record.name = patch.name;
     if (patch.budget !== undefined) record.budget = KeyBudgetSchema.parse(patch.budget);
     if (patch.ratePerMinute !== undefined) record.ratePerMinute = patch.ratePerMinute;
+    this.persist();
     return toPublic(record);
   }
 
   isActive(id: string): boolean {
+    this.stateOwner?.assertOwned();
     const record = this.keys.get(id);
     return Boolean(record && !record.revokedAt);
   }
@@ -206,3 +237,5 @@ export function hashToken(token: string): { id: string; hash: string } | null {
   if (!match?.[1] || !match[2]) return null;
   return { id: match[1], hash: hashSecret(match[2]).toString("hex") };
 }
+
+import { PrivateState } from "../private-state.js";

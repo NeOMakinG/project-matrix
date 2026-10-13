@@ -1,4 +1,5 @@
 import type { AutonomyMode, Phase } from "@matrix/core";
+import { AutonomyConflictError, publicQaReceipt } from "@matrix/core";
 import type { NewTicket, TicketPatch, TicketQuery } from "@matrix/tickets";
 import { type Guard, type GuardedOp, HttpError, type Principal } from "./auth/guard.js";
 import {
@@ -21,8 +22,8 @@ import {
   type Project,
   type Run,
 } from "./core-port.js";
-import { initProgress, validateAnswers } from "./init-progress.js";
-import { settingsEtag } from "./settings-etag.js";
+import { initProgress, reviseAnswer, validateAnswers } from "./init-progress.js";
+import { autonomyEtag, settingsEtag } from "./settings-etag.js";
 
 export type RunView = Run & {
   approval: {
@@ -36,7 +37,10 @@ async function core<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
+    if (error instanceof AutonomyConflictError)
+      throw new HttpError(412, "precondition_failed", error.message);
     if (error instanceof CoreError) {
+      if (error.code === "tracker_unavailable") throw new HttpError(503, error.code, error.message);
       const status = error.code === "not_found" ? 404 : error.code === "forbidden" ? 403 : 409;
       throw new HttpError(status, error.code, error.message);
     }
@@ -114,9 +118,28 @@ export class Operations {
 
   createProject(
     p: Principal,
-    input: { name: string; description: string; workspace: Project["workspace"] },
+    input: {
+      name: string;
+      description: string;
+      workspace: Project["workspace"];
+      tickets?: { kind: "beads" | "markdown" | "github"; repo?: string };
+      checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
+    },
   ) {
     return this.op(p, "admin", "/projects")(() => this.core.createProject(input));
+  }
+
+  getProjectPolicy(p: Principal, projectId: string) {
+    return this.op(
+      p,
+      "read",
+      `/projects/${projectId}`,
+      projectId,
+    )(async () => {
+      const snapshot = await this.core.getProjectPolicy(projectId);
+      if (!snapshot) throw new CoreError("not_found", `project ${projectId} not found`);
+      return snapshot;
+    });
   }
 
   setAutonomy(p: Principal, projectId: string, phase: Phase, mode: AutonomyMode) {
@@ -125,7 +148,7 @@ export class Operations {
       "admin",
       `/projects/${projectId}/autonomy`,
       projectId,
-    )(() => this.core.setAutonomy(projectId, phase, mode));
+    )(() => this.core.setAutonomy(projectId, phase, mode, this.actor(p)));
   }
 
   listTickets(p: Principal, projectId: string, query?: TicketQuery) {
@@ -228,7 +251,7 @@ export class Operations {
       "read",
       `/runs/${runId}/receipts`,
       projectId,
-    )(() => this.core.listReceipts(runId));
+    )(async () => (await this.core.listReceipts(runId)).map(publicQaReceipt));
   }
 
   async listApprovals(p: Principal, query: { projectId?: string; status?: ApprovalStatus }) {
@@ -404,6 +427,19 @@ export class Operations {
     return this.op(p, "read", "/orca/runtime", { kind: "list" })(() => this.core.getOrcaRuntime());
   }
 
+  /** Audited admin check on one project, for actions that don't go through the core. */
+  async authorizeProjectAdmin(p: Principal, projectId: string, path: string) {
+    await this.op(
+      p,
+      "admin",
+      path,
+      projectId,
+    )(async () => {
+      if (!(await this.core.getProject(projectId)))
+        throw new CoreError("not_found", `project ${projectId} not found`);
+    });
+  }
+
   listAdrs(p: Principal, projectId: string) {
     return this.op(
       p,
@@ -429,6 +465,101 @@ export class Operations {
       `/projects/${projectId}/init`,
       projectId,
     )(() => this.core.startInit(projectId));
+  }
+
+  /** Contradictions are re-checked server-side; any error-level one refuses finalize with 409. */
+  async finalizeInit(
+    p: Principal,
+    sessionId: string,
+    options: { acceptRecommended?: boolean } = {},
+  ) {
+    const session = await core(() => this.core.getInit(sessionId));
+    if (!session) throw new HttpError(404, "not_found", `init session ${sessionId} not found`);
+    return this.op(
+      p,
+      "admin",
+      `/init/${sessionId}/finalize`,
+      session.projectId,
+    )(async () => {
+      const errors = initProgress(session.answers).contradictions.filter(
+        (c) => c.severity === "error",
+      );
+      if (errors.length > 0 && session.state !== "completed") {
+        throw new HttpError(
+          409,
+          "contradictions",
+          errors.map((c) => c.message).join("; "),
+          undefined,
+          errors,
+        );
+      }
+      const finalized = await this.core.finalizeInit(sessionId, options);
+      if (finalized.result?.status === "contradictions") {
+        throw new HttpError(
+          409,
+          "contradictions",
+          finalized.result.contradictions.map((c) => c.message).join("; "),
+          undefined,
+          finalized.result.contradictions,
+        );
+      }
+      return finalized;
+    });
+  }
+
+  /** Changes a confirmed answer; dependent and no-longer-applicable answers are dropped. */
+  async reviseInitAnswer(p: Principal, sessionId: string, questionId: string, value: unknown) {
+    const session = await core(() => this.core.getInit(sessionId));
+    if (!session) throw new HttpError(404, "not_found", `init session ${sessionId} not found`);
+    return this.op(
+      p,
+      "admin",
+      `/init/${sessionId}/answers/${questionId}`,
+      session.projectId,
+    )(async () => {
+      const { answers, dropped } = reviseAnswer(session.answers, questionId, value);
+      const updated = await this.core.replaceInitAnswers(sessionId, answers);
+      return { session: updated, dropped, progress: initProgress(updated.answers) };
+    });
+  }
+
+  /** Every phase's autonomy in one atomic write, guarded by the project's autonomy ETag. */
+  async setAutonomyPolicy(
+    p: Principal,
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    ifMatch: string | undefined,
+  ) {
+    if (ifMatch === undefined) {
+      throw new HttpError(
+        428,
+        "precondition_required",
+        "send If-Match with the project's autonomy ETag",
+      );
+    }
+    return this.op(
+      p,
+      "admin",
+      `/projects/${projectId}/autonomy-policy`,
+      projectId,
+    )(() => {
+      const write = this.settingsLock.then(async () => {
+        const snapshot = await this.core.getProjectPolicy(projectId);
+        if (!snapshot) throw new CoreError("not_found", `project ${projectId} not found`);
+        if (ifMatch !== autonomyEtag(snapshot)) {
+          throw new HttpError(412, "precondition_failed", "autonomy changed since you loaded it");
+        }
+        await this.core.setAutonomyPolicy(projectId, policy, this.actor(p), snapshot.version);
+        return this.core.getProjectPolicy(projectId);
+      });
+      this.settingsLock = write.catch(() => undefined);
+      return write;
+    });
+  }
+
+  async getInitContradictions(p: Principal, sessionId: string) {
+    const session = await this.getInit(p, sessionId);
+    return initProgress(session.answers).contradictions;
   }
 
   async getInitProgress(p: Principal, sessionId: string) {

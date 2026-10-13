@@ -2,6 +2,7 @@ export const name = "@matrix/sandbox";
 
 export * from "./broker.js";
 export * from "./bwrap.js";
+export * from "./capabilities.js";
 export * from "./credentials.js";
 export { isReadOnlyExecutor } from "./executor-isolation.js";
 export * from "./ip.js";

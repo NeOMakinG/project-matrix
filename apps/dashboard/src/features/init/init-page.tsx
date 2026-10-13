@@ -1,27 +1,46 @@
-import { useForm } from "@tanstack/react-form";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { z } from "zod";
+import { useRef, useState } from "react";
+import { canManageProject } from "@/api/contracts";
 import { endpoints } from "@/api/endpoints";
 import { queries } from "@/api/queries";
-import type { InitProgress } from "@/api/view";
+import type { InitProgress, S } from "@/api/view";
 import { PageHeader } from "@/components/page-header";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader } from "@/components/ui/card";
-import { Pill } from "@/components/ui/pill";
 import { QueryView } from "@/components/ui/states";
 import { cn } from "@/lib/cn";
+import { randomId } from "@/lib/random-id";
+import { AutonomyStep } from "./autonomy-step";
+import { AnswersCard, EditAnswersCard } from "./edit-answers";
+import {
+  type Answers,
+  type AnswerValue,
+  defaultDraft,
+  isAnswered,
+  isAnswerValue,
+  type RoundQuestion,
+  submittedValue,
+} from "./engine";
+import { QuestionField } from "./round-form";
+import { ContradictionsCard, FinalizeStep, PreviewCards } from "./side-panels";
 
 export function InitPage() {
   const { projectId } = useParams({ from: "/p/$projectId/init" });
   const { session } = useSearch({ from: "/p/$projectId/init" });
-  return session ? <InitSession sessionId={session} /> : <StartInterview projectId={projectId} />;
+  return session ? (
+    <InitSession key={session} projectId={projectId} sessionId={session} />
+  ) : (
+    <StartInterview projectId={projectId} />
+  );
 }
 
 function StartInterview({ projectId }: { projectId: string }) {
+  const auth = useQuery(queries.session());
   const navigate = useNavigate({ from: "/p/$projectId/init" });
+  const [idempotencyKey] = useState(() => `init-${randomId()}`);
   const start = useMutation({
-    mutationFn: () => endpoints.startInit(projectId),
+    mutationFn: () => endpoints.startInit(projectId, idempotencyKey),
     onSuccess: (session) => navigate({ search: { session: session.id } }),
   });
   return (
@@ -32,15 +51,14 @@ function StartInterview({ projectId }: { projectId: string }) {
       />
       <Card className="max-w-xl px-5 py-5">
         <p className="text-body text-fg-secondary">
-          The interview walks every pack, recommends an answer for each question and writes{" "}
-          <span className="font-mono text-fg">matrix.config.ts</span>, the ADRs and the first
-          backlog.
+          Each round asks every question that can be answered now, with the recommended answer
+          preselected.
         </p>
         <Button
           className="mt-4"
           variant="primary"
           onClick={() => start.mutate()}
-          disabled={start.isPending}
+          disabled={start.isPending || !canManageProject(auth.data, projectId)}
         >
           Start interview
         </Button>
@@ -54,234 +72,271 @@ function StartInterview({ projectId }: { projectId: string }) {
   );
 }
 
-function InitSession({ sessionId }: { sessionId: string }) {
+function toAnswers(raw: Record<string, unknown>): Answers {
+  const out: Answers = {};
+  for (const [k, v] of Object.entries(raw)) if (isAnswerValue(v)) out[k] = v;
+  return out;
+}
+
+function InitSession({ projectId, sessionId }: { projectId: string; sessionId: string }) {
   const query = useQuery(queries.init(sessionId));
+  const project = useQuery(queries.project(projectId));
+  const projectName = project.data?.name ?? projectId;
+  const [dropped, setDropped] = useState<string[]>([]);
+  const knownQuestions = useRef(new Map<string, RoundQuestion>());
+  for (const question of query.data?.progress.round ?? [])
+    knownQuestions.current.set(question.id, question);
   return (
     <QueryView query={query}>
-      {({ session, progress }) => (
-        <InitView
-          sessionId={sessionId}
-          completed={session.state === "completed"}
-          progress={progress}
-        />
-      )}
+      {({ session, progress }) =>
+        session.projectId !== projectId ? (
+          <Card className="px-5 py-5">
+            <p role="alert">
+              This interview belongs to a different project. Mutation controls are unavailable on
+              this route.
+            </p>
+          </Card>
+        ) : (
+          <Interview
+            key={`${sessionId}:${JSON.stringify(session.answers)}`}
+            projectId={projectId}
+            projectName={projectName}
+            sessionId={sessionId}
+            answers={toAnswers(session.answers)}
+            progress={progress}
+            finalizedResult={session.result?.status === "ok" ? session.result : undefined}
+            knownQuestions={knownQuestions.current}
+            dropped={dropped}
+            onDropped={setDropped}
+          />
+        )
+      }
     </QueryView>
   );
 }
 
-function InitView({
+function Interview({
+  projectId,
+  projectName,
   sessionId,
-  completed,
+  answers,
   progress,
+  knownQuestions,
+  dropped,
+  onDropped,
+  finalizedResult,
 }: {
+  projectId: string;
+  projectName: string;
   sessionId: string;
-  completed: boolean;
+  answers: Answers;
   progress: InitProgress;
+  knownQuestions: Map<string, RoundQuestion>;
+  dropped: string[];
+  onDropped: (ids: string[]) => void;
+  finalizedResult: S["InitSession"]["result"];
 }) {
-  const activeIndex = progress.packs.findIndex((p) => p.state === "active");
-  const active = progress.packs[activeIndex];
+  const round = progress.round;
+  const auth = useQuery(queries.session());
+  const permitted = canManageProject(auth.data, projectId);
+  const [draft, setDraft] = useState<Answers>(() => defaultDraft(round));
+  const [autonomySaved, setAutonomySaved] = useState(false);
+  const [editing, setEditing] = useState<string[] | null>(null);
+  const issues = progress.contradictions;
+  const done = round.length === 0;
+
   return (
     <>
       <PageHeader
-        title="New project · Init interview"
+        title={`${projectName} · Init interview`}
         subtitle={
-          completed
-            ? `Interview complete · ${progress.answered.length} answers`
-            : `Pack ${activeIndex + 1} of ${progress.packs.length} · ${active?.label ?? ""} · ${progress.answered.length} answers so far`
-        }
-        actions={
-          <Button variant="primary" disabled={!completed}>
-            Generate project
-          </Button>
+          done
+            ? `Interview complete · ${Object.keys(answers).length} answers`
+            : `${round.length} question${round.length > 1 ? "s" : ""} this round · ${Object.keys(answers).length} answered so far`
         }
       />
-      <div className="grid grid-cols-[230px_minmax(0,1fr)_360px] gap-4">
-        <Card className="self-start">
-          <CardHeader title="Interview packs" />
-          <ol className="space-y-0.5 px-2 pb-3">
-            {progress.packs.map((pack) => (
-              <li
-                key={pack.id}
-                aria-current={pack.state === "active" ? "step" : undefined}
-                className={cn(
-                  "flex items-center justify-between rounded-control px-2 py-1.5 text-body",
-                  pack.state === "active"
-                    ? "bg-hover text-fg"
-                    : pack.state === "done"
-                      ? "text-fg"
-                      : "text-fg-secondary",
-                )}
-              >
-                <span className="flex items-center gap-2">
-                  <span
-                    aria-hidden
-                    className={cn(
-                      "size-1.5 rounded-full",
-                      pack.state === "done" && "bg-accent",
-                      pack.state === "active" && "bg-info",
-                      pack.state === "todo" && "bg-fg-muted",
-                    )}
-                  />
-                  {pack.label}
-                </span>
-                <span className="font-mono text-caption text-fg-muted">
-                  {pack.answered}/{pack.total}
-                </span>
-              </li>
-            ))}
-          </ol>
-        </Card>
-
+      {dropped.length ? (
+        <p role="status" className="mb-4 text-body text-warn">
+          Previous answers invalidated by your change: {dropped.join(", ")}. Answer these again when
+          the server asks them.
+        </p>
+      ) : null}
+      <div className="grid gap-4 xl:grid-cols-[220px_minmax(0,1fr)_380px]">
         <div className="space-y-4">
-          <Card className="px-5 py-4">
-            <div className="text-caption text-fg-secondary">Answered so far</div>
-            <dl className="mt-2 space-y-2">
-              {progress.answered.slice(-8).map((a) => (
-                <div key={a.questionId} className="flex justify-between gap-4">
-                  <dt className="text-body text-fg-secondary">{a.label}</dt>
-                  <dd className="font-mono text-caption text-fg">{a.value}</dd>
-                </div>
-              ))}
-            </dl>
-          </Card>
-          {progress.question ? (
-            <QuestionCard sessionId={sessionId} question={progress.question} />
-          ) : (
-            <Card className="px-5 py-6">
-              <Pill tone="green">all questions answered</Pill>
-              <p className="mt-3 text-body text-fg-secondary">
-                Review the generated config and ADRs, then generate the project.
-              </p>
-            </Card>
-          )}
+          <PacksCard packs={progress.packs} />
+          <AnswersCard
+            answered={progress.answered}
+            onEdit={(id) => setEditing([id])}
+            editable={permitted}
+          />
         </div>
-
+        <fieldset disabled={!permitted} className="min-w-0 space-y-4">
+          {!permitted ? (
+            <p role="status">
+              Read-only interview: your session has no admin permission for this project.
+            </p>
+          ) : null}
+          {editing ? (
+            <EditAnswersCard
+              key={editing.join(",")}
+              sessionId={sessionId}
+              ids={editing}
+              answers={answers}
+              answered={progress.answered}
+              knownQuestions={knownQuestions}
+              onDropped={onDropped}
+              onDone={() => setEditing(null)}
+            />
+          ) : null}
+          {editing ? null : !done ? (
+            <RoundCard
+              sessionId={sessionId}
+              round={round}
+              draft={draft}
+              blocking={issues.filter((c) => c.severity === "error").length}
+              onChange={(id, value) => setDraft((d) => ({ ...d, [id]: value }))}
+            />
+          ) : autonomySaved || finalizedResult ? (
+            <FinalizeStep
+              projectId={projectId}
+              sessionId={sessionId}
+              blocking={issues.filter((c) => c.severity === "error").length}
+              onReask={setEditing}
+              initialResult={finalizedResult}
+            />
+          ) : (
+            <AutonomyStep
+              projectId={projectId}
+              answers={answers}
+              onSaved={() => setAutonomySaved(true)}
+            />
+          )}
+        </fieldset>
         <div className="space-y-4">
-          <Card>
-            <CardHeader title="matrix.config.ts" meta={<Pill tone="neutral">draft</Pill>} />
-            <pre className="mx-4 mb-4 overflow-x-auto rounded-control bg-canvas p-3 font-mono text-caption text-fg">
-              {progress.configPreview}
-            </pre>
-          </Card>
-          <Card>
-            <CardHeader title="Generated ADRs" meta={String(progress.adrs.length)} />
-            <ul className="space-y-3 px-4 pb-4">
-              {progress.adrs.map((adr) => (
-                <li
-                  key={adr.id}
-                  className="grid grid-cols-[40px_minmax(0,1fr)_auto] items-center gap-2"
-                >
-                  <span className="font-mono text-caption text-fg-muted">{adr.id}</span>
-                  <span className="text-body text-fg">{adr.title}</span>
-                  <Pill tone={adr.status.tone}>{adr.status.label}</Pill>
-                </li>
-              ))}
-            </ul>
-          </Card>
+          <ContradictionsCard
+            items={issues}
+            onReask={(ids) => {
+              if (permitted) setEditing(ids);
+            }}
+          />
+          <PreviewCards
+            config={progress.configPreview}
+            adrs={progress.adrs.map((adr) => adr.title)}
+          />
         </div>
       </div>
     </>
   );
 }
 
-type Question = NonNullable<InitProgress["question"]>;
+function PacksCard({ packs }: { packs: InitProgress["packs"] }) {
+  return (
+    <Card className="self-start">
+      <CardHeader title="Interview packs" />
+      <ol className="space-y-0.5 px-2 pb-3">
+        {packs.map((pack) => (
+          <li
+            key={pack.id}
+            aria-current={pack.state === "active" ? "step" : undefined}
+            className={cn(
+              "flex items-center justify-between rounded-control px-2 py-1.5 text-body",
+              pack.state === "active"
+                ? "bg-hover text-fg"
+                : pack.state === "done"
+                  ? "text-fg"
+                  : "text-fg-secondary",
+            )}
+          >
+            <span className="flex items-center gap-2">
+              <span
+                aria-hidden
+                className={cn(
+                  "size-1.5 rounded-full",
+                  pack.state === "done" && "bg-accent",
+                  pack.state === "active" && "bg-info",
+                  pack.state === "todo" && "bg-fg-muted",
+                )}
+              />
+              {pack.label}
+            </span>
+            <span className="font-mono text-caption text-fg-muted">
+              {pack.answered}/{pack.total}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
+}
 
-const answerFormSchema = z.object({ optionId: z.string().min(1, "Pick an option") });
-
-function QuestionCard({ sessionId, question }: { sessionId: string; question: Question }) {
+function RoundCard({
+  sessionId,
+  round,
+  draft,
+  blocking,
+  onChange,
+}: {
+  sessionId: string;
+  round: RoundQuestion[];
+  draft: Answers;
+  blocking: number;
+  onChange: (id: string, value: AnswerValue) => void;
+}) {
   const client = useQueryClient();
-  const answer = useMutation({
-    mutationFn: (optionId: string) => endpoints.answerInit(sessionId, question.id, optionId),
+  const [showMissing, setShowMissing] = useState(false);
+  const missing = round.filter((q) => !isAnswered(q, draft[q.id]));
+  const submit = useMutation({
+    mutationFn: () => {
+      const answers = Object.fromEntries(
+        round.map((question) => [
+          question.id,
+          submittedValue(question, draft[question.id] as AnswerValue),
+        ]),
+      );
+      return endpoints.answerInit(sessionId, answers);
+    },
     onSuccess: () => client.invalidateQueries({ queryKey: queries.init(sessionId).queryKey }),
-  });
-  const recommended = question.options.find((o) => o.recommended)?.id ?? "";
-  const form = useForm({
-    defaultValues: { optionId: recommended },
-    validators: { onSubmit: answerFormSchema },
-    onSubmit: ({ value }) => answer.mutateAsync(value.optionId),
   });
 
   return (
-    <Card className="px-5 py-5">
+    <Card>
+      <CardHeader
+        title="This round"
+        meta={`${round.length} questions · recommended answers preselected`}
+      />
       <form
-        key={question.id}
+        className="space-y-5 px-5 pb-5"
         onSubmit={(e) => {
           e.preventDefault();
-          void form.handleSubmit();
+          if (missing.length) return setShowMissing(true);
+          submit.mutate();
         }}
       >
-        <div className="flex items-center gap-2">
-          <Pill tone="blue">
-            {question.pack} · {question.index} of {question.total}
-          </Pill>
-          <span className="font-mono text-caption text-fg-muted">{question.context}</span>
-        </div>
-        <h2 id="question-prompt" className="mt-3 text-title font-semibold">
-          {question.prompt}
-        </h2>
-        <p className="mt-2 text-body text-fg-secondary">{question.rationale}</p>
-
-        <form.Field name="optionId">
-          {(field) => (
-            <div role="radiogroup" aria-labelledby="question-prompt" className="mt-4 space-y-2">
-              {question.options.map((option) => {
-                const selected = field.state.value === option.id;
-                return (
-                  <label
-                    key={option.id}
-                    className={cn(
-                      "block cursor-pointer rounded-card border px-4 py-3 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent has-[:focus-visible]:outline-offset-2",
-                      selected
-                        ? "border-accent bg-accent-dim/40"
-                        : "border-border-subtle bg-raised hover:border-border-strong",
-                    )}
-                  >
-                    <input
-                      type="radio"
-                      name={field.name}
-                      value={option.id}
-                      checked={selected}
-                      onChange={() => field.handleChange(option.id)}
-                      className="sr-only"
-                    />
-                    <span className="flex items-center gap-3 text-heading text-fg">
-                      {option.label}
-                      {option.recommended ? (
-                        <Pill tone="green" className="bg-transparent px-0">
-                          Recommended
-                        </Pill>
-                      ) : null}
-                    </span>
-                    <span className="mt-1 block text-caption text-fg-secondary">
-                      {option.description}
-                    </span>
-                  </label>
-                );
-              })}
-              {field.state.meta.errors.length ? (
-                <p role="alert" className="text-caption text-danger">
-                  Pick an option
-                </p>
-              ) : null}
-            </div>
-          )}
-        </form.Field>
-
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <span className="text-caption text-fg-secondary">{question.facts}</span>
-          <form.Subscribe selector={(s) => s.isSubmitting}>
-            {(submitting) => (
-              <Button type="submit" variant="primary" disabled={submitting}>
-                Confirm & next
-              </Button>
-            )}
-          </form.Subscribe>
-        </div>
-        {answer.isError ? (
-          <p role="alert" className="mt-2 text-caption text-danger">
-            Couldn't save the answer: {answer.error.message}
+        {round.map((q) => (
+          <QuestionField
+            key={q.id}
+            question={q}
+            value={draft[q.id]}
+            missing={showMissing && !isAnswered(q, draft[q.id])}
+            onChange={(value) => onChange(q.id, value)}
+          />
+        ))}
+        {blocking > 0 ? (
+          <p className="text-caption text-warn">
+            {blocking} contradiction{blocking > 1 ? "s" : ""} in these answers. You can still
+            continue and fix them by changing the questions listed.
           </p>
         ) : null}
+        {submit.isError ? (
+          <p role="alert" className="text-caption text-danger">
+            The server rejected the answers: {submit.error.message}
+          </p>
+        ) : null}
+        <Button type="submit" variant="primary" disabled={submit.isPending}>
+          {submit.isPending
+            ? "Saving…"
+            : `Confirm ${round.length} answer${round.length > 1 ? "s" : ""}`}
+        </Button>
       </form>
     </Card>
   );

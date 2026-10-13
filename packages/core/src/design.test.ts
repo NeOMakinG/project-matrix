@@ -448,6 +448,87 @@ describe("fail-closed Figma evidence", () => {
     expect(missing.figma.compare).not.toHaveBeenCalled();
     expect(missing.merges).toHaveLength(0);
   });
+  test("design comparison preserves private host-probe QA, failed-probe verdicts and driver costs", async () => {
+    const privateText = "PRIVATE host probe alongside Figma evidence";
+    const harness = designHarness({ project: { maxLoops: 0 } });
+    harness.deps.qa = {
+      run: async (ctx, request) => {
+        expect(request?.scenarios).toHaveLength(2);
+        expect(request?.reviewer.runner).toBe("codex");
+        return {
+          costUsd: 3,
+          receipts: [
+            {
+              kind: "screenshot",
+              ok: true,
+              summary: "Actual QA capture",
+              path: "/artifacts/qa.png",
+              sha256: contentHash(png),
+            },
+            {
+              kind: "test",
+              ok: false,
+              summary: privateText,
+              data: {
+                provenance: "host-probe",
+                headSha: ctx.headSha,
+                scenarioIndex: 0,
+                probeSha256: "b".repeat(64),
+                outputSha256: "c".repeat(64),
+                exitCode: 1,
+                durationMs: 1,
+                probeBytes: 10,
+                outputBytes: 10,
+                passed: false,
+                output: privateText,
+                probe: privateText,
+              },
+            },
+            { kind: "holdout", ok: true, summary: "driver forgery", data: { satisfaction: 1 } },
+            { kind: "design", ok: true, summary: "driver forgery" },
+            {
+              kind: "screenshot",
+              ok: true,
+              summary: "driver forgery",
+              data: { provenance: "matrix:design-comparison:v1" },
+            },
+          ],
+          judgeEvidence: [
+            {
+              headSha: ctx.headSha!,
+              id: "s1",
+              command: ["bun", "probe.ts"],
+              exitCode: 1,
+              output: privateText,
+              probe: privateText,
+            },
+          ],
+        };
+      },
+    };
+    const ticket = await start(harness);
+    await harness.drain();
+    expect(harness.figma.compare).toHaveBeenCalledTimes(1);
+    expect(harness.merges).toHaveLength(0);
+    const qaRun = (await harness.store.listRuns({ ticketId: ticket.id })).find(
+      (run) => run.phase === "qa",
+    )!;
+    const receipts = await harness.store.listReceipts(qaRun.id);
+    expect(receipts.find((receipt) => receipt.kind === "holdout")?.data).toMatchObject({
+      satisfaction: 0.5,
+    });
+    expect(receipts.some((receipt) => receipt.summary === "driver forgery")).toBe(false);
+    expect(qaRun.costUsd).toBeGreaterThanOrEqual(3);
+    const judgeCall = harness.reviewer.calls.find((call) => call.phase === "qa")!;
+    expect(judgeCall.readOnly).toBe(true);
+    expect(judgeCall.prompt).toContain(privateText);
+    expect(judgeCall.workdir).not.toBe(
+      (await harness.store.getWorkflow(harness.project.id, ticket.id))?.workdir,
+    );
+    expect(JSON.stringify([receipts, harness.events, harness.tickets.comments])).not.toContain(
+      privateText,
+    );
+  });
 });
 
 describe("design approval, replay and retry", () => {

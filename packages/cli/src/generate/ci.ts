@@ -27,8 +27,9 @@ export function toolCommit(): string | undefined {
  * the rules it is checked against; the tooling is pinned to a commit.
  */
 /** `ref: null` means no main-line commit could be found; the workflow then asks to pin one. */
-export function ciWorkflow(_c: MatrixConfig, ref: string | null = toolCommit() ?? null): string {
+export function ciWorkflow(c: MatrixConfig, ref: string | null = toolCommit() ?? null): string {
   const pinned = ref ?? "main";
+  const extraJobs = [goJob(c), tauriJob(c)].filter(Boolean).join("");
   return `name: ci
 
 on:
@@ -63,7 +64,7 @@ jobs:
           ref: ${pinned}
           path: .matrix-tool
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2${goToolchain(c)}
       - run: bun install --frozen-lockfile --cwd .matrix-tool
       - name: ADR rules (loaded from the base branch on pull requests)
         env:
@@ -76,5 +77,67 @@ jobs:
           fi
       - name: Code graph is up to date
         run: bun .matrix-tool/packages/cli/src/bin.ts graph . --check
-`;
+${extraJobs}`;
 }
+
+/** Go rules read imports through `go list` and verify sqlc output by regenerating it. */
+const goToolchain = (c: MatrixConfig) =>
+  c.backend?.kind !== "go"
+    ? ""
+    : `
+      - name: Verify offline rule toolchain sandbox
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            echo "::error::Offline rules require runner-provisioned bubblewrap. Ask the runner administrator to install it; verification fails closed."
+            exit 1
+          fi
+          if ! bwrap --die-with-parent --unshare-all --ro-bind / / --proc /proc --dev /dev -- /bin/true; then
+            echo "::error::Sandbox creation denied. Use a dedicated runner with an administrator-approved, executable-scoped sandbox policy; do not disable AppArmor globally. Verification fails closed."
+            exit 1
+          fi
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable${
+            c.backend.go?.data === "sqlc"
+              ? `
+      - uses: sqlc-dev/setup-sqlc@v4
+        with:
+          sqlc-version: "1.31.1"`
+              : ""
+          }`;
+
+const goJob = (c: MatrixConfig) =>
+  c.backend?.kind !== "go"
+    ? ""
+    : `
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/api/go.mod
+      - run: go build -mod=mod ./...
+      - run: go vet ./...
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          working-directory: services/api
+`;
+
+const tauriJob = (c: MatrixConfig) =>
+  c.desktop?.framework !== "tauri"
+    ? ""
+    : `
+  desktop-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd apps/desktop check:rust
+`;

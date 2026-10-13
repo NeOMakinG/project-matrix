@@ -104,6 +104,96 @@ export const contradictionRules: Rule[] = [
       !has(a, "platforms.targets", "ios") &&
       !has(a, "platforms.targets", "android"),
   },
+  {
+    id: "next-without-app-router",
+    severity: "error",
+    message: "Next.js routes through its App Router; another router cannot own the URLs.",
+    questions: ["frontend.bundler", "frontend.router"],
+    test: (a) => a["frontend.bundler"] === "next" && a["frontend.router"] !== "next-app-router",
+  },
+  {
+    id: "app-router-without-next",
+    severity: "error",
+    message: "The Next.js App Router only exists inside Next.js.",
+    questions: ["frontend.bundler", "frontend.router"],
+    test: (a) => a["frontend.router"] === "next-app-router" && a["frontend.bundler"] !== "next",
+  },
+  {
+    id: "start-without-tanstack-router",
+    severity: "error",
+    message: "TanStack Start is built on TanStack Router.",
+    questions: ["frontend.bundler", "frontend.router"],
+    test: (a) =>
+      a["frontend.bundler"] === "tanstack-start" && a["frontend.router"] !== "tanstack-router",
+  },
+  {
+    id: "server-functions-without-fullstack",
+    severity: "error",
+    message:
+      "Server functions need a full-stack framework (Next.js or TanStack Start), not a Vite SPA.",
+    questions: ["frontend.bundler", "frontend.api"],
+    test: (a) =>
+      a["frontend.api"] === "server-functions" &&
+      a["frontend.bundler"] !== "next" &&
+      a["frontend.bundler"] !== "tanstack-start",
+  },
+  {
+    id: "fullstack-without-framework",
+    severity: "error",
+    message: "A full-stack backend needs Next.js or TanStack Start on the web.",
+    questions: ["backend.kind", "frontend.bundler"],
+    test: (a) =>
+      a["backend.kind"] === "fullstack" &&
+      a["frontend.bundler"] !== "next" &&
+      a["frontend.bundler"] !== "tanstack-start",
+  },
+  {
+    id: "trpc-with-go",
+    severity: "error",
+    message: "tRPC needs a TypeScript server; a Go API should publish an OpenAPI contract.",
+    questions: ["backend.kind", "frontend.api"],
+    test: (a) => a["backend.kind"] === "go" && a["frontend.api"] === "trpc",
+  },
+  {
+    id: "ts-library-with-go",
+    severity: "error",
+    message:
+      "better-auth, Drizzle and Prisma are TypeScript libraries; they cannot run in a Go API.",
+    questions: ["backend.kind", "backend.auth", "backend.orm"],
+    test: (a) =>
+      a["backend.kind"] === "go" &&
+      (a["backend.auth"] === "better-auth" ||
+        a["backend.orm"] === "drizzle" ||
+        a["backend.orm"] === "prisma"),
+  },
+  {
+    id: "store-distribution-unsigned",
+    severity: "error",
+    message: "The Mac App Store and Microsoft Store only accept signed builds.",
+    questions: ["desktop.distribution", "desktop.signing"],
+    test: (a) =>
+      a["desktop.distribution"] === "app-stores" &&
+      !(Array.isArray(a["desktop.signing"]) && a["desktop.signing"].length > 0),
+  },
+  {
+    id: "updater-unsigned",
+    severity: "warning",
+    message:
+      "Auto-updates without OS code signing still work, but users get security warnings on every install.",
+    questions: ["desktop.updater", "desktop.signing"],
+    test: (a) =>
+      a["desktop.updater"] === true &&
+      !(Array.isArray(a["desktop.signing"]) && a["desktop.signing"].length > 0),
+  },
+  {
+    id: "orca-driver-without-orca",
+    severity: "warning",
+    message: "Orca's browser and emulators are only available when runs live in Orca worktrees.",
+    questions: ["agents.workspace", "agents.browserDriver", "agents.emulatorDriver"],
+    test: (a) =>
+      a["agents.workspace"] === "native" &&
+      (a["agents.browserDriver"] === "orca-browser" || a["agents.emulatorDriver"] === "orca"),
+  },
 ];
 
 export function findContradictions(answers: Answers): Contradiction[] {

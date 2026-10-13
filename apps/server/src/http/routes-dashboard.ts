@@ -33,6 +33,37 @@ export function dashboardRoutes(app: App, ops: Operations, webhooks: ConfiguredW
   app.openapi(
     route({
       method: "get",
+      path: "/v1/init/{id}/contradictions",
+      tag: "init",
+      summary: "Contradictions between the current answers (errors block finalize)",
+      params: IdParam,
+      response: z.array(S.Contradiction),
+    }),
+    async (c) => c.json(await ops.getInitContradictions(c.var.principal, c.req.valid("param").id)),
+  );
+
+  app.openapi(
+    route({
+      method: "post",
+      path: "/v1/init/{id}/finalize",
+      tag: "init",
+      summary:
+        "Generate the project from the answers (config, ADRs, scaffold, backlog); idempotent",
+      params: IdParam,
+      body: z.object({ acceptRecommended: z.boolean().default(false) }),
+      response: S.InitSession,
+    }),
+    async (c) =>
+      c.json(
+        await ops.finalizeInit(c.var.principal, c.req.valid("param").id, {
+          acceptRecommended: c.req.valid("json").acceptRecommended,
+        }),
+      ),
+  );
+
+  app.openapi(
+    route({
+      method: "get",
       path: "/v1/projects/{projectId}/checks",
       tag: "knowledge",
       summary: "Latest `matrix check` result on the default branch",

@@ -1,14 +1,18 @@
 import { fileURLToPath } from "node:url";
+import type { Ticket } from "@matrix/tickets";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
 import postgres from "postgres";
-import type { Phase, Receipt, RunEvent } from "../ports.js";
+import type { AutonomyMode, Phase, Receipt, RunEvent } from "../ports.js";
+import { PHASES } from "../ports.js";
 import {
   type ApprovalRecord,
   type Approver,
   type AutonomyChange,
+  AutonomyConflictError,
   type Lesson,
+  projectPolicySnapshot,
   type RunRecord,
   type RunRecordStatus,
   type StepRecord,
@@ -16,6 +20,7 @@ import {
   VersionConflictError,
 } from "../store.js";
 import type { ProjectConfig, WorkflowState } from "../types.js";
+import { fenceDatabase } from "./ownership-fence.js";
 import * as s from "./schema.js";
 
 export const MIGRATIONS_DIR = fileURLToPath(new URL("./migrations", import.meta.url));
@@ -94,16 +99,45 @@ export class PgStore implements Store {
   private constructor(
     private readonly client: postgres.Sql,
     private readonly db: Db,
+    private readonly detachOwnership?: () => void,
   ) {}
 
-  static async connect(url: string, options: { migrate?: boolean } = {}): Promise<PgStore> {
+  static async connect(
+    url: string,
+    options: { migrate?: boolean; assertOwned?: () => void; signal?: AbortSignal } = {},
+  ): Promise<PgStore> {
+    options.assertOwned?.();
     const client = postgres(url, { max: 10, onnotice: () => undefined });
-    const db = drizzle(client, { schema: s });
-    if (options.migrate !== false) await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
-    return new PgStore(client, db);
+    const abort = () => {
+      void client.end({ timeout: 0 }).catch(() => undefined);
+    };
+    options.signal?.addEventListener("abort", abort, { once: true });
+    const rawDb = drizzle(client, { schema: s });
+    const db = options.assertOwned ? fenceDatabase(rawDb, options.assertOwned) : rawDb;
+    try {
+      if (options.migrate !== false) {
+        const migrationLock = await client.reserve();
+        try {
+          options.assertOwned?.();
+          await migrationLock`select pg_advisory_lock(1296127058)`;
+          options.assertOwned?.();
+          await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+        } finally {
+          await migrationLock`select pg_advisory_unlock(1296127058)`;
+          migrationLock.release();
+        }
+      }
+    } catch (error) {
+      options.signal?.removeEventListener("abort", abort);
+      await client.end({ timeout: 5 });
+      throw error;
+    }
+    options.assertOwned?.();
+    return new PgStore(client, db, () => options.signal?.removeEventListener("abort", abort));
   }
 
   async close(): Promise<void> {
+    this.detachOwnership?.();
     await this.client.end({ timeout: 5 });
   }
 
@@ -144,17 +178,7 @@ export class PgStore implements Store {
     return { ...config, autonomy };
   }
 
-  async indexTicket(
-    projectId: string,
-    t: {
-      id: string;
-      title: string;
-      status: string;
-      priority?: number;
-      labels: string[];
-      url?: string;
-    },
-  ) {
+  async indexTicket(projectId: string, t: Parameters<Store["indexTicket"]>[1]) {
     const row = {
       projectId,
       ticketId: t.id,
@@ -164,11 +188,67 @@ export class PgStore implements Store {
       labels: t.labels,
       url: t.url ?? null,
       syncedAt: new Date(),
+      ...(t.snapshot ? { snapshot: t.snapshot } : {}),
     };
     await this.db
       .insert(s.ticketIndex)
       .values(row)
       .onConflictDoUpdate({ target: [s.ticketIndex.projectId, s.ticketIndex.ticketId], set: row });
+  }
+
+  async getIndexedTicketTitle(projectId: string, ticketId: string) {
+    const [row] = await this.db
+      .select({ title: s.ticketIndex.title })
+      .from(s.ticketIndex)
+      .where(and(eq(s.ticketIndex.projectId, projectId), eq(s.ticketIndex.ticketId, ticketId)));
+    return row?.title ?? null;
+  }
+  async replaceIndexedTickets(projectId: string, tickets: Ticket[], signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(s.ticketIndex)
+        .set({ snapshot: null })
+        .where(eq(s.ticketIndex.projectId, projectId));
+      for (const ticket of tickets) {
+        signal?.throwIfAborted();
+        const row = {
+          projectId,
+          ticketId: ticket.id,
+          title: ticket.title,
+          status: ticket.status,
+          priority: ticket.priority ?? null,
+          labels: ticket.labels,
+          url: ticket.url ?? null,
+          syncedAt: new Date(),
+          snapshot: ticket,
+        };
+        await tx
+          .insert(s.ticketIndex)
+          .values(row)
+          .onConflictDoUpdate({
+            target: [s.ticketIndex.projectId, s.ticketIndex.ticketId],
+            set: row,
+          });
+      }
+      signal?.throwIfAborted();
+    });
+  }
+
+  async listIndexedTickets(projectId: string) {
+    const rows = await this.db
+      .select({ snapshot: s.ticketIndex.snapshot })
+      .from(s.ticketIndex)
+      .where(eq(s.ticketIndex.projectId, projectId));
+    return rows.flatMap((row) => (row.snapshot ? [row.snapshot] : []));
+  }
+
+  async getIndexedTicket(projectId: string, ticketId: string) {
+    const [row] = await this.db
+      .select({ snapshot: s.ticketIndex.snapshot })
+      .from(s.ticketIndex)
+      .where(and(eq(s.ticketIndex.projectId, projectId), eq(s.ticketIndex.ticketId, ticketId)));
+    return row?.snapshot ?? null;
   }
 
   async getWorkflow(projectId: string, ticketId: string) {
@@ -444,6 +524,12 @@ export class PgStore implements Store {
 
   async setAutonomy(change: AutonomyChange) {
     await this.db.transaction(async (tx) => {
+      const [project] = await tx
+        .select()
+        .from(s.projects)
+        .where(eq(s.projects.id, change.projectId))
+        .for("update");
+      if (!project) throw new Error(`project ${change.projectId} not found`);
       await tx
         .insert(s.autonomySettings)
         .values({
@@ -467,6 +553,48 @@ export class PgStore implements Store {
     });
   }
 
+  async setAutonomyPolicy(
+    projectId: string,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    actor: string,
+    expected?: Record<Phase, AutonomyMode> | string,
+  ) {
+    await this.db.transaction(async (tx) => {
+      const [project] = await tx
+        .select()
+        .from(s.projects)
+        .where(eq(s.projects.id, projectId))
+        .for("update");
+      if (!project) throw new Error(`project ${projectId} not found`);
+      const snapshot = await this.readProjectPolicy(tx, project.config as ProjectConfig);
+      const config = snapshot.project;
+      const current = config.autonomy;
+      if (typeof expected === "string" && snapshot.version !== expected)
+        throw new AutonomyConflictError();
+      if (
+        expected &&
+        typeof expected !== "string" &&
+        PHASES.some((phase) => expected[phase] !== (current[phase] ?? current.default))
+      )
+        throw new AutonomyConflictError();
+      const at = new Date();
+      await tx
+        .update(s.projects)
+        .set({ config: { ...config, autonomy: { ...config.autonomy, ...policy } }, updatedAt: at })
+        .where(eq(s.projects.id, projectId));
+      for (const [phase, mode] of Object.entries(policy) as [Phase, AutonomyChange["mode"]][]) {
+        await tx
+          .insert(s.autonomySettings)
+          .values({ projectId, phase, mode, updatedAt: at })
+          .onConflictDoUpdate({
+            target: [s.autonomySettings.projectId, s.autonomySettings.phase],
+            set: { mode, updatedAt: at },
+          });
+        await tx.insert(s.autonomyHistory).values({ projectId, phase, mode, actor, at });
+      }
+    });
+  }
+
   async autonomyHistory(projectId: string) {
     const rows = await this.db
       .select()
@@ -481,6 +609,87 @@ export class PgStore implements Store {
       at: r.at,
       ...opt("reason", r.reason),
     }));
+  }
+
+  private async readProjectPolicy(db: Pick<Db, "select">, config: ProjectConfig) {
+    const overrides = await db
+      .select()
+      .from(s.autonomySettings)
+      .where(eq(s.autonomySettings.projectId, config.id));
+    const autonomy = { ...config.autonomy };
+    for (const row of overrides) {
+      if (row.phase === "default") autonomy.default = row.mode as AutonomyMode;
+      else autonomy[row.phase as Phase] = row.mode as AutonomyMode;
+    }
+    const rows = await db
+      .select()
+      .from(s.autonomyHistory)
+      .where(eq(s.autonomyHistory.projectId, config.id))
+      .orderBy(asc(s.autonomyHistory.id));
+    const history: AutonomyChange[] = rows.map((row) => ({
+      projectId: row.projectId,
+      phase: row.phase as AutonomyChange["phase"],
+      mode: row.mode as AutonomyMode,
+      actor: row.actor,
+      at: row.at,
+      ...opt("reason", row.reason),
+    }));
+    return projectPolicySnapshot({ ...config, autonomy }, history);
+  }
+
+  async getProjectPolicy(projectId: string) {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(s.projects)
+        .where(eq(s.projects.id, projectId))
+        .for("update");
+      if (!row) throw new Error(`project ${projectId} not found`);
+      return this.readProjectPolicy(tx, row.config as ProjectConfig);
+    });
+  }
+
+  async saveInitializedProject(
+    config: ProjectConfig,
+    policy: Partial<Record<Phase, AutonomyMode>>,
+    expectedVersion: string,
+  ) {
+    return this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(s.projects)
+        .where(eq(s.projects.id, config.id))
+        .for("update");
+      if (!row) throw new Error(`project ${config.id} not found`);
+      const snapshot = await this.readProjectPolicy(tx, row.config as ProjectConfig);
+      if (snapshot.version !== expectedVersion) throw new AutonomyConflictError();
+      const current = snapshot.project;
+      const updated = {
+        ...current,
+        reviewLanes: config.reviewLanes,
+        dailyBudgetUsd: config.dailyBudgetUsd,
+        autonomy: { ...current.autonomy, ...policy },
+      } as ProjectConfig;
+      const at = new Date();
+      await tx
+        .update(s.projects)
+        .set({ config: updated, updatedAt: at })
+        .where(eq(s.projects.id, config.id));
+      for (const [phase, mode] of Object.entries(policy) as [Phase, AutonomyMode][]) {
+        await tx
+          .insert(s.autonomySettings)
+          .values({ projectId: config.id, phase, mode, updatedAt: at })
+          .onConflictDoUpdate({
+            target: [s.autonomySettings.projectId, s.autonomySettings.phase],
+            set: { mode, updatedAt: at },
+          });
+        if (mode !== (current.autonomy[phase] ?? current.autonomy.default))
+          await tx
+            .insert(s.autonomyHistory)
+            .values({ projectId: config.id, phase, mode, actor: "init", at });
+      }
+      return this.readProjectPolicy(tx, updated);
+    });
   }
 
   async addSpend(projectId: string, day: string, usd: number) {

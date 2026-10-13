@@ -186,6 +186,34 @@ describe("run event stream", () => {
     const t = setup("r1");
     t.sources[0]?.emit("log", "x".repeat(MAX_FRAME_CHARS + 1), "9");
     const [message] = t.events();
-    expect(message).toMatch(/^event 9 dropped: \d+ characters is over the limit$/);
+    expect(message).toBe("event 9 dropped: frame is over the byte limit");
+  });
+
+  it("rejects multibyte frames by bytes rather than characters", () => {
+    const state = setup("r1");
+    state.sources[0]?.emit("log", "😀".repeat(MAX_FRAME_CHARS / 3), "10");
+    expect(state.events()).toEqual(["event 10 dropped: frame is over the byte limit"]);
+  });
+
+  it("never reconnects or accepts late events after terminal close", () => {
+    const state = setup();
+    state.sources[0]?.emit("close", { reason: "revoked" });
+    state.sources[0]?.fail(true);
+    state.sources[0]?.emit("log", state.ev("late"));
+    expect(state.stream.state).toBe("closed");
+    expect(state.timers).toEqual([]);
+    expect(state.events()).toEqual([]);
+  });
+
+  it("ignores events that carry no data", () => {
+    const t = setup("r1");
+    expect(() => t.sources[0]?.emit("log", undefined as never)).not.toThrow();
+    expect(t.events()).toEqual([]);
+  });
+
+  it("ignores events that carry no data", () => {
+    const t = setup("r1");
+    expect(() => t.sources[0]?.emit("log", undefined as never)).not.toThrow();
+    expect(t.events()).toEqual([]);
   });
 });

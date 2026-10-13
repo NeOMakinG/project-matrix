@@ -6,6 +6,7 @@ export class ApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -84,21 +85,32 @@ export async function toApiError(res: Response): Promise<ApiError> {
   if (res.status === 401) for (const l of unauthorizedListeners) l();
   let code = "http_error";
   let message = res.statusText || `HTTP ${res.status}`;
+  let details: unknown;
   try {
-    const body = (await res.clone().json()) as { error?: { code?: string; message?: string } };
+    const body = (await res.clone().json()) as {
+      error?: { code?: string; message?: string; details?: unknown };
+    };
     code = body.error?.code ?? code;
     message = body.error?.message ?? message;
+    details = body.error?.details;
   } catch {
     // non-JSON error body
   }
-  return new ApiError(res.status, code, message);
+  return new ApiError(res.status, code, message, details);
 }
 
+const requestGenerations = new WeakMap<Request, number>();
 const csrfMiddleware: Middleware = {
   onRequest({ request }) {
+    requestGenerations.set(request, currentSessionGeneration());
     const token = currentCsrfToken();
     if (MUTATING.has(request.method) && token) request.headers.set("x-csrf-token", token);
     return request;
+  },
+  onResponse({ request, response }) {
+    if (requestGenerations.get(request) !== currentSessionGeneration())
+      throw new ApiError(409, "stale_session", "Session changed; discarded an older response");
+    return response;
   },
 };
 

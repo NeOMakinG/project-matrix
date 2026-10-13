@@ -9,7 +9,13 @@ import type {
   TicketStatus,
   TicketStore,
 } from "../types.js";
-import { ensureSafeDir, overwriteFile, readFileSafe, writeNewFile } from "./safe-fs";
+import {
+  assertSafePath,
+  ensureSafeDir,
+  overwriteFile,
+  readFileSafe,
+  writeNewFile,
+} from "./safe-fs";
 
 const FRONT = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 
@@ -55,6 +61,14 @@ export interface MarkdownStoreOptions {
    */
   root?: string;
   now?: () => Date;
+  publish?: (input: {
+    root: string;
+    path: string;
+    content: string;
+    createOnly?: boolean;
+    requireExisting?: boolean;
+    previous?: string;
+  }) => void;
 }
 
 /** Tickets as markdown files with JSON-valued frontmatter, e.g. `.matrix/tickets/T-0001-title.md`. */
@@ -62,6 +76,7 @@ export class MarkdownTicketStore implements TicketStore {
   readonly kind = "markdown" as const;
   private readonly root: string;
   private readonly now: () => Date;
+  private readonly publish: MarkdownStoreOptions["publish"];
 
   constructor(
     private readonly dir: string,
@@ -69,11 +84,27 @@ export class MarkdownTicketStore implements TicketStore {
   ) {
     this.root = opts.root ?? dirname(dir);
     this.now = opts.now ?? (() => new Date());
+    this.publish = opts.publish;
+  }
+
+  private async entries(dir: string): Promise<string[]> {
+    if (!this.publish) await ensureSafeDir(this.root, dir);
+    else await assertSafePath(this.root, dir);
+    try {
+      return await readdir(dir);
+    } catch (error) {
+      if (this.publish && (error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
   }
 
   private async files(): Promise<string[]> {
-    await ensureSafeDir(this.root, this.dir);
-    return (await readdir(this.dir)).filter((f) => /^T-\d{4,}-.*\.md$/.test(f)).sort();
+    return (await this.entries(this.dir)).filter((f) => /^T-\d{4,}-.*\.md$/.test(f)).sort();
+  }
+
+  private async createFile(path: string, content: string): Promise<void> {
+    if (this.publish) this.publish({ root: this.root, path, content, createOnly: true });
+    else await writeNewFile(this.root, path, content);
   }
 
   private async path(id: string): Promise<string | null> {
@@ -105,15 +136,14 @@ export class MarkdownTicketStore implements TicketStore {
    */
   private async reserveId(): Promise<string> {
     const idsDir = join(this.dir, ".ids");
-    await ensureSafeDir(this.root, idsDir);
-    const numbers = [...(await this.files()), ...(await readdir(idsDir))]
+    const numbers = [...(await this.files()), ...(await this.entries(idsDir))]
       .map((f) => /^T-(\d{4,})/.exec(f)?.[1])
       .filter((n): n is string => n !== undefined)
       .map(Number);
     for (let n = Math.max(0, ...numbers) + 1; ; n++) {
       const id = `T-${String(n).padStart(4, "0")}`;
       try {
-        await writeNewFile(this.root, join(idsDir, id), "");
+        await this.createFile(join(idsDir, id), "");
         return id;
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -136,20 +166,25 @@ export class MarkdownTicketStore implements TicketStore {
       ...(input.priority !== undefined ? { priority: input.priority } : {}),
       ...(input.parent !== undefined ? { parent: input.parent } : {}),
     };
-    await writeNewFile(
-      this.root,
-      join(this.dir, `${id}-${slug(input.title)}.md`),
-      serialize(ticket),
-    );
+    await this.createFile(join(this.dir, `${id}-${slug(input.title)}.md`), serialize(ticket));
     return ticket;
   }
 
   async update(id: string, patch: TicketPatch): Promise<Ticket> {
     const p = await this.path(id);
     if (!p) throw new Error(`ticket ${id} not found`);
-    const current = parse(await readFileSafe(this.root, p));
+    const previous = await readFileSafe(this.root, p);
+    const current = parse(previous);
     const next = { ...current, ...patch, updatedAt: this.now().toISOString() } as Ticket;
-    await overwriteFile(this.root, p, serialize(next));
+    if (this.publish)
+      this.publish({
+        root: this.root,
+        path: p,
+        content: serialize(next),
+        previous,
+        requireExisting: true,
+      });
+    else await overwriteFile(this.root, p, serialize(next));
     return next;
   }
 

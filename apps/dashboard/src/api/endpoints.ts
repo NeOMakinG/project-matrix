@@ -35,10 +35,13 @@ async function contract<T extends z.ZodType>(
   path: string,
   init?: RequestInit,
 ): Promise<z.infer<T>> {
+  const generation = currentSessionGeneration();
   const res = await fetch(
     apiUrl(path),
     withCsrf({ ...init, headers: { "content-type": "application/json", ...init?.headers } }),
   );
+  if (generation !== currentSessionGeneration())
+    throw new ApiError(409, "stale_session", "Session changed");
   if (!res.ok) throw await toApiError(res);
   return schema.parse(await res.json());
 }
@@ -64,9 +67,12 @@ export const endpoints = {
   },
   /** Resolves only once the server confirmed the logout (or the session was already gone). */
   async signOut() {
+    const generation = nextSessionGeneration();
     const res = await fetch(apiUrl("/auth/logout"), withCsrf({ method: "POST" }));
+    if (generation !== currentSessionGeneration())
+      throw new ApiError(409, "stale_session", "Session changed");
     if (!res.ok && res.status !== 401) throw await toApiError(res);
-    setCsrfTokenFor(nextSessionGeneration(), null);
+    setCsrfTokenFor(generation, null);
   },
 
   // --- read models ---
@@ -164,20 +170,80 @@ export const endpoints = {
     return { adrs: adaptAdrs(adrs, byAdr), graph: adaptGraph(graph), checks };
   },
 
-  startInit: (projectId: string) =>
-    unwrap(v1.POST("/v1/projects/{projectId}/init", { params: { path: { projectId } } })),
-  async init(sessionId: string) {
+  startInit: (projectId: string, idempotencyKey?: string) =>
+    unwrap(
+      v1.POST("/v1/projects/{projectId}/init", {
+        params: { path: { projectId } },
+        ...(idempotencyKey ? { headers: { "idempotency-key": idempotencyKey } } : {}),
+      }),
+    ),
+  async init(sessionId: string, signal?: AbortSignal) {
     const [session, progress] = await Promise.all([
-      unwrap(v1.GET("/v1/init/{id}", { params: { path: { id: sessionId } } })),
-      unwrap(v1.GET("/v1/init/{id}/progress", { params: { path: { id: sessionId } } })),
+      unwrap(
+        v1.GET("/v1/init/{id}", { params: { path: { id: sessionId } }, signal: signal ?? null }),
+      ),
+      unwrap(
+        v1.GET("/v1/init/{id}/progress", {
+          params: { path: { id: sessionId } },
+          signal: signal ?? null,
+        }),
+      ),
     ]);
     return { session, progress };
   },
-  answerInit: (sessionId: string, questionId: string, optionId: string) =>
+  answerInit: (sessionId: string, answers: Record<string, string | number | boolean | string[]>) =>
     unwrap(
       v1.POST("/v1/init/{id}/answers", {
         params: { path: { id: sessionId } },
-        body: { answers: { [questionId]: optionId } },
+        body: { answers },
+      }),
+    ),
+  createProject: (
+    input: { name: string; description: string; workspace: "orca" | "native" },
+    idempotencyKey: string,
+  ) =>
+    unwrap(
+      v1.POST("/v1/projects", {
+        body: { name: input.name, description: input.description, workspace: input.workspace },
+        headers: { "idempotency-key": idempotencyKey },
+      }),
+    ),
+  /** Changes one confirmed answer; the server drops answers that no longer apply. */
+  reviseAnswer: (
+    sessionId: string,
+    questionId: string,
+    value: string | number | boolean | string[],
+  ) =>
+    unwrap(
+      v1.PATCH("/v1/init/{id}/answers/{questionId}", {
+        params: { path: { id: sessionId, questionId } },
+        body: { value },
+      }),
+    ),
+  /** Re-checks contradictions server-side (409 `contradictions` with details) and generates the project. */
+  finalizeInit: (sessionId: string, acceptRecommended = false) =>
+    unwrap(
+      v1.POST("/v1/init/{id}/finalize", {
+        params: { path: { id: sessionId } },
+        body: { acceptRecommended },
+      }),
+    ),
+  async projectWithEtag(projectId: string) {
+    const res = await v1.GET("/v1/projects/{projectId}", { params: { path: { projectId } } });
+    if (!res.response.ok || !res.data) throw await toApiError(res.response);
+    return { project: res.data, etag: res.response.headers.get("etag") };
+  },
+  /** All phases in one request; If-Match makes it fail (412) if someone changed autonomy meanwhile. */
+  setAutonomyPolicy: (
+    projectId: string,
+    autonomy: Partial<Record<ServerPhase, AutonomyMode>>,
+    etag: string | null,
+  ) =>
+    unwrap(
+      v1.PUT("/v1/projects/{projectId}/autonomy-policy", {
+        params: { path: { projectId } },
+        body: { autonomy },
+        headers: etag ? { "if-match": etag } : {},
       }),
     ),
 

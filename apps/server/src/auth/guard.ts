@@ -1,12 +1,16 @@
+import { PrivateState } from "../private-state.js";
+import type { PrivateStateOwner } from "../state-owner.js";
 import { type Action, type ApiKeyRecord, allows, type KeyStore, type OpScope } from "./keys.js";
 import type { AuditLog, BudgetKind, BudgetTracker, Clock, RateLimiter } from "./limits.js";
 
 export class HttpError extends Error {
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 412 | 422 | 428 | 429,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 412 | 422 | 428 | 429 | 503,
     readonly code: string,
     message: string,
     readonly retryAfterSec?: number,
+    /** Machine-readable details returned with the error (e.g. contradiction list). */
+    readonly details?: unknown,
   ) {
     super(message);
   }
@@ -37,6 +41,8 @@ type StoredResult = {
 
 export class Guard {
   private readonly idempotent = new Map<string, StoredResult>();
+  private readonly pending = new Map<string, Promise<unknown>>();
+  private readonly state: PrivateState<[string, StoredResult][]>;
 
   constructor(
     private readonly keys: KeyStore,
@@ -44,7 +50,23 @@ export class Guard {
     private readonly budgets: BudgetTracker,
     private readonly audit: AuditLog,
     private readonly clock: Clock = Date.now,
-  ) {}
+    file?: string,
+    owner?: PrivateStateOwner,
+  ) {
+    this.state = new PrivateState(file, owner);
+    for (const [slot, result] of this.state.load([])) this.idempotent.set(slot, result);
+  }
+
+  private persist(): void {
+    this.state.save(
+      [...this.idempotent].filter(
+        ([, result]) =>
+          result.outcome.ok &&
+          /^(POST|PUT|PATCH|DELETE) \/(projects|init|runs)(\/|$)/.test(result.fingerprint) &&
+          !/webhooks|secrets/.test(result.fingerprint),
+      ),
+    );
+  }
 
   /** Resolves a bearer token to a principal and applies the per-key rate limit. */
   authenticate(
@@ -83,6 +105,22 @@ export class Guard {
    * run once; replays get the stored result.
    */
   async run<T>(principal: Principal, op: GuardedOp, fn: () => Promise<T>): Promise<T> {
+    const slot =
+      op.mutating && principal.idempotencyKey
+        ? `${principal.key.id}:${principal.idempotencyKey}`
+        : undefined;
+    if (!slot) return this.runOnce(principal, op, fn);
+    const previous = this.pending.get(slot) ?? Promise.resolve();
+    const pending = previous.catch(() => undefined).then(() => this.runOnce(principal, op, fn));
+    this.pending.set(slot, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.pending.get(slot) === pending) this.pending.delete(slot);
+    }
+  }
+
+  private async runOnce<T>(principal: Principal, op: GuardedOp, fn: () => Promise<T>): Promise<T> {
     const projectId = op.target.kind === "project" ? op.target.projectId : undefined;
     const entry = (status: number, detail?: string) => ({
       at: new Date(this.clock()).toISOString(),
@@ -147,12 +185,14 @@ export class Guard {
     }
     // Store before auditing the outcome: if the audit write fails the client gets an error, and a
     // retry with the same Idempotency-Key returns this result instead of running the operation twice.
-    if (slot)
+    if (slot) {
       this.idempotent.set(slot, {
         at: this.clock(),
         fingerprint: `${op.method} ${op.path}`,
         outcome,
       });
+      this.persist();
+    }
     if (outcome.ok) {
       await audit(200);
       return outcome.value as T;

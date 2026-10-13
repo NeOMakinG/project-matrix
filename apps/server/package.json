@@ -18,7 +18,18 @@
     "zod": "^4.6.6",
     "@matrix/core": "workspace:*",
     "@matrix/tickets": "workspace:*",
-    "@matrix/packs": "workspace:*"
+    "@matrix/packs": "workspace:*",
+    "@matrix/rules": "workspace:*",
+    "@matrix/graph": "workspace:*",
+    "@matrix/monitor": "workspace:*",
+    "@matrix/compound": "workspace:*",
+    "@matrix/watch": "workspace:*",
+    "@matrix/runners": "workspace:*",
+    "@matrix/sandbox": "workspace:*",
+    "@matrix/workspace": "workspace:*",
+    "@matrix/qa": "workspace:*",
+    "@matrix/cli": "workspace:*",
+    "@matrix/config": "workspace:*"
   },
   "exports": {
     ".": "./src/index.ts"

@@ -121,6 +121,8 @@ export function advance(
   backoff: BackoffPolicy,
   now: Date,
 ): Transition {
+  if (outcome.failureClass === "factory-tooling")
+    return block(state, `factory/tooling error at ${state.phase}: ${outcome.summary}`);
   if (outcome.restartDesign) {
     const loops = state.loops + 1;
     if (loops > config.maxLoops) return block({ ...state, loops }, outcome.summary);

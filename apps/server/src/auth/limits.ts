@@ -1,4 +1,6 @@
-import { appendFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
+import { PrivateState } from "../private-state.js";
+import type { PrivateStateOwner } from "../state-owner.js";
 import type { KeyBudget } from "./keys.js";
 
 export type Clock = () => number;
@@ -31,7 +33,16 @@ export type BudgetKind = "runs" | "mutations";
 export class BudgetTracker {
   private readonly usage = new Map<string, number>();
 
-  constructor(private readonly clock: Clock = Date.now) {}
+  private readonly state: PrivateState<[string, number][]>;
+
+  constructor(
+    private readonly clock: Clock = Date.now,
+    file?: string,
+    owner?: PrivateStateOwner,
+  ) {
+    this.state = new PrivateState(file, owner);
+    for (const [slot, used] of this.state.load([])) this.usage.set(slot, used);
+  }
 
   private slot(keyId: string, kind: BudgetKind): string {
     return `${keyId}:${kind}:${new Date(this.clock()).toISOString().slice(0, 10)}`;
@@ -43,6 +54,7 @@ export class BudgetTracker {
     const used = this.usage.get(slot) ?? 0;
     if (limit !== undefined && used >= limit) return false;
     this.usage.set(slot, used + 1);
+    this.state.save([...this.usage]);
     return true;
   }
 
@@ -69,12 +81,17 @@ export class AuditLog {
   constructor(
     private readonly file?: string,
     private readonly max = 10_000,
+    private readonly owner?: PrivateStateOwner,
   ) {}
 
   async record(entry: AuditEntry): Promise<void> {
+    this.owner?.assertOwned();
     this.entries.push(entry);
     if (this.entries.length > this.max) this.entries.shift();
-    if (this.file) await appendFile(this.file, `${JSON.stringify(entry)}\n`);
+    if (this.file) {
+      this.owner?.assertOwned();
+      appendFileSync(this.file, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+    }
   }
 
   list(filter?: { keyId?: string; projectId?: string }): AuditEntry[] {

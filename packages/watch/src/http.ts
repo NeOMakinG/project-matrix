@@ -6,6 +6,7 @@ import { defaultTransport, type PinnedResponse, type Transport } from "./transpo
 export interface HttpOptions {
   /** How requests are sent; the default pins the connection to the vetted IP. Tests inject one. */
   transport?: Transport;
+  signal?: AbortSignal;
   timeoutMs?: number;
   headers?: Record<string, string>;
   /** Max response body in bytes (default 2 MB). */
@@ -122,14 +123,16 @@ export async function request(
     let method = opts.method ?? "GET";
     let body = opts.body;
     for (let hop = 0; ; hop++) {
+      opts.signal?.throwIfAborted();
       const vetted = await vetUrl(current, opts.resolve, Math.min(timeoutMs, 5_000));
+      opts.signal?.throwIfAborted();
       const res = await transport({
         url: vetted.url,
         address: vetted.address,
         method,
         headers: { "user-agent": UA, ...opts.headers },
         ...(body !== undefined ? { body } : {}),
-        signal: controller.signal,
+        signal: AbortSignal.any([controller.signal, ...(opts.signal ? [opts.signal] : [])]),
       });
       const location = res.headers.location;
       if (res.status >= 300 && res.status < 400 && location) {

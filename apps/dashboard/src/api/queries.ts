@@ -1,5 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { endpoints } from "./endpoints";
+import { ApiError } from "./http";
+import { initGeneration } from "./init-cache";
 
 export const queries = {
   session: () => queryOptions({ queryKey: ["session"], queryFn: endpoints.session, retry: false }),
@@ -30,7 +32,16 @@ export const queries = {
       queryFn: () => endpoints.knowledge(projectId),
     }),
   init: (sessionId: string) =>
-    queryOptions({ queryKey: ["init", sessionId], queryFn: () => endpoints.init(sessionId) }),
+    queryOptions({
+      queryKey: ["init", sessionId],
+      queryFn: async ({ client, signal }) => {
+        const generation = initGeneration(client, sessionId);
+        const response = await endpoints.init(sessionId, signal);
+        if (generation !== initGeneration(client, sessionId))
+          throw new ApiError(409, "stale_init", "Discarded an outdated interview read");
+        return response;
+      },
+    }),
   monitor: (projectId: string) =>
     queryOptions({
       queryKey: ["projects", projectId, "monitor"],

@@ -27,7 +27,7 @@ function freshDb() {
     keys: structuredClone(apiKeys),
     settings: makeSettings() as Record<string, unknown>,
     settingsVersion: 1,
-    initSessions: new Map<string, { projectId: string; answers: Record<string, string> }>(),
+    initSessions: new Map<string, { projectId: string; answers: Record<string, unknown> }>(),
     approvals: structuredClone(approvals),
     decisions: [] as { id: string; decision: string }[],
     logouts: 0,
@@ -61,7 +61,12 @@ function project(id: string | readonly string[] | undefined): ServerProject | un
 const sessionBody = () => ({
   csrfToken: CSRF,
   expiresAt: "2026-10-13T00:00:00Z",
-  key: { id: "k-human", name: "valentin laptop", kind: "human" },
+  key: {
+    id: "k-human",
+    name: "valentin laptop",
+    kind: "human",
+    scope: { projects: "*", actions: ["admin"] },
+  },
 });
 
 export const sessionHandlers = [
@@ -173,6 +178,29 @@ export const contractHandlers = [
 ];
 
 export const projectHandlers = [
+  http.post(`${V1}/projects`, async ({ request }) => {
+    const denied = guard(request, true);
+    if (denied) return denied;
+    const body = (await request.json()) as {
+      name: string;
+      description: string;
+      workspace: "orca" | "native";
+    };
+    if (db.projects.some((p) => p.name === body.name))
+      return err(409, "conflict", "project exists");
+    const project = {
+      id: `prj_${db.projects.length + 1}`,
+      name: body.name,
+      description: body.description,
+      workspace: body.workspace,
+      autonomy: {},
+      createdAt: "2026-10-12T12:00:00Z",
+    };
+    db.projects.push(project);
+    return HttpResponse.json(project);
+  }),
+  // Mirrors the real server: finalize does not exist yet.
+  http.post(`${V1}/init/:id/finalize`, () => err(404, "not_found", "Not Found")),
   http.get(`${V1}/projects`, ({ request }) => guard(request) ?? HttpResponse.json(db.projects)),
   http.get(`${V1}/projects/:projectId`, ({ request, params }) => {
     const p = project(params.projectId);
@@ -233,7 +261,7 @@ export const projectHandlers = [
     if (denied) return denied;
     const s = db.initSessions.get(String(params.id));
     if (!s) return err(404, "not_found", "No such session");
-    const body = (await request.json()) as { answers: Record<string, string> };
+    const body = (await request.json()) as { answers: Record<string, unknown> };
     s.answers = { ...s.answers, ...body.answers };
     return HttpResponse.json({
       id: String(params.id),

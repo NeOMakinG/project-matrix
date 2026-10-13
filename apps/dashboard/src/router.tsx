@@ -7,9 +7,10 @@ import {
   Outlet,
   type RouterHistory,
   redirect,
+  useRouter,
   useRouterState,
 } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { z } from "zod";
 import { ApiError, onUnauthorized } from "./api/http";
 import { queries } from "./api/queries";
@@ -19,6 +20,17 @@ import { Sidebar } from "./components/sidebar";
 import { EmptyState, PageSkeleton } from "./components/ui/states";
 
 function AppShell() {
+  const router = useRouter();
+  useEffect(
+    () =>
+      onUnauthorized(() => {
+        const { pathname, href } = router.state.location;
+        if (pathname === "/login") return;
+        router.options.context.queryClient.clear();
+        void router.navigate({ to: "/login", search: { redirect: href } });
+      }),
+    [router],
+  );
   const isLogin = useRouterState({ select: (s) => s.location.pathname === "/login" });
   const [paletteOpen, setPaletteOpen] = useState(false);
   useCommandPaletteHotkey(paletteOpen && !isLogin, setPaletteOpen);
@@ -66,6 +78,12 @@ const overviewRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   component: lazyRouteComponent(() => import("./features/overview/overview-page"), "OverviewPage"),
+});
+
+const newProjectRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/new",
+  component: lazyRouteComponent(() => import("./features/init/new-project-page"), "NewProjectPage"),
 });
 
 const projectRoute = createRoute({
@@ -122,6 +140,7 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   loginRoute,
   overviewRoute,
+  newProjectRoute,
   projectRoute.addChildren([
     boardRoute,
     runsRoute,
@@ -137,14 +156,10 @@ export function makeRouter(queryClient: QueryClient, history?: RouterHistory) {
   const router = createRouter({
     routeTree,
     context: { queryClient },
+    // Same-origin hosting under any prefix: the router follows Vite's base.
+    basepath: import.meta.env.BASE_URL,
     defaultPreload: "intent",
     ...(history ? { history } : {}),
-  });
-  onUnauthorized(() => {
-    const { pathname, href } = router.state.location;
-    if (pathname === "/login") return;
-    queryClient.clear();
-    void router.navigate({ to: "/login", search: { redirect: href } });
   });
   return router;
 }

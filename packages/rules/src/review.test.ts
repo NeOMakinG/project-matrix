@@ -28,6 +28,34 @@ const ormAdr = adrMarkdown("0023", "ORM", [
 ]);
 
 describe("P1-1 rules come from the base commit, not the code under check", () => {
+  test("a capability change cannot widen its own ADR allowlist", async () => {
+    const policy = (allow: string[]) =>
+      adrMarkdown("0024", "Capabilities", [
+        {
+          description: "Only approved permissions.",
+          check: { type: "tauri-capabilities", allow },
+        },
+      ]);
+    const root = await fixtureProject({
+      "docs/adr/0024-capabilities.md": policy(["core:default"]),
+      "desktop/tauri.conf.json": "{}",
+      "desktop/capabilities/default.json":
+        '{"identifier":"default","permissions":["core:default"]}',
+    });
+    git(root, "init", "-q", "-b", "main");
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "base");
+    await put(root, "docs/adr/0024-capabilities.md", policy(["core:default", "http:default"]));
+    await put(
+      root,
+      "desktop/capabilities/default.json",
+      '{"identifier":"default","permissions":["http:default"]}',
+    );
+    expect((await checkProject(root)).ok).toBe(true);
+    const gated = await checkProject(root, { rulesFrom: "main" });
+    expect(gated.ok).toBe(false);
+    expect(gated.violations[0]?.message).toContain("not on the ADR allow-list");
+  });
   test("superseding or deleting an ADR in the branch does not disable its rule", async () => {
     const root = await fixtureProject({
       "docs/adr/0023-orm.md": ormAdr,

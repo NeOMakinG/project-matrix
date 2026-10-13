@@ -1,3 +1,4 @@
+import type { Ticket } from "@matrix/tickets";
 import {
   boolean,
   doublePrecision,
@@ -35,6 +36,7 @@ export const ticketIndex = pgTable(
     labels: jsonb("labels").notNull().default([]),
     url: text("url"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+    snapshot: jsonb("snapshot").$type<Ticket>(),
   },
   (t) => [primaryKey({ columns: [t.projectId, t.ticketId] })],
 );

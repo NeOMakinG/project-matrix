@@ -17,3 +17,8 @@ export function settingsEtag(settings: Record<string, unknown>): string {
     .digest("hex")
     .slice(0, 32)}"`;
 }
+
+/** ETag over a project's autonomy map, for atomic policy updates. */
+export function autonomyEtag(policy: { version: string }): string {
+  return `"${policy.version}"`;
+}

@@ -1,6 +1,7 @@
+import type { Ticket } from "@matrix/tickets";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
-import { PHASES } from "../ports.js";
-import { VersionConflictError } from "../store.js";
+import { type AutonomyMode, PHASES, type Phase } from "../ports.js";
+import { AutonomyConflictError, VersionConflictError } from "../store.js";
 import { testProject } from "../testing/fakes.js";
 import { createHarness } from "../testing/harness.js";
 import { PgStore } from "./pg-store.js";
@@ -18,6 +19,106 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     await store?.close();
   });
 
+  test("snapshot replacement is atomic, retains historical titles and rolls back failed publication", async () => {
+    const projectId = `snapshot-${Date.now()}`;
+    const otherId = `${projectId}-other`;
+    await store.upsertProject(testProject({ id: projectId }));
+    await store.upsertProject(testProject({ id: otherId }));
+    const ticket: Ticket = {
+      id: "T-1",
+      title: "Historical",
+      body: "",
+      status: "open",
+      labels: [],
+      deps: [],
+      createdAt: "2026-10-13",
+      updatedAt: "2026-10-13",
+    };
+    await store.replaceIndexedTickets(projectId, [ticket]);
+    await store.replaceIndexedTickets(otherId, [ticket]);
+    const invalid = { ...ticket, id: "T-2", title: null } as unknown as Ticket;
+    await expect(
+      store.replaceIndexedTickets(projectId, [{ ...ticket, title: "New" }, invalid]),
+    ).rejects.toThrow();
+    expect(await store.listIndexedTickets(projectId)).toEqual([ticket]);
+    const controller = new AbortController();
+    controller.abort(new Error("expired"));
+    await expect(store.replaceIndexedTickets(projectId, [], controller.signal)).rejects.toThrow(
+      "expired",
+    );
+    expect(await store.listIndexedTickets(projectId)).toEqual([ticket]);
+    await store.replaceIndexedTickets(projectId, []);
+    expect(await store.listIndexedTickets(projectId)).toEqual([]);
+    expect(await store.getIndexedTicket(projectId, ticket.id)).toBeNull();
+    expect(await store.getIndexedTicketTitle(projectId, ticket.id)).toBe("Historical");
+    expect(await store.listIndexedTickets(otherId)).toEqual([ticket]);
+  });
+
+  test("concurrent same-value policy saves use history versions and roll back the loser", async () => {
+    const projectId = `version-cas-${Date.now()}`;
+    await store.upsertProject(testProject({ id: projectId, autonomy: { default: "human" } }));
+    const before = await store.getProjectPolicy(projectId);
+    const results = await Promise.allSettled([
+      store.setAutonomyPolicy(projectId, { merge: "human" }, "human:first", before.version),
+      store.setAutonomyPolicy(projectId, { merge: "human" }, "human:second", before.version),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(await store.autonomyHistory(projectId)).toHaveLength(1);
+    await expect(
+      store.setAutonomyPolicy(projectId, { merge: "autonomous" }, "human:stale", before.version),
+    ).rejects.toBeInstanceOf(AutonomyConflictError);
+    expect(await store.autonomyHistory(projectId)).toHaveLength(1);
+  });
+
+  test("init CAS rejects policy ABA without partial project or history updates", async () => {
+    const projectId = `init-policy-${Date.now()}`;
+    await store.upsertProject(testProject({ id: projectId, autonomy: { default: "human" } }));
+    const snapshot = await store.getProjectPolicy(projectId);
+    await store.setAutonomyPolicy(projectId, { merge: "autonomous" }, "human:external");
+    await store.setAutonomyPolicy(projectId, { merge: "human" }, "human:external");
+    const current = await store.getProjectPolicy(projectId);
+    expect(current.version).not.toBe(snapshot.version);
+    await expect(
+      store.saveInitializedProject(
+        { ...snapshot.project, dailyBudgetUsd: 999 },
+        { merge: "autonomous", deploy: "autonomous" },
+        snapshot.version,
+      ),
+    ).rejects.toBeInstanceOf(AutonomyConflictError);
+    expect(await store.getProjectPolicy(projectId)).toEqual(current);
+  });
+
+  test("concurrent autonomy PUTs compare-and-set and commit full policies with history", async () => {
+    const projectId = `policy-${Date.now()}`;
+    await store.upsertProject(testProject({ id: projectId, autonomy: { default: "human" } }));
+    const expected = Object.fromEntries(PHASES.map((phase) => [phase, "human"])) as Record<
+      Phase,
+      AutonomyMode
+    >;
+    const results = await Promise.allSettled([
+      store.setAutonomyPolicy(
+        projectId,
+        { merge: "gated", deploy: "autonomous" },
+        "human:first",
+        expected,
+      ),
+      store.setAutonomyPolicy(
+        projectId,
+        { merge: "autonomous", deploy: "gated" },
+        "human:second",
+        expected,
+      ),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const rejected = results.find(
+      (result) => result.status === "rejected",
+    ) as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(AutonomyConflictError);
+    const history = await store.autonomyHistory(projectId);
+    expect(history).toHaveLength(2);
+    expect(history[0]!.actor).toBe(history[1]!.actor);
+  });
+
   test("runs a full ticket through the loop on Postgres", async () => {
     const projectId = `pg-${Date.now()}`;
     const h = createHarness({ store, project: { id: projectId } });
@@ -30,6 +131,16 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     const defaultPhases = PHASES.filter((phase) => phase !== "design");
     expect(runs).toHaveLength(defaultPhases.length);
     expect(new Set(runs.map((r) => r.phase))).toEqual(new Set(defaultPhases));
+    expect(await store.getIndexedTicketTitle(projectId, t.id)).toBe(t.title);
+    expect(await store.getIndexedTicketTitle(projectId, "missing")).toBeNull();
+    expect(await store.getIndexedTicket(projectId, t.id)).toMatchObject({
+      id: t.id,
+      title: t.title,
+      body: t.body,
+      deps: [],
+    });
+    expect(await store.listIndexedTickets(projectId)).toHaveLength(1);
+    expect(await store.getIndexedTicket(projectId, "missing")).toBeNull();
     const events = await store.listEvents(runs[0]?.id ?? "");
     expect(events.length).toBeGreaterThan(0);
     expect(await store.getSpend(projectId, "2026-10-12")).toBeGreaterThan(0);

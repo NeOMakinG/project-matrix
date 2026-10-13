@@ -51,7 +51,7 @@ export const reactStack = z.object({
   forms: z.enum(["tanstack-form", "react-hook-form", "none"]),
   tables: z.enum(["tanstack-table", "none"]),
   validation: z.literal("zod").default("zod"),
-  api: z.enum(["trpc", "ts-rest", "openapi-fetch", "rest"]),
+  api: z.enum(["trpc", "ts-rest", "openapi-fetch", "rest", "server-functions"]),
   effects: z.enum(["effect", "none"]),
   authzProofs: z.enum(["gdp-ts", "none"]),
   ui: z.enum(["shadcn", "mantine", "chakra", "custom"]),
@@ -71,8 +71,36 @@ export const frontendStack = z.discriminatedUnion("framework", [
   }),
 ]);
 
+export const mobileStack = z.object({
+  framework: z.literal("expo"),
+  router: z.literal("expo-router").default("expo-router"),
+  data: z.enum(["tanstack-query", "none"]),
+  styling: z.enum(["nativewind", "tamagui", "stylesheet"]),
+  validation: z.literal("zod").default("zod"),
+  builds: z.enum(["eas", "local"]),
+  updates: z.enum(["eas-update", "none"]),
+  qa: z.enum(["maestro", "agent-device", "orca"]),
+});
+
+export const desktopStack = z.object({
+  framework: z.literal("tauri"),
+  updater: z.boolean(),
+  signing: z.array(z.enum(["macos", "windows"])).default([]),
+  distribution: z.enum(["github-releases", "app-stores", "self-hosted"]),
+});
+
+export const goBackend = z.object({
+  router: z.enum(["chi", "echo", "gin"]),
+  data: z.enum(["sqlc", "ent", "gorm", "none"]),
+  driver: z.enum(["pgx", "database-sql"]),
+  logging: z.literal("slog").default("slog"),
+  telemetry: z.enum(["opentelemetry", "none"]),
+  lint: z.literal("golangci-lint").default("golangci-lint"),
+});
+
 export const backend = z.object({
-  kind: z.enum(["node-api", "none", "other"]),
+  kind: z.enum(["node-api", "go", "fullstack", "none", "other"]),
+  go: goBackend.optional(),
   runtime: z.enum(["bun", "node"]).optional(),
   framework: z.enum(["hono", "fastify", "elysia"]).optional(),
   database: z.enum(["postgres", "sqlite", "none"]),
@@ -137,8 +165,12 @@ export const agentCapabilities = z
     figmaMcp: z.boolean(),
     /** Only meaningful with the Figma MCP; defaults to false when Figma is off. */
     designFirst: z.boolean().default(false),
+    browserDriver: z.enum(["agent-browser", "playwright", "orca-browser"]).optional(),
+    emulatorDriver: z.enum(["orca", "agent-device", "maestro"]).optional(),
     extraClis: z.array(z.string()).default([]),
     workspace: z.enum(["orca", "native"]),
+    /** Agent skills installed into the project (`.claude/skills`), derived from the stack. */
+    skills: z.array(z.string()).default([]),
   })
   .refine((a) => !a.designFirst || a.figmaMcp, {
     message: "designFirst requires figmaMcp",
@@ -173,6 +205,8 @@ export const matrixConfig = z.object({
   product,
   platforms: z.array(platform).min(1),
   frontend: frontendStack.optional(),
+  mobile: mobileStack.optional(),
+  desktop: desktopStack.optional(),
   backend,
   hosting,
   observability,

@@ -135,6 +135,10 @@ export function codexDefinition(wireApi: "responses" | "chat"): CliRunnerDefinit
         "-c",
         'model_providers.matrix.env_key="MATRIX_GATEWAY_KEY"',
         "-c",
+        "model_providers.matrix.requires_openai_auth=false",
+        "-c",
+        'cli_auth_credentials_store="file"',
+        "-c",
         `model_providers.matrix.wire_api="${wireApi}"`,
       ];
       if (opts.figmaMcp && !opts.figmaMcp.hostCaptureOnly) {

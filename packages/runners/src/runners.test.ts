@@ -285,6 +285,8 @@ describe("codex runner", () => {
     expect(call?.cmd).toContain("exec");
     expect(call?.cmd).toContain('model_provider="matrix"');
     expect(call?.cmd).toContain('model_providers.matrix.base_url="http://127.0.0.1:18080/v1"');
+    expect(call?.cmd).toContain("model_providers.matrix.requires_openai_auth=false");
+    expect(call?.cmd).toContain('cli_auth_credentials_store="file"');
     expect(call?.cmd).toContain("workspace-write");
     expect(call?.cmd.at(-1)).toBe("-");
     expect(call?.env.MATRIX_GATEWAY_KEY).toBe("mxr_test123");

@@ -1,10 +1,12 @@
 import {
   type Answers,
   type AnswerValue,
+  activeAnswers,
   allQuestions,
   buildConfigInput,
   decisions,
   defaultPacks,
+  findContradictions,
   isActive,
   nextRound,
   type Pack,
@@ -23,7 +25,7 @@ export interface InitProgress {
     total: number;
     state: "done" | "active" | "todo";
   }[];
-  answered: { questionId: string; label: string; value: string }[];
+  answered: (RoundQuestion & { questionId: string; label: string; value: string })[];
   question: {
     id: string;
     pack: string;
@@ -37,6 +39,25 @@ export interface InitProgress {
   } | null;
   configPreview: string;
   adrs: { id: string; title: string; status: { label: string; tone: Tone } }[];
+  /** Every question answerable now (the current design-tree round), not only the first. */
+  round: RoundQuestion[];
+  contradictions: {
+    id: string;
+    severity: "error" | "warning";
+    message: string;
+    questions: string[];
+  }[];
+}
+
+export interface RoundQuestion {
+  id: string;
+  pack: string;
+  kind: Question["kind"];
+  prompt: string;
+  rationale: string;
+  recommended: AnswerValue | null;
+  options: { id: string; label: string; description: string; recommended: boolean }[];
+  dependsOn: string[];
 }
 
 const isAnswerValue = (v: unknown): v is AnswerValue =>
@@ -53,6 +74,35 @@ export function toAnswers(raw: Record<string, unknown>, packs: Pack[] = defaultP
     if (known.has(id) && isAnswerValue(value)) out[id] = value;
   }
   return out;
+}
+
+/**
+ * Changes one answer and drops what no longer applies: answers to questions that depend on it
+ * (transitively, they must be asked again) and answers whose `when` condition is now false.
+ */
+export function reviseAnswer(
+  raw: Record<string, unknown>,
+  questionId: string,
+  value: unknown,
+  packs: Pack[] = defaultPacks,
+): { answers: Answers; dropped: string[] } {
+  validateAnswers({ [questionId]: value }, packs);
+  const answers = toAnswers(raw, packs);
+  const questions = allQuestions(packs);
+  const dependents = new Set<string>();
+  let frontier = [questionId];
+  while (frontier.length > 0) {
+    const next = questions
+      .filter((q) => !dependents.has(q.id) && q.dependsOn?.some((d) => frontier.includes(d)))
+      .map((q) => q.id);
+    for (const id of next) dependents.add(id);
+    frontier = next;
+  }
+  const revised: Answers = { ...answers, [questionId]: value as AnswerValue };
+  for (const id of dependents) delete revised[id];
+  const kept = activeAnswers(packs, revised);
+  const dropped = Object.keys(answers).filter((id) => id !== questionId && !(id in kept));
+  return { answers: kept, dropped };
 }
 
 /** Rejects answers to unknown questions or with the wrong shape, instead of storing junk. */
@@ -82,6 +132,31 @@ const display = (q: Question, value: AnswerValue): string => {
   return labels.join(", ");
 };
 
+function describeQuestion(question: Question, answers: Answers): RoundQuestion {
+  const recommended = recommendedFor(question, answers);
+  const values =
+    recommended === undefined
+      ? []
+      : Array.isArray(recommended)
+        ? recommended
+        : [String(recommended)];
+  return {
+    id: question.id,
+    pack: question.pack,
+    kind: question.kind,
+    prompt: question.prompt,
+    rationale: question.rationale ?? "",
+    recommended: recommended ?? null,
+    options: (question.options ?? []).map((option) => ({
+      id: option.value,
+      label: option.label,
+      description: option.rationale ?? "",
+      recommended: values.includes(option.value),
+    })),
+    dependsOn: question.dependsOn ?? [],
+  };
+}
+
 /** Interview state for the dashboard: pack progress, the current question and live previews. */
 export function initProgress(
   rawAnswers: Record<string, unknown>,
@@ -102,6 +177,7 @@ export function initProgress(
   const answered = questions
     .filter((q) => q.id in answers && isActive(q, answers))
     .map((q) => ({
+      ...describeQuestion(q, answers),
       questionId: q.id,
       label: q.prompt,
       value: display(q, answers[q.id] as AnswerValue),
@@ -140,7 +216,11 @@ export function initProgress(
     status: { label: "proposed", tone: "blue" as const },
   }));
 
+  const round = nextRound(packs, answers).map((question) => describeQuestion(question, answers));
+
   return {
+    round,
+    contradictions: findContradictions(answers),
     packs: packRows,
     answered,
     question,

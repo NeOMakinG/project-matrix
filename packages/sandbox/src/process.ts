@@ -1,4 +1,6 @@
-import { spawn } from "node:child_process";
+import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { accessSync, constants, realpathSync, statSync } from "node:fs";
+import { delimiter, isAbsolute, resolve } from "node:path";
 
 export interface ProcessSpec {
   cmd: string[];
@@ -24,6 +26,39 @@ export type LineExecutor = (
 ) => Promise<ProcessOutcome>;
 
 const STDERR_TAIL = 8 * 1024;
+
+function launchDiagnostics(spec: ProcessSpec) {
+  let cwdExists = false;
+  try {
+    cwdExists = statSync(spec.cwd).isDirectory();
+  } catch {}
+  const command = spec.cmd[0] ?? "";
+  const candidates =
+    isAbsolute(command) || command.includes("/")
+      ? [resolve(spec.cwd, command)]
+      : (spec.env.PATH ?? "/usr/bin:/bin")
+          .split(delimiter)
+          .map((directory) => resolve(spec.cwd, directory, command));
+  let resolvedToolPath: string | undefined;
+  for (const candidate of candidates) {
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      resolvedToolPath = realpathSync(candidate);
+      break;
+    } catch {}
+  }
+  return `cwdExists=${cwdExists}; resolvedToolPath=${resolvedToolPath ?? "unavailable"}`;
+}
+
+function safeLaunchError(spec: ProcessSpec, error: unknown): Error {
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  const safeCode = typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "unknown";
+  return Object.assign(new Error(`host launch failed (${safeCode}); ${launchDiagnostics(spec)}`), {
+    code: safeCode,
+  });
+}
+
 /** A single line longer than this is cut, so a newline-free stream can't grow memory unbounded. */
 export const MAX_LINE_BYTES = 4 * 1024 * 1024;
 
@@ -71,12 +106,18 @@ export const hostExecutor: LineExecutor = (spec, onLine, signal) =>
       resolve({ exitCode: -1, timedOut: false, cancelled: true, stderrTail: "" });
       return;
     }
-    const child = spawn(command, args, {
-      cwd: spec.cwd,
-      env: spec.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-    });
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(command, args, {
+        cwd: spec.cwd,
+        env: spec.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
+    } catch (error) {
+      reject(safeLaunchError(spec, error));
+      return;
+    }
     let stderrTail = "";
     let timedOut = false;
     let cancelled = false;
@@ -116,7 +157,7 @@ export const hostExecutor: LineExecutor = (spec, onLine, signal) =>
     child.on("error", (error) => {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
-      reject(error);
+      reject(safeLaunchError(spec, error));
     });
     child.on("close", (code) => {
       clearTimeout(timer);

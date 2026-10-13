@@ -88,6 +88,7 @@ export interface PhaseOutcome {
   costUsd?: number;
   /** Set when an irreversible action was refused because it now needs (re)approval. */
   requiresApproval?: boolean;
+  failureClass?: "factory-tooling";
 }
 
 export interface Limits {

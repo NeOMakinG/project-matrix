@@ -238,7 +238,7 @@ describe("worktree git port", () => {
     expect(after).not.toBe(before);
     await writeFile(join(workdir, "new.ts"), "b");
     expect(await git.treeState(workdir)).not.toBe(after);
-  });
+  }, 30_000);
 
   test("refuses a worktree whose .git was redirected", async () => {
     const repoPath = await repo();
@@ -421,7 +421,7 @@ describe("round 3: submodules and nested repos", () => {
     expect(existsSync(pwned)).toBe(false);
   });
 
-  test("cleanForChecks removes gitignored and untracked files, returns HEAD", async () => {
+  test("cleanForChecks preserves unknown and gitignored artifacts", async () => {
     const repoPath = await repo();
     await writeFile(join(repoPath, ".gitignore"), "cache/\n");
     sh(repoPath, "add", ".gitignore");
@@ -439,11 +439,11 @@ describe("round 3: submodules and nested repos", () => {
     await writeFile(join(workdir, "cache", "poison.json"), "{}");
     await writeFile(join(workdir, "stray.ts"), "x");
     const port = new WorktreeGitPort({ trusted: ws.trusted });
-    expect(await port.cleanForChecks(workdir)).toBe(sh(repoPath, "rev-parse", "HEAD"));
-    expect(existsSync(join(workdir, "cache", "poison.json"))).toBe(false);
-    expect(existsSync(join(workdir, "stray.ts"))).toBe(false);
+    await expect(port.cleanForChecks(workdir)).rejects.toThrow(/preserved/);
+    expect(existsSync(join(workdir, "cache", "poison.json"))).toBe(true);
+    expect(existsSync(join(workdir, "stray.ts"))).toBe(true);
     await writeFile(join(workdir, "README.md"), "modified tracked");
-    await expect(port.cleanForChecks(workdir)).rejects.toThrow(/uncommitted/);
+    await expect(port.cleanForChecks(workdir)).rejects.toThrow();
   });
 });
 

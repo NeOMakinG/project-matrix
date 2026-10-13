@@ -164,6 +164,15 @@ export interface paths {
             "application/json": components["schemas"]["Error"];
           };
         };
+        /** @description Service unavailable */
+        503: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
       };
     };
     delete?: never;
@@ -358,6 +367,217 @@ export interface paths {
     options?: never;
     head?: never;
     patch?: never;
+    trace?: never;
+  };
+  "/v1/projects/{projectId}/autonomy-policy": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** Set the autonomy of several phases in one atomic write (If-Match: project ETag) */
+    put: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          projectId: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          "application/json": {
+            autonomy: {
+              spike?: components["schemas"]["AutonomyMode"];
+              implement?: components["schemas"]["AutonomyMode"];
+              checks?: components["schemas"]["AutonomyMode"];
+              review?: components["schemas"]["AutonomyMode"];
+              qa?: components["schemas"]["AutonomyMode"];
+              merge?: components["schemas"]["AutonomyMode"];
+              deploy?: components["schemas"]["AutonomyMode"];
+              verify?: components["schemas"]["AutonomyMode"];
+              compound?: components["schemas"]["AutonomyMode"];
+            };
+          };
+        };
+      };
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Project"];
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/init/{id}/answers/{questionId}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    /** Revise one answer; dependent answers that no longer apply are dropped */
+    patch: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          questionId: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          "application/json": {
+            value: string | number | boolean | string[];
+          };
+        };
+      };
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              session: components["schemas"]["InitSession"];
+              dropped: string[];
+              progress: components["schemas"]["InitProgress"];
+            };
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
     trace?: never;
   };
   "/v1/projects/{projectId}/deploy": {
@@ -2613,6 +2833,103 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/projects/{projectId}/webhooks/{source}/secret": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Issue or rotate a project's webhook secret (returned once) */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          projectId: string;
+          source: "sentry" | "github" | "posthog" | "otel";
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": {
+              source: string;
+              secret: string;
+              url: string;
+            };
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/integrations": {
     parameters: {
       query?: never;
@@ -2789,6 +3106,197 @@ export interface paths {
     };
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/init/{id}/contradictions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Contradictions between the current answers (errors block finalize) */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Contradiction"][];
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/v1/init/{id}/finalize": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Generate the project from the answers (config, ADRs, scaffold, backlog); idempotent */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          "application/json": {
+            /** @default false */
+            acceptRecommended?: boolean;
+          };
+        };
+      };
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["InitSession"];
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
     delete?: never;
     options?: never;
     head?: never;
@@ -3271,6 +3779,7 @@ export interface components {
       error: {
         code: string;
         message: string;
+        details?: unknown;
       };
     };
     CreateProject: {
@@ -3282,6 +3791,18 @@ export interface components {
        * @enum {string}
        */
       workspace: "orca" | "native";
+      /** @description Ticket tracker; beads by default */
+      tickets?: {
+        /** @enum {string} */
+        kind: "beads" | "markdown" | "github";
+        repo?: string;
+      };
+      /** @description Check commands run in the sandbox (argv, no shell) */
+      checks?: {
+        /** @enum {string} */
+        kind: "typecheck" | "lint" | "test" | "adr-check";
+        cmd: string[];
+      }[];
     };
     SetAutonomy: {
       phase: components["schemas"]["Phase"];
@@ -3298,6 +3819,128 @@ export interface components {
       | "deploy"
       | "verify"
       | "compound";
+    InitSession: {
+      id: string;
+      projectId: string;
+      answers: {
+        [key: string]: unknown;
+      };
+      /** @enum {string} */
+      state: "in_progress" | "completed";
+      createdAt: string;
+      result?:
+        | {
+            /** @enum {string} */
+            status: "missing";
+            missing: string[];
+          }
+        | {
+            /** @enum {string} */
+            status: "contradictions";
+            contradictions: {
+              id: string;
+              message: string;
+              questions: string[];
+            }[];
+          }
+        | {
+            /** @enum {string} */
+            status: "invalid";
+            issues: {
+              path: string;
+              message: string;
+            }[];
+          }
+        | {
+            /** @enum {string} */
+            status: "ok";
+            files: string[];
+            tickets: string[];
+            warnings: string[];
+            commit?: string;
+          };
+    };
+    InitProgress: {
+      packs: {
+        id: string;
+        label: string;
+        answered: number;
+        total: number;
+        /** @enum {string} */
+        state: "done" | "active" | "todo";
+      }[];
+      answered: {
+        questionId: string;
+        label: string;
+        value: string;
+        id: string;
+        pack: string;
+        prompt: string;
+        /** @enum {string} */
+        kind: "select" | "multiselect" | "text" | "list" | "confirm" | "number";
+        rationale: string;
+        recommended: string | number | boolean | string[] | null;
+        options: {
+          id: string;
+          label: string;
+          description: string;
+          recommended: boolean;
+        }[];
+        dependsOn: string[];
+      }[];
+      question: {
+        id: string;
+        pack: string;
+        index: number;
+        total: number;
+        context: string;
+        prompt: string;
+        rationale: string;
+        facts: string;
+        options: {
+          id: string;
+          label: string;
+          description: string;
+          recommended: boolean;
+        }[];
+      } | null;
+      configPreview: string;
+      adrs: {
+        id: string;
+        title: string;
+        status: components["schemas"]["Pill"];
+      }[];
+      round: {
+        id: string;
+        pack: string;
+        /** @enum {string} */
+        kind: "select" | "multiselect" | "text" | "list" | "confirm" | "number";
+        prompt: string;
+        rationale: string;
+        recommended: string | number | boolean | string[] | null;
+        options: {
+          id: string;
+          label: string;
+          description: string;
+          recommended: boolean;
+        }[];
+        dependsOn: string[];
+      }[];
+      contradictions: components["schemas"]["Contradiction"][];
+    };
+    Pill: {
+      label: string;
+      tone: components["schemas"]["Tone"];
+    };
+    /** @enum {string} */
+    Tone: "green" | "blue" | "amber" | "red" | "violet" | "neutral";
+    Contradiction: {
+      id: string;
+      /** @enum {string} */
+      severity: "error" | "warning";
+      message: string;
+      questions: string[];
+    };
     Deployment: {
       id: string;
       state: string;
@@ -3362,16 +4005,6 @@ export interface components {
         to: string;
         kind: string;
       }[];
-    };
-    InitSession: {
-      id: string;
-      projectId: string;
-      answers: {
-        [key: string]: unknown;
-      };
-      /** @enum {string} */
-      state: "in_progress" | "completed";
-      createdAt: string;
     };
     InitAnswers: {
       answers: {
@@ -3496,49 +4129,6 @@ export interface components {
       name: string;
       detail: string;
       status: components["schemas"]["Pill"];
-    };
-    Pill: {
-      label: string;
-      tone: components["schemas"]["Tone"];
-    };
-    /** @enum {string} */
-    Tone: "green" | "blue" | "amber" | "red" | "violet" | "neutral";
-    InitProgress: {
-      packs: {
-        id: string;
-        label: string;
-        answered: number;
-        total: number;
-        /** @enum {string} */
-        state: "done" | "active" | "todo";
-      }[];
-      answered: {
-        questionId: string;
-        label: string;
-        value: string;
-      }[];
-      question: {
-        id: string;
-        pack: string;
-        index: number;
-        total: number;
-        context: string;
-        prompt: string;
-        rationale: string;
-        facts: string;
-        options: {
-          id: string;
-          label: string;
-          description: string;
-          recommended: boolean;
-        }[];
-      } | null;
-      configPreview: string;
-      adrs: {
-        id: string;
-        title: string;
-        status: components["schemas"]["Pill"];
-      }[];
     };
     CheckResult: {
       ref: string;
