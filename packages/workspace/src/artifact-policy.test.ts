@@ -9,8 +9,6 @@ describe("trusted BASE disposable policy (no Git)", () => {
     for (const path of [
       "node_modules/pkg/index.js",
       "app/node_modules/pkg/index.js",
-      "backend/dist/api.js",
-      "web/build/bundle.js",
       "app/.expo/state.json",
       "web/.next/cache/file",
       "coverage/report",
@@ -22,6 +20,9 @@ describe("trusted BASE disposable policy (no Git)", () => {
       expect(matches(path), path).toBe(true);
     for (const path of [
       "src/new.ts",
+      "src/build/secret.ts",
+      "backend/dist/api.js",
+      "web/build/bundle.js",
       "src/node_modules.ts",
       "dist.ts",
       "../dist/file",

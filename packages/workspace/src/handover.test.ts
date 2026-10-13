@@ -63,7 +63,7 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
     async (ignored) => {
       const { prepared, port, options } = await fixture({
         config:
-          'export default { mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" } };',
+          'export default { mobile: { framework: "expo" }, frontend: { framework: "react", bundler: "next" }, process: { disposableArtifacts: ["web/dist/"] } };',
         ...(ignored ? { ignore: "node_modules/\ndist/\n.expo/\n.next/\n" } : {}),
       });
       const artifacts = [
@@ -365,4 +365,27 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
     },
     30_000,
   );
+});
+
+describe("generic build directories are not disposable by default", () => {
+  test("a new file under src/build is committed and scanned, not skipped", async () => {
+    const { prepared, port, options } = await fixture({
+      config: 'export default { backend: { kind: "node-api" } };',
+    });
+    await mkdir(join(prepared.workdir, "src/build"), { recursive: true });
+    await writeFile(join(prepared.workdir, "src/build/secret.ts"), "export const value = 1;\n");
+    let scanned = false;
+    await port.commitImplementation(prepared.workdir, {
+      ...options,
+      scan: async (snapshot, binding) => {
+        expect(binding.objects.some((object) => object.path === "src/build/secret.ts")).toBe(true);
+        expect(await readFile(join(snapshot, "src/build/secret.ts"), "utf8")).toContain(
+          "value = 1",
+        );
+        scanned = true;
+        return options.scan();
+      },
+    });
+    expect(scanned).toBe(true);
+  }, 30_000);
 });

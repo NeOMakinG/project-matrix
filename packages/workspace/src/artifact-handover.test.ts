@@ -164,7 +164,7 @@ async function fixture(config: string, artifacts: string[], ignored = true, stag
 describe("handover artifact regressions with fake Git, no subprocesses", () => {
   test("newly staged disposables are excluded without excluding tracked source", async () => {
     const { workdir, port, options, next } = await fixture(
-      'export default { backend: { kind: "node-api" } };',
+      'export default { backend: { kind: "node-api" }, process: { disposableArtifacts: ["dist/"] } };',
       ["dist/result.js"],
       false,
       true,
@@ -200,7 +200,7 @@ describe("handover artifact regressions with fake Git, no subprocesses", () => {
         "web/dist/bundle.js",
       ];
       const { workdir, port, options, next } = await fixture(
-        'export default { mobile: { framework: "expo" } };',
+        'export default { mobile: { framework: "expo" }, process: { disposableArtifacts: ["web/dist/"] } };',
         artifacts,
         ignored,
       );

@@ -17,8 +17,10 @@ Absolute paths, traversal, backslashes, negation, and bracket/brace patterns
 are rejected. Commit declarations on the trusted base before starting a ticket;
 worktree edits cannot authorize artifacts for that ticket.
 
-Node, React, Expo, and Tauri stacks permit nested `node_modules/`, `dist/`,
-`build/`, `coverage/`, `.turbo/`, and `*.tsbuildinfo`. Next additionally permits
+Node, React, Expo, and Tauri stacks permit nested `node_modules/`,
+`coverage/`, `.turbo/`, and `*.tsbuildinfo`. Generic names such as `dist/` and
+`build/` can hold authored source (`src/build/…`), so declare them explicitly with
+an anchored path such as `web/dist/`. Next additionally permits
 `.next/`; Expo permits `.expo/`, `android/app/build/`, and `ios/Pods/`.
 
 Disposable artifacts absent from HEAD are excluded from the candidate tree and preserved
