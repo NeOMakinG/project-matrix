@@ -141,6 +141,7 @@
         "type": "string",
         "enum": [
           "spike",
+          "design",
           "implement",
           "checks",
           "review",
@@ -1876,6 +1877,9 @@
                     "type": "object",
                     "properties": {
                       "spike": {
+                        "$ref": "#/components/schemas/AutonomyMode"
+                      },
+                      "design": {
                         "$ref": "#/components/schemas/AutonomyMode"
                       },
                       "implement": {

@@ -1,9 +1,17 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PodmanSandbox, type ProcessSpec } from "@matrix/sandbox";
+import { codexRunner } from "@matrix/runners";
+import {
+  asRunToken,
+  hostExecutor,
+  type LineExecutor,
+  PodmanSandbox,
+  type ProcessSpec,
+} from "@matrix/sandbox";
 import { WorktreeGitPort } from "@matrix/workspace";
 import { afterEach, expect, test, vi } from "vitest";
+import { registerReadOnlyExecutor } from "../../../../packages/sandbox/src/executor-isolation.js";
 import { nativeRuntime } from "./native-runtime.js";
 
 vi.mock("node:os", async (original) => ({
@@ -77,8 +85,8 @@ test("handover refusals retain specific redacted reasons in summary and receipt 
 
 test("native Codex provider isolates OAuth/config, preserves reviewer model and read-only mounts (mock executor)", async () => {
   const calls: ProcessSpec[] = [];
-  vi.spyOn(PodmanSandbox.prototype, "lineExecutor").mockImplementation(
-    (policy) => async (spec, emit) => {
+  vi.spyOn(PodmanSandbox.prototype, "lineExecutor").mockImplementation((policy) =>
+    registerReadOnlyExecutor(async (spec, emit) => {
       calls.push(spec);
       if (policy.network === "gateway") {
         emit(
@@ -92,7 +100,7 @@ test("native Codex provider isolates OAuth/config, preserves reviewer model and 
         );
       } else expect(policy.network).toBe("none");
       return { exitCode: 0, cancelled: false, timedOut: false, stderrTail: "" };
-    },
+    }),
   );
   const directory = await mkdtemp(join(tmpdir(), "matrix-native-adapter-"));
   const runtime = nativeRuntime({
@@ -133,3 +141,42 @@ test("native Codex provider isolates OAuth/config, preserves reviewer model and 
   ).rejects.toThrow("restricted to SOL");
   await runtime.broker.closeAll();
 });
+test.each(["undeclared mock", "raw host"])(
+  "Codex rejects %s for read-only execution",
+  async (kind) => {
+    const undeclared = vi.fn<LineExecutor>(async () => ({
+      exitCode: 0,
+      cancelled: false,
+      timedOut: false,
+      stderrTail: "",
+    }));
+    const runner = codexRunner({
+      executor: kind === "raw host" ? hostExecutor : undeclared,
+      gateway: {
+        anthropicBaseUrl: "http://127.0.0.1:1",
+        openaiBaseUrl: "http://127.0.0.1:1/v1",
+        apiKey: asRunToken("mxr_readonlyfixture"),
+      },
+    });
+    expect(runner.readOnlyIsolation).toBeUndefined();
+    await expect(
+      runner.run(
+        {
+          runId: "unit",
+          projectId: "unit",
+          ticketId: "unit",
+          phase: "review",
+          runner: "codex",
+          model: "gpt-6-sol",
+          prompt: "unit",
+          workdir: "/unused",
+          timeoutMs: 1000,
+          readOnly: true,
+        },
+        () => {},
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("executor-enforced OS isolation; host fallback is forbidden");
+    expect(undeclared).not.toHaveBeenCalled();
+  },
+);

@@ -392,6 +392,7 @@ export interface paths {
           "application/json": {
             autonomy: {
               spike?: components["schemas"]["AutonomyMode"];
+              design?: components["schemas"]["AutonomyMode"];
               implement?: components["schemas"]["AutonomyMode"];
               checks?: components["schemas"]["AutonomyMode"];
               review?: components["schemas"]["AutonomyMode"];
@@ -3811,6 +3812,7 @@ export interface components {
     /** @enum {string} */
     Phase:
       | "spike"
+      | "design"
       | "implement"
       | "checks"
       | "review"
