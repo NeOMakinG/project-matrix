@@ -87,15 +87,7 @@ export async function nativeQaEvidence(
           summary: message(receipt.summary),
           ...(probe
             ? {
-                scenario: {
-                  provenance: probe.provenance,
-                  headSha: redact(probe.headSha),
-                  id: redact(probe.id),
-                  command: probe.command.map(redact),
-                  exitCode: probe.exitCode,
-                  output: message(probe.output),
-                  probe: message(probe.probe),
-                },
+                scenario: probe,
               }
             : {}),
         };

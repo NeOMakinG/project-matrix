@@ -15,6 +15,7 @@ import {
 import { createHarness, FakeRunner } from "@matrix/core/testing";
 import { scanSecretText } from "@matrix/sandbox";
 import { expect, test, vi } from "vitest";
+import { nativeQaEvidence, nativeQaRedactor, writeNativeQaReceipt } from "./native-qa.js";
 import { scenarioQaDriver } from "./scenario-qa.js";
 
 const scenarios: HoldoutScenario[] = [
@@ -181,12 +182,10 @@ test.each([true, false])(
       const evidence = outcome.receipts.flatMap((receipt) => scenarioEvidence(receipt) ?? []);
       expect(evidence).toHaveLength(4);
       expect(evidence.every((item) => item.headSha === "a".repeat(40))).toBe(true);
-      expect(evidence.find((item) => item.id === "s2")).toMatchObject({
+      expect(evidence.find((item) => item.scenarioIndex === 1)).toMatchObject({
         exitCode: correct ? 0 : 1,
       });
-      expect(evidence.find((item) => item.id === "s2")?.output).toContain(
-        `"actual":${correct ? 5 : 0}`,
-      );
+      expect(evidence.every((item) => /^[a-f0-9]{64}$/.test(item.outputSha256))).toBe(true);
       expect(setup.runner.calls[0]).toMatchObject({
         model: "gpt-6-sol",
         readOnly: true,
@@ -197,10 +196,13 @@ test.each([true, false])(
       expect(judge?.prompt).toContain('"command"');
       expect(judge?.prompt).toContain('"output"');
       expect(judge?.prompt).toContain('"probe"');
+      expect(judge?.prompt).toContain(`\\"actual\\":${correct ? 5 : 0}`);
       expect(judge?.workdir).not.toBe(setup.workdir);
       expect(await readFile(join(setup.workdir, "src/add.ts"), "utf8")).toBe(setup.source);
       expect(await readdir(setup.workdir)).toEqual(["src"]);
       const serialized = JSON.stringify(outcome);
+      expect(serialized).not.toContain("import { add }");
+      expect(serialized).not.toContain('"actual"');
       for (const unsafe of [
         setup.planted,
         Buffer.from(setup.planted).toString("base64"),
@@ -343,10 +345,18 @@ test.each(["finding", "unavailable"])("probe output is withheld on scanner %s", 
     for (const receipt of receipts) {
       const evidence = scenarioEvidence(receipt)!;
       expect(evidence.exitCode).toBe(0);
-      expect(evidence.output).toMatch(/^output withheld; sha256=[a-f0-9]{64}$/);
-      expect(evidence.probe).toBe("probe withheld");
+      expect(evidence.outputSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(evidence.probeSha256).toMatch(/^[a-f0-9]{64}$/);
       expect(JSON.stringify(receipt)).not.toContain('"actual"');
       expect(JSON.stringify(receipt)).not.toContain(setup.planted);
+    }
+    if (!Array.isArray(result)) {
+      expect(
+        result.judgeEvidence?.every(
+          (item) =>
+            item.output.startsWith("output withheld; sha256=") && item.probe === "probe withheld",
+        ),
+      ).toBe(true);
     }
   } finally {
     await rm(setup.root, { recursive: true, force: true });
@@ -374,8 +384,89 @@ test.skipIf(spawnSync("gitleaks", ["version"]).status !== 0)(
       expect(receipts).toHaveLength(4);
       expect(JSON.stringify(receipts)).not.toContain(committedSecret);
       for (const receipt of receipts) {
-        expect(scenarioEvidence(receipt)).toMatchObject({ exitCode: 0, probe: "probe withheld" });
-        expect(scenarioEvidence(receipt)?.output).toContain("output withheld; sha256=");
+        expect(scenarioEvidence(receipt)).toMatchObject({ exitCode: 0, passed: true });
+      }
+      if (!Array.isArray(result))
+        expect(
+          result.judgeEvidence?.every((item) => item.output.startsWith("output withheld; sha256=")),
+        ).toBe(true);
+    } finally {
+      await rm(setup.root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.skipIf(spawnSync("gitleaks", ["version"]).status !== 0)(
+  "gitleaks-clean arbitrary committed credential never reaches Store, logs or receipts.json",
+  async () => {
+    const secret = "fixture-only-arbitrary-credential-qz97";
+    const plan = JSON.stringify({
+      probes: probes.map((probe) => ({
+        ...probe,
+        source: `${probe.source}\nimport { fixtureSecret } from './src/add.ts'; console.log(fixtureSecret);`,
+      })),
+    });
+    const setup = await fixture(true, plan, secret);
+    setup.scanOutput.mockImplementation((text) => scanSecretText(text));
+    const messages: string[] = [];
+    let judgePrompt = "";
+    setup.context.emit = (message) => messages.push(message);
+    try {
+      expect(await scanSecretText(secret)).toBe(true);
+      vi.spyOn(setup.harness.reviewer, "run").mockImplementation(async (request) => {
+        judgePrompt = request.prompt;
+        return {
+          runId: request.runId,
+          status: "ok",
+          summary: JSON.stringify({
+            verdicts: scenarios.map((item) => ({ id: item.id, satisfied: true, reason: secret })),
+          }),
+          receipts: [],
+        };
+      });
+      const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
+      expect(outcome.ok).toBe(true);
+      expect(judgePrompt).toContain(secret);
+      expect(judgePrompt).toContain("import { add }");
+      await setup.harness.store.addReceipts(setup.context.runId, outcome.receipts);
+      const saved = await setup.harness.store.listReceipts(setup.context.runId);
+      const evidence = await nativeQaEvidence(
+        {
+          listEvents: async () => [],
+          getStep: async () => null,
+          listReceipts: async () => saved,
+        },
+        [
+          {
+            id: setup.context.runId,
+            projectId: setup.context.project.id,
+            ticketId: setup.context.ticket.id,
+            phase: "qa",
+            attempt: 0,
+            stepKey: "qa-fixture",
+            host: "fixture",
+            ownerId: "fixture",
+            startedAt: new Date(),
+            lastEventAt: new Date(),
+            heartbeatAt: new Date(),
+            status: "ok",
+            summary: outcome.summary,
+          },
+        ],
+        nativeQaRedactor([]),
+      );
+      const path = join(setup.root, "receipts.json");
+      await writeNativeQaReceipt(path, evidence, nativeQaRedactor([]));
+      for (const artifact of [
+        JSON.stringify(outcome),
+        JSON.stringify(saved),
+        JSON.stringify(messages),
+        await readFile(path, "utf8"),
+      ]) {
+        expect(artifact).not.toContain(secret);
+        expect(artifact).not.toContain("import { add }");
+        expect(artifact).not.toContain("console.log");
+        expect(artifact).not.toContain('"actual"');
       }
     } finally {
       await rm(setup.root, { recursive: true, force: true });

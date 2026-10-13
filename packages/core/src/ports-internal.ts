@@ -1,6 +1,7 @@
 import type { Ticket, TicketStore } from "@matrix/tickets";
 import type { HoldoutScenario } from "./holdout.js";
 import type { AutonomyMode, Phase, Receipt, RunEventKind } from "./ports.js";
+import type { JudgeScenarioEvidence } from "./qa-evidence.js";
 import type { PhaseModel, ProjectConfig, WorkflowState } from "./types.js";
 
 export type Authorization =
@@ -48,7 +49,9 @@ export interface QaDriver {
   run(
     ctx: PhaseContext,
     request?: { scenarios: HoldoutScenario[]; reviewer: PhaseModel },
-  ): Promise<Receipt[] | { receipts: Receipt[]; costUsd?: number }>;
+  ): Promise<
+    Receipt[] | { receipts: Receipt[]; costUsd?: number; judgeEvidence?: JudgeScenarioEvidence[] }
+  >;
 }
 
 export interface ActionRequest {

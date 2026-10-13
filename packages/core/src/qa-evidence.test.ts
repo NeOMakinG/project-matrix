@@ -20,7 +20,7 @@ test("public holdout receipts expose numeric counts only, never reasons or ids",
   expect(JSON.stringify(receipt)).not.toContain("PRIVATE");
 });
 
-test("QA bus payload hides scenario probes and judge rationale but private Store retains evidence", async () => {
+test("QA bus and private Store never retain raw scenario probes or judge rationale", async () => {
   const privateText = "PRIVATE holdout scenario";
   const harness = createHarness({
     qaReceipts: () => [
@@ -52,7 +52,7 @@ test("QA bus payload hides scenario probes and judge rationale but private Store
   const run = (await harness.store.listRuns({ ticketId: ticket.id })).find(
     (item) => item.phase === "qa",
   )!;
-  expect(JSON.stringify(await harness.store.listReceipts(run.id))).toContain(privateText);
+  expect(JSON.stringify(await harness.store.listReceipts(run.id))).not.toContain(privateText);
 });
 
 test("planner failure blocks with generic ticket feedback, never model text", async () => {

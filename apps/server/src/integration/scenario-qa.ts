@@ -5,6 +5,7 @@ import {
   extractJson,
   FactoryToolingError,
   type GitPort,
+  type JudgeScenarioEvidence,
   type PhaseContext,
   type QaDriver,
   type Receipt,
@@ -83,6 +84,7 @@ export function scenarioQaDriver(options: {
         check();
       };
       const receipts: Receipt[] = [];
+      const judgeEvidence: JudgeScenarioEvidence[] = [];
       const execute = async (
         cmd: string[],
         probe?: { id: string; source: string; file: string },
@@ -99,6 +101,7 @@ export function scenarioQaDriver(options: {
             createOnly: true,
             owner: options.owner,
           });
+        const started = performance.now();
         const result = await options.sandbox
           .exec(
             {
@@ -119,6 +122,7 @@ export function scenarioQaDriver(options: {
             );
           });
         await bound();
+        const durationMs = Math.max(0, performance.now() - started);
         const raw = `${result.stdout}\n${result.stderr}`;
         const clean = await (
           options.scanOutput ?? ((text) => scanSecretText(text, options.gitleaksBinary))
@@ -131,6 +135,13 @@ export function scenarioQaDriver(options: {
           exitCode: result.code,
           output,
           probe: clean ? redact(probe?.source ?? "") : "probe withheld",
+          durationMs,
+          probeSha256: createHash("sha256")
+            .update(probe?.source ?? "")
+            .digest("hex"),
+          outputSha256: createHash("sha256").update(raw).digest("hex"),
+          probeBytes: Buffer.byteLength(probe?.source ?? ""),
+          outputBytes: Buffer.byteLength(raw),
         };
       };
       for (const command of ctx.project.checks) {
@@ -142,7 +153,11 @@ export function scenarioQaDriver(options: {
           summary: `isolated QA ${command.kind} exit ${result.exitCode}`,
           data: {
             headSha: snapshot.headSha,
-            output: result.output,
+            outputSha256: result.outputSha256,
+            outputBytes: result.outputBytes,
+            durationMs: result.durationMs,
+            exitCode: result.exitCode,
+            passed: result.exitCode === 0,
           },
         });
       }
@@ -230,10 +245,23 @@ export function scenarioQaDriver(options: {
         const data: ScenarioEvidence = {
           provenance: "host-probe",
           headSha: snapshot.headSha,
+          scenarioIndex: request.scenarios.findIndex((item) => item.id === probe.id),
+          probeSha256: result.probeSha256,
+          outputSha256: result.outputSha256,
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          probeBytes: result.probeBytes,
+          outputBytes: result.outputBytes,
+          passed: result.exitCode === 0,
+        };
+        judgeEvidence.push({
+          headSha: snapshot.headSha,
           id: probe.id,
           command,
-          ...result,
-        };
+          exitCode: result.exitCode,
+          output: result.output,
+          probe: result.probe,
+        });
         receipts.push({
           kind: "test",
           ok: result.exitCode === 0,
@@ -242,7 +270,11 @@ export function scenarioQaDriver(options: {
         });
       }
       await bound();
-      return { receipts, ...(plan.costUsd !== undefined ? { costUsd: plan.costUsd } : {}) };
+      return {
+        receipts,
+        judgeEvidence,
+        ...(plan.costUsd !== undefined ? { costUsd: plan.costUsd } : {}),
+      };
     },
   };
 }

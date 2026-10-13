@@ -168,7 +168,7 @@ test("diagnostics bound counts/bytes and redact patterns, execution context and 
   expect(performance.now() - started).toBeLessThan(1000);
 });
 
-test("private QA diagnostics retain host-attested scenario commands, outputs and same-SHA binding", async () => {
+test("private QA diagnostics retain only host-attested hashes, counts and same-SHA binding", async () => {
   const key = "planted-QA-receipt-secret-TEST";
   const receipt: Receipt = {
     kind: "test",
@@ -177,8 +177,13 @@ test("private QA diagnostics retain host-attested scenario commands, outputs and
     data: {
       provenance: "host-probe",
       headSha: "a".repeat(40),
-      id: "s2",
-      command: ["bun", ".matrix-qa-probe-1.ts"],
+      scenarioIndex: 1,
+      probeSha256: "b".repeat(64),
+      outputSha256: "c".repeat(64),
+      durationMs: 12,
+      probeBytes: 64,
+      outputBytes: 32,
+      passed: true,
       exitCode: 0,
       output: `actual=5 ${key}`,
       probe: 'import { add } from "./src/add.ts"; console.log(add(2,3));',
@@ -196,10 +201,12 @@ test("private QA diagnostics retain host-attested scenario commands, outputs and
   expect(evidence[0]?.receipts[0]?.scenario).toMatchObject({
     provenance: "host-probe",
     headSha: "a".repeat(40),
-    id: "s2",
-    command: ["bun", ".matrix-qa-probe-1.ts"],
+    scenarioIndex: 1,
+    probeSha256: "b".repeat(64),
+    outputSha256: "c".repeat(64),
     exitCode: 0,
-    output: "actual=5 [REDACTED]",
   });
   expect(JSON.stringify(evidence)).not.toContain(key);
+  expect(JSON.stringify(evidence)).not.toContain("actual=5");
+  expect(JSON.stringify(evidence)).not.toContain("console.log");
 });

@@ -8,7 +8,7 @@ import type {
   QaDriver,
   VerifyPort,
 } from "./ports-internal.js";
-import { formatQaEvidence, scenarioEvidence } from "./qa-evidence.js";
+import { formatQaEvidence, persistedQaReceipt, scenarioEvidence } from "./qa-evidence.js";
 import { lanePrompt, parseFindings, pickReviewer, reviewReceipt } from "./review.js";
 import type { Store } from "./store.js";
 import type { PhaseModel, PhaseOutcome } from "./types.js";
@@ -294,7 +294,7 @@ const qa =
         return {
           ok: false,
           summary: "QA probe preparation failed; retry QA or contact the operator",
-          receipts: error.receipts,
+          receipts: error.receipts.map(persistedQaReceipt),
           runStatus: "failed",
           failureClass: "factory-tooling",
           ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}),
@@ -302,7 +302,8 @@ const qa =
       }
       const supplied = Array.isArray(qaResult) ? qaResult : qaResult.receipts;
       const qaCost = Array.isArray(qaResult) ? 0 : (qaResult.costUsd ?? 0);
-      const evidence = supplied.filter((r) => r.kind !== "holdout");
+      const evidence = supplied.filter((r) => r.kind !== "holdout").map(persistedQaReceipt);
+      const judgeEvidence = Array.isArray(qaResult) ? [] : (qaResult.judgeEvidence ?? []);
       if (evidence.length !== supplied.length) {
         ctx.emit("discarded holdout receipts supplied by the QA driver", "error");
       }
@@ -323,7 +324,7 @@ const qa =
         [
           "Judge from the QA evidence below whether the software satisfies each scenario. A scenario the evidence does not demonstrate is not satisfied.",
           "For host-probe evidence, inspect the probe source and actual command output. Printed claims or simulations without exercising the software do not demonstrate behavior. A nonzero host exit code cannot satisfy its scenario.",
-          `QA evidence:\n${formatQaEvidence(evidence)}`,
+          `QA evidence:\n${formatQaEvidence(evidence, judgeEvidence)}`,
           `Scenarios:\n${JSON.stringify(scenarios, null, 2)}`,
           'Reply with JSON only: {"verdicts":[{"id":"s1","satisfied":true,"reason":"..."}]}',
         ].join("\n\n"),
@@ -342,7 +343,8 @@ const qa =
         const failed = new Set(
           evidence.flatMap((receipt) => {
             const probe = scenarioEvidence(receipt);
-            return probe && probe.exitCode !== 0 ? [probe.id] : [];
+            const scenario = probe ? scenarios[probe.scenarioIndex] : undefined;
+            return probe && probe.exitCode !== 0 && scenario ? [scenario.id] : [];
           }),
         );
         const verdicts = parseVerdicts(verdict.summary).map((item) =>

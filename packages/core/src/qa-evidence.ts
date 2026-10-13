@@ -3,6 +3,18 @@ import type { Receipt } from "./ports.js";
 export interface ScenarioEvidence {
   provenance: "host-probe";
   headSha: string;
+  scenarioIndex: number;
+  probeSha256: string;
+  outputSha256: string;
+  exitCode: number;
+  durationMs: number;
+  probeBytes: number;
+  outputBytes: number;
+  passed: boolean;
+}
+
+export interface JudgeScenarioEvidence {
+  headSha: string;
   id: string;
   command: string[];
   exitCode: number;
@@ -56,45 +68,75 @@ export function scenarioEvidence(receipt: Receipt): ScenarioEvidence | undefined
     !("headSha" in data) ||
     typeof data.headSha !== "string" ||
     !/^[a-f0-9]{40,64}$/.test(data.headSha) ||
-    !("id" in data) ||
-    typeof data.id !== "string" ||
-    !("command" in data) ||
-    !Array.isArray(data.command) ||
-    !data.command.length ||
-    data.command.length > 8 ||
-    !data.command.every(
-      (argument): argument is string => typeof argument === "string" && argument.length <= 512,
-    ) ||
+    !("scenarioIndex" in data) ||
+    typeof data.scenarioIndex !== "number" ||
+    !Number.isInteger(data.scenarioIndex) ||
+    data.scenarioIndex < 0 ||
+    !("probeSha256" in data) ||
+    typeof data.probeSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(data.probeSha256) ||
+    !("outputSha256" in data) ||
+    typeof data.outputSha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(data.outputSha256) ||
     !("exitCode" in data) ||
     typeof data.exitCode !== "number" ||
     !Number.isInteger(data.exitCode) ||
-    !("output" in data) ||
-    typeof data.output !== "string" ||
-    data.output.length > 4096 ||
-    !("probe" in data) ||
-    typeof data.probe !== "string" ||
-    data.probe.length > 8192
+    !("durationMs" in data) ||
+    typeof data.durationMs !== "number" ||
+    !Number.isFinite(data.durationMs) ||
+    data.durationMs < 0 ||
+    !("probeBytes" in data) ||
+    typeof data.probeBytes !== "number" ||
+    !Number.isInteger(data.probeBytes) ||
+    data.probeBytes < 0 ||
+    !("outputBytes" in data) ||
+    typeof data.outputBytes !== "number" ||
+    !Number.isInteger(data.outputBytes) ||
+    data.outputBytes < 0 ||
+    !("passed" in data) ||
+    typeof data.passed !== "boolean"
   )
     return undefined;
   return {
     provenance: "host-probe",
     headSha: data.headSha,
-    id: data.id,
-    command: data.command,
+    scenarioIndex: data.scenarioIndex,
+    probeSha256: data.probeSha256,
+    outputSha256: data.outputSha256,
     exitCode: data.exitCode,
-    output: data.output,
-    probe: data.probe,
+    durationMs: data.durationMs,
+    probeBytes: data.probeBytes,
+    outputBytes: data.outputBytes,
+    passed: data.passed,
   };
 }
 
-export function formatQaEvidence(receipts: Receipt[]): string {
-  return JSON.stringify(
-    receipts.map((receipt) => ({
+export function persistedQaReceipt(receipt: Receipt): Receipt {
+  const metadata = scenarioEvidence(receipt);
+  if (metadata)
+    return {
       kind: receipt.kind,
       ok: receipt.ok,
-      summary: receipt.summary,
-      ...(scenarioEvidence(receipt) ? { scenario: scenarioEvidence(receipt) } : {}),
-    })),
+      summary: "Host-executed QA probe completed",
+      data: metadata,
+    };
+  return publicQaReceipt(receipt);
+}
+
+export function formatQaEvidence(
+  receipts: Receipt[],
+  transient: JudgeScenarioEvidence[] = [],
+): string {
+  return JSON.stringify(
+    {
+      checks: receipts.map((receipt) => ({
+        kind: receipt.kind,
+        ok: receipt.ok,
+        summary: receipt.summary,
+        ...(scenarioEvidence(receipt) ? { scenario: scenarioEvidence(receipt) } : {}),
+      })),
+      scenarios: transient,
+    },
     null,
     2,
   );
