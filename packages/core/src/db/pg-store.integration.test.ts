@@ -1,3 +1,4 @@
+import type { Ticket } from "@matrix/tickets";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { type AutonomyMode, PHASES, type Phase } from "../ports.js";
 import { AutonomyConflictError, VersionConflictError } from "../store.js";
@@ -16,6 +17,41 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
 
   afterAll(async () => {
     await store?.close();
+  });
+
+  test("snapshot replacement is atomic, retains historical titles and rolls back failed publication", async () => {
+    const projectId = `snapshot-${Date.now()}`;
+    const otherId = `${projectId}-other`;
+    await store.upsertProject(testProject({ id: projectId }));
+    await store.upsertProject(testProject({ id: otherId }));
+    const ticket: Ticket = {
+      id: "T-1",
+      title: "Historical",
+      body: "",
+      status: "open",
+      labels: [],
+      deps: [],
+      createdAt: "2026-10-13",
+      updatedAt: "2026-10-13",
+    };
+    await store.replaceIndexedTickets(projectId, [ticket]);
+    await store.replaceIndexedTickets(otherId, [ticket]);
+    const invalid = { ...ticket, id: "T-2", title: null } as unknown as Ticket;
+    await expect(
+      store.replaceIndexedTickets(projectId, [{ ...ticket, title: "New" }, invalid]),
+    ).rejects.toThrow();
+    expect(await store.listIndexedTickets(projectId)).toEqual([ticket]);
+    const controller = new AbortController();
+    controller.abort(new Error("expired"));
+    await expect(store.replaceIndexedTickets(projectId, [], controller.signal)).rejects.toThrow(
+      "expired",
+    );
+    expect(await store.listIndexedTickets(projectId)).toEqual([ticket]);
+    await store.replaceIndexedTickets(projectId, []);
+    expect(await store.listIndexedTickets(projectId)).toEqual([]);
+    expect(await store.getIndexedTicket(projectId, ticket.id)).toBeNull();
+    expect(await store.getIndexedTicketTitle(projectId, ticket.id)).toBe("Historical");
+    expect(await store.listIndexedTickets(otherId)).toEqual([ticket]);
   });
 
   test("concurrent same-value policy saves use history versions and roll back the loser", async () => {

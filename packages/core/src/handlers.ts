@@ -8,6 +8,7 @@ import type {
   QaDriver,
   VerifyPort,
 } from "./ports-internal.js";
+import { formatQaEvidence, persistedQaReceipt, scenarioEvidence } from "./qa-evidence.js";
 import { lanePrompt, parseFindings, pickReviewer, reviewReceipt } from "./review.js";
 import type { Store } from "./store.js";
 import type { PhaseModel, PhaseOutcome } from "./types.js";
@@ -19,6 +20,7 @@ export class FactoryToolingError extends Error {
   constructor(
     message: string,
     readonly receipts: Receipt[] = [],
+    readonly costUsd?: number,
   ) {
     super(message);
   }
@@ -45,26 +47,35 @@ export async function callModel(
   ctx: PhaseContext,
   model: PhaseModel,
   prompt: string,
-  options: { phase?: Phase; workdir?: string; readOnly?: boolean } = {},
+  options: { phase?: Phase; workdir?: string; readOnly?: boolean; privateHoldout?: boolean } = {},
 ): Promise<RunResult> {
   const runner = deps.runners[model.runner];
   if (!runner) throw new Error(`runner ${model.runner} is not configured`);
-  return runner.run(
-    {
-      runId: ctx.runId,
-      projectId: ctx.project.id,
-      ticketId: ctx.ticket.id,
-      phase: options.phase ?? ctx.workflow.phase,
-      runner: model.runner,
-      model: model.model,
-      prompt,
-      workdir: options.workdir ?? ctx.workdir,
-      timeoutMs: ctx.project.runTimeoutMs,
-      ...(options.readOnly ? { readOnly: true } : {}),
-    },
-    (event) => ctx.emit(event.message, event.kind, event.data),
-    ctx.signal,
-  );
+  return runner
+    .run(
+      {
+        runId: ctx.runId,
+        projectId: ctx.project.id,
+        ticketId: ctx.ticket.id,
+        phase: options.phase ?? ctx.workflow.phase,
+        runner: model.runner,
+        model: model.model,
+        prompt,
+        workdir: options.workdir ?? ctx.workdir,
+        timeoutMs: ctx.project.runTimeoutMs,
+        ...(options.readOnly ? { readOnly: true } : {}),
+      },
+      (event) => {
+        if (options.privateHoldout) ctx.emit("Private QA model activity", "log");
+        else ctx.emit(event.message, event.kind, event.data);
+      },
+      ctx.signal,
+    )
+    .catch((error: unknown) => {
+      if (options.privateHoldout)
+        throw new Error("Private QA model unavailable; retry QA or contact the operator");
+      throw error;
+    });
 }
 
 function outcomeFrom(result: RunResult, model: PhaseModel, extra: Receipt[] = []): PhaseOutcome {
@@ -118,17 +129,23 @@ const spike =
         ctx.ticket.body,
         'Reply with JSON only: {"scenarios":[{"id":"s1","given":"...","when":"...","then":"..."}]} with 3 to 12 scenarios.',
       ].join("\n\n"),
-      { phase: "spike", workdir: authorDir, readOnly: true },
+      { phase: "spike", workdir: authorDir, readOnly: true, privateHoldout: true },
     );
-    if (scen.status !== "ok") return outcomeFrom(scen, author);
+    if (scen.status !== "ok")
+      return {
+        ok: false,
+        summary: "Private QA scenario preparation failed",
+        receipts: [],
+        runStatus: scen.status,
+      };
     try {
       const scenarios = parseScenarios(scen.summary);
       await deps.holdout.save(ctx.project.id, ctx.ticket.id, scenarios);
       ctx.emit(`stored ${scenarios.length} holdout scenarios`, "log");
-    } catch (error) {
+    } catch {
       return {
         ok: false,
-        summary: `holdout scenarios unparseable: ${(error as Error).message}`,
+        summary: "Private QA scenario preparation failed",
         receipts: [],
         runStatus: "failed",
       };
@@ -263,54 +280,100 @@ const review =
 const qa =
   (deps: HandlerDeps): PhaseHandler =>
   async (ctx) => {
-    if (!deps.qa)
-      return { ok: false, summary: "no QA driver configured", receipts: [], runStatus: "failed" };
-    // Only core's judge may produce a holdout receipt; anything the driver supplies is discarded.
-    const supplied = await deps.qa.run(ctx);
-    const evidence = supplied.filter((r) => r.kind !== "holdout");
-    if (evidence.length !== supplied.length) {
-      ctx.emit("discarded holdout receipts supplied by the QA driver", "error");
-    }
-    const scenarios = await deps.holdout.load(ctx.project.id, ctx.ticket.id);
-    if (scenarios.length === 0) {
-      return {
-        ok: false,
-        summary: "no holdout scenarios stored for this ticket",
-        receipts: evidence,
-        runStatus: "ok",
-      };
-    }
-    const judge = pickReviewer(ctx.project, ctx.workflow.implementerModel);
-    // The judge works from the QA evidence in an empty directory: it can neither read nor edit the worktree.
-    const judgeDir = await ctx.scratchDir();
-    const verdict = await callModel(
-      deps,
-      ctx,
-      judge,
-      [
-        "Judge from the QA evidence below whether the software satisfies each scenario. A scenario the evidence does not demonstrate is not satisfied.",
-        `QA evidence:\n${evidence.map((r) => `- ${r.kind} ${r.ok ? "ok" : "FAILED"}: ${r.summary}`).join("\n")}`,
-        `Scenarios:\n${JSON.stringify(scenarios, null, 2)}`,
-        'Reply with JSON only: {"verdicts":[{"id":"s1","satisfied":true,"reason":"..."}]}',
-      ].join("\n\n"),
-      { phase: "qa", workdir: judgeDir, readOnly: true },
-    );
-    if (verdict.status !== "ok") return outcomeFrom(verdict, judge, evidence);
     try {
-      const receipt = holdoutReceipt(scenarios, parseVerdicts(verdict.summary), judge.model);
-      return {
-        ok: evidence.every((r) => r.ok),
-        summary: receipt.summary,
-        receipts: [...evidence, receipt],
-        runStatus: "ok",
-        model: judge.model,
-        ...(verdict.costUsd !== undefined ? { costUsd: verdict.costUsd } : {}),
-      };
-    } catch (error) {
+      if (!deps.qa)
+        return { ok: false, summary: "no QA driver configured", receipts: [], runStatus: "failed" };
+      // Only core's judge may produce a holdout receipt; anything the driver supplies is discarded.
+      const scenarios = await deps.holdout.load(ctx.project.id, ctx.ticket.id);
+      const judge = pickReviewer(ctx.project, ctx.workflow.implementerModel);
+      let qaResult: Awaited<ReturnType<QaDriver["run"]>>;
+      try {
+        qaResult = await deps.qa.run(ctx, { scenarios, reviewer: judge });
+      } catch (error) {
+        if (!(error instanceof FactoryToolingError)) throw error;
+        return {
+          ok: false,
+          summary: "QA probe preparation failed; retry QA or contact the operator",
+          receipts: error.receipts.map(persistedQaReceipt),
+          runStatus: "failed",
+          failureClass: "factory-tooling",
+          ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}),
+        };
+      }
+      const supplied = Array.isArray(qaResult) ? qaResult : qaResult.receipts;
+      const qaCost = Array.isArray(qaResult) ? 0 : (qaResult.costUsd ?? 0);
+      const evidence = supplied.filter((r) => r.kind !== "holdout").map(persistedQaReceipt);
+      const judgeEvidence = Array.isArray(qaResult) ? [] : (qaResult.judgeEvidence ?? []);
+      if (evidence.length !== supplied.length) {
+        ctx.emit("discarded holdout receipts supplied by the QA driver", "error");
+      }
+      if (scenarios.length === 0) {
+        return {
+          ok: false,
+          summary: "no holdout scenarios stored for this ticket",
+          receipts: evidence,
+          runStatus: "ok",
+        };
+      }
+      // The judge works from the QA evidence in an empty directory: it can neither read nor edit the worktree.
+      const judgeDir = await ctx.scratchDir();
+      const verdict = await callModel(
+        deps,
+        ctx,
+        judge,
+        [
+          "Judge from the QA evidence below whether the software satisfies each scenario. A scenario the evidence does not demonstrate is not satisfied.",
+          "For host-probe evidence, inspect the probe source and actual command output. Printed claims or simulations without exercising the software do not demonstrate behavior. A nonzero host exit code cannot satisfy its scenario.",
+          `QA evidence:\n${formatQaEvidence(evidence, judgeEvidence)}`,
+          `Scenarios:\n${JSON.stringify(scenarios, null, 2)}`,
+          'Reply with JSON only: {"verdicts":[{"id":"s1","satisfied":true,"reason":"..."}]}',
+        ].join("\n\n"),
+        { phase: "qa", workdir: judgeDir, readOnly: true, privateHoldout: true },
+      );
+      const costUsd = qaCost + (verdict.costUsd ?? 0);
+      if (verdict.status !== "ok")
+        return {
+          ok: false,
+          summary: "QA judgment failed; retry QA or contact the operator",
+          receipts: evidence,
+          runStatus: verdict.status,
+          ...(costUsd > 0 ? { costUsd } : {}),
+        };
+      try {
+        const failed = new Set(
+          evidence.flatMap((receipt) => {
+            const probe = scenarioEvidence(receipt);
+            const scenario = probe ? scenarios[probe.scenarioIndex] : undefined;
+            return probe && probe.exitCode !== 0 && scenario ? [scenario.id] : [];
+          }),
+        );
+        const verdicts = parseVerdicts(verdict.summary).map((item) =>
+          failed.has(item.id)
+            ? { ...item, satisfied: false, reason: "Host-executed scenario probe failed" }
+            : item,
+        );
+        const receipt = holdoutReceipt(scenarios, verdicts, judge.model);
+        return {
+          ok: evidence.every((r) => r.ok),
+          summary: receipt.summary,
+          receipts: [...evidence, receipt],
+          runStatus: "ok",
+          model: judge.model,
+          ...(costUsd > 0 ? { costUsd } : {}),
+        };
+      } catch {
+        return {
+          ok: false,
+          summary: "QA judgment failed; retry QA or contact the operator",
+          receipts: evidence,
+          runStatus: "failed",
+        };
+      }
+    } catch {
       return {
         ok: false,
-        summary: `holdout verdicts unparseable: ${(error as Error).message}`,
-        receipts: evidence,
+        summary: "QA evaluation unavailable; retry QA or contact the operator",
+        receipts: [],
         runStatus: "failed",
       };
     }

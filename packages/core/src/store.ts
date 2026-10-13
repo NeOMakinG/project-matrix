@@ -150,6 +150,7 @@ export interface Store {
   ): Promise<void>;
 
   getIndexedTicketTitle(projectId: string, ticketId: string): Promise<string | null>;
+  replaceIndexedTickets(projectId: string, tickets: Ticket[], signal?: AbortSignal): Promise<void>;
   listIndexedTickets(projectId: string): Promise<Ticket[]>;
   getIndexedTicket(projectId: string, ticketId: string): Promise<Ticket | null>;
 
@@ -245,6 +246,32 @@ export class MemoryStore implements Store {
   }
   async getIndexedTicketTitle(projectId: string, ticketId: string) {
     return this.tickets.get(key(projectId, ticketId))?.title ?? null;
+  }
+  async replaceIndexedTickets(projectId: string, tickets: Ticket[], signal?: AbortSignal) {
+    const replacement = new Map(this.tickets);
+    for (const [entryKey, ticket] of replacement) {
+      if (!entryKey.startsWith(`${projectId}\u0000`)) continue;
+      const historical = { ...ticket };
+      delete historical.snapshot;
+      replacement.set(entryKey, historical);
+    }
+    for (const ticket of tickets) {
+      replacement.set(
+        key(projectId, ticket.id),
+        clone({
+          id: ticket.id,
+          title: ticket.title,
+          status: ticket.status,
+          labels: ticket.labels,
+          ...(ticket.priority === undefined ? {} : { priority: ticket.priority }),
+          ...(ticket.url ? { url: ticket.url } : {}),
+          snapshot: ticket,
+        }),
+      );
+    }
+    signal?.throwIfAborted();
+    this.tickets.clear();
+    for (const [entryKey, ticket] of replacement) this.tickets.set(entryKey, ticket);
   }
   async listIndexedTickets(projectId: string) {
     return [...this.tickets.entries()].flatMap(([entryKey, ticket]) =>

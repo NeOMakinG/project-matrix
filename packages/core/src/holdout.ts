@@ -85,7 +85,10 @@ export function holdoutReceipt(
       satisfied,
       total: scenarios.length,
       judgeModel,
-      verdicts,
+      verdicts: scenarios.map((scenario, scenarioIndex) => ({
+        scenarioIndex,
+        satisfied: byId.get(scenario.id)?.satisfied === true,
+      })),
     },
   };
 }

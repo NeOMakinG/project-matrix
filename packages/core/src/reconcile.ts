@@ -17,6 +17,7 @@ import {
 } from "./machine.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
+import { publicQaReceipt } from "./qa-evidence.js";
 import {
   type Actor,
   type ApprovalRecord,
@@ -34,6 +35,7 @@ export interface ReconcilerOptions {
   git: GitPort;
   tickets: (projectId: string) => TicketStore;
   projectDispatchAllowed?: (projectId: string) => boolean;
+  withTicketSnapshotLock?: <T>(projectId: string, operation: () => Promise<T>) => Promise<T>;
   limits: Limits;
   backoff: BackoffPolicy;
   host: string;
@@ -196,6 +198,12 @@ export class Reconciler {
   }
 
   private async syncReady(project: ProjectConfig): Promise<void> {
+    if (this.o.withTicketSnapshotLock)
+      return this.o.withTicketSnapshotLock(project.id, () => this.syncReadyLocked(project));
+    return this.syncReadyLocked(project);
+  }
+
+  private async syncReadyLocked(project: ProjectConfig): Promise<void> {
     const store = this.o.tickets(project.id);
     for (const t of await store.ready()) {
       await this.o.store.indexTicket(project.id, {
@@ -768,7 +776,7 @@ export class Reconciler {
       runId,
       status,
       summary: outcome.summary,
-      receipts: outcome.receipts,
+      receipts: outcome.receipts.map(publicQaReceipt),
     });
   }
 

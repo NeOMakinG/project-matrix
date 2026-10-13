@@ -219,19 +219,38 @@ export class PodmanSandbox implements Sandbox {
   ): Promise<SandboxExecResult> {
     const runId = `exec-${randomBytes(6).toString("hex")}`;
     const out: string[] = [];
+    let bytes = 0;
+    let exceeded = false;
     const outcome = await this.lineExecutor({
       runId,
       network: spec.network,
       ...(spec.allowHosts ? { allowHosts: spec.allowHosts } : {}),
     })(
-      { cmd: spec.cmd, cwd: spec.workdir, env: spec.env ?? {}, timeoutMs: spec.timeoutMs },
-      (line) => out.push(line),
+      {
+        cmd: spec.cmd,
+        cwd: spec.workdir,
+        env: spec.env ?? {},
+        timeoutMs: spec.timeoutMs,
+        ...(spec.readOnly === undefined ? {} : { readOnly: spec.readOnly }),
+      },
+      (line) => {
+        const size = Buffer.byteLength(line) + 1;
+        if (exceeded || (spec.maxOutputBytes !== undefined && bytes + size > spec.maxOutputBytes)) {
+          exceeded = true;
+          return;
+        }
+        bytes += size;
+        out.push(line);
+      },
       signal,
     );
     return {
       code: outcome.timedOut ? 124 : outcome.exitCode,
-      stdout: out.join("\n"),
-      stderr: outcome.stderrTail,
+      stdout: exceeded ? "[output exceeded capture limit; suppressed]" : out.join("\n"),
+      stderr:
+        spec.maxOutputBytes !== undefined && Buffer.byteLength(outcome.stderrTail) >= 8 * 1024
+          ? "[stderr exceeded capture limit; suppressed]"
+          : outcome.stderrTail,
     };
   }
 }
