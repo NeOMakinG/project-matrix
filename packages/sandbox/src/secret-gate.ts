@@ -60,7 +60,18 @@ function run(
       stderr = (stderr + c.toString()).slice(-4000);
     });
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code: code ?? -1, stdout: Buffer.concat(out), stderr }));
+    // A child that exits before reading stdin raises EPIPE; never treat undelivered input as a clean scan.
+    let inputLost = false;
+    child.stdin.on("error", () => {
+      inputLost = true;
+    });
+    child.on("close", (code) => {
+      if (inputLost && code === 0) {
+        reject(new Error(`${cmd} exited before reading its input; refusing to trust the result`));
+        return;
+      }
+      resolve({ code: code ?? -1, stdout: Buffer.concat(out), stderr });
+    });
     child.stdin.end(input ?? "");
   });
 }
