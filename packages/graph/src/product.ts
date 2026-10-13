@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { readArchitectureReference, readKnowledgeConfig } from "./knowledge";
+import { readProductContext } from "./product-context";
 
 export const PRODUCT_GRAPH_PATH = ".matrix/graph/product.json";
 
@@ -52,6 +54,10 @@ export const productGraphSchema = z
     version: z.literal(1),
     nodes: z.array(productNodeSchema),
     edges: z.array(productEdgeSchema),
+    context: z.record(z.string(), z.unknown()).optional(),
+    architecture: z
+      .object({ path: z.string(), readOnly: z.literal(true), graph: z.unknown() })
+      .optional(),
   })
   .superRefine((g, ctx) => {
     const ids = new Set<string>();
@@ -86,6 +92,15 @@ export function parseProductGraph(raw: unknown): ProductGraph {
 }
 
 export async function loadProductGraph(root: string): Promise<ProductGraph> {
+  const knowledge = await readKnowledgeConfig(root);
+  const graph = knowledge.productContext
+    ? await readProductContext(root, knowledge.productContext)
+    : await loadLocalProductGraph(root);
+  const architecture = await readArchitectureReference(root, knowledge);
+  return architecture ? { ...graph, architecture } : graph;
+}
+
+async function loadLocalProductGraph(root: string): Promise<ProductGraph> {
   const raw = await readFile(join(root, PRODUCT_GRAPH_PATH), "utf8").catch(() => undefined);
   return raw ? parseProductGraph(JSON.parse(raw)) : emptyProductGraph();
 }
@@ -96,6 +111,8 @@ export function serializeProductGraph(g: ProductGraph): string {
 }
 
 export async function saveProductGraph(root: string, g: ProductGraph): Promise<void> {
+  if ((await readKnowledgeConfig(root)).productContext)
+    throw new Error("external product context is read-only");
   const path = join(root, PRODUCT_GRAPH_PATH);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, serializeProductGraph(g));

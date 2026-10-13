@@ -28,8 +28,15 @@ export const repoKnowledge: KnowledgePort = {
   async graph(repoPath): Promise<ProductGraph> {
     const graph = await loadProductGraph(repoPath);
     return {
-      nodes: graph.nodes.map((n) => ({ id: n.id, kind: toServerKind(n.kind), label: n.label })),
+      nodes: graph.nodes.map((n) => ({
+        id: n.id,
+        kind: toServerKind(n.kind),
+        label: n.label,
+        ...(n.data ? { data: n.data } : {}),
+      })),
       edges: graph.edges.map((e) => ({ from: e.from, to: e.to, kind: e.kind })),
+      ...(graph.context ? { context: graph.context } : {}),
+      ...(graph.architecture ? { architecture: graph.architecture } : {}),
     };
   },
 
@@ -48,6 +55,14 @@ export const repoKnowledge: KnowledgePort = {
         note: v.description,
       }),
     );
+    for (const failure of (rules?.data as { failures?: string[] })?.failures ?? [])
+      violations.push({
+        level: "error",
+        adr: "knowledge",
+        location: "matrix.config.ts",
+        message: failure,
+        note: "",
+      });
     const drift = receipts.find((r) => r !== rules && r.kind === "adr-check" && !r.ok);
     if (drift) {
       violations.push({

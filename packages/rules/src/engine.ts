@@ -1,6 +1,13 @@
 import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type AdrScope, createResolver, type SymlinkEscape, scanSources } from "@matrix/graph";
+import {
+  type AdrScope,
+  createResolver,
+  loadProductGraph,
+  readKnowledgeConfig,
+  type SymlinkEscape,
+  scanSources,
+} from "@matrix/graph";
 import picomatch from "picomatch";
 import { type Adr, DEFAULT_ADR_DIR, isActive } from "./adr";
 import { createSourceIndex, runCheck, type SourceIndex } from "./checks";
@@ -153,6 +160,12 @@ export async function checkProject(root: string, opts: CheckOptions = {}): Promi
   const result = await checkAdrs(rules.adrs, index);
 
   const failures: string[] = [];
+  try {
+    const knowledge = await readKnowledgeConfig(root);
+    if (knowledge.productContext || knowledge.architectureGraph) await loadProductGraph(root);
+  } catch (error) {
+    failures.push(`invalid product knowledge: ${(error as Error).message}`);
+  }
   for (const e of listing.escapes)
     failures.push(`symlink ${e.path} points outside the repository (${e.target})`);
   for (const sub of listing.submodules) {
