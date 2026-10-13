@@ -199,6 +199,25 @@ export const design = z.object({
   references: z.array(z.string()).default([]),
 });
 
+export const knowledgePath = z
+  .string()
+  .min(1)
+  .max(1024)
+  .refine(
+    (value) =>
+      !/^(?:[\\/]|[a-zA-Z]:)/.test(value) &&
+      !value.includes("\0") &&
+      !value.split(/[\\/]/).includes(".."),
+    "must be a repository-relative path without traversal",
+  );
+
+export const knowledge = z.object({
+  productContext: z
+    .object({ path: knowledgePath, format: z.literal("product-context-v1") })
+    .optional(),
+  architectureGraph: z.object({ path: knowledgePath }).optional(),
+});
+
 export const matrixConfig = z.object({
   version: z.literal(1),
   business,
@@ -214,6 +233,7 @@ export const matrixConfig = z.object({
   process: processConfig,
   agents: agentCapabilities,
   design,
+  knowledge: knowledge.optional(),
 });
 
 export type MatrixConfig = z.infer<typeof matrixConfig>;

@@ -89,6 +89,12 @@ export async function graphCommand(argv: string[]): Promise<number> {
   }
 
   const root = resolve(positionals[0] ?? ".");
+  try {
+    await loadProductGraph(root);
+  } catch (error) {
+    console.error(`invalid product knowledge: ${(error as Error).message}`);
+    return 1;
+  }
   if (values.check) {
     const drift = await checkGraphDrift(root);
     if (values.json) console.log(JSON.stringify(drift, null, 2));
