@@ -1,12 +1,73 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withBeadsQueue } from "@matrix/tickets/adapters/beads-queue";
 import { expect, test, vi } from "vitest";
 import { createServer } from "../http/app.js";
 import { ErrorBody, Project as ProjectSchema } from "../http/schemas.js";
 import { createFactory } from "./factory.js";
+import { ticketStoreFor } from "./tickets.js";
 
 const commands = vi.hoisted(() => ({ hanging: vi.fn() }));
+
+test("a saturated beads repository returns a clear typed HTTP 503 without launching queued work", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "matrix-tracker-queue-"));
+  const factory = await createFactory({
+    runtime: "fake",
+    dataDir: directory,
+    host: "test",
+    log: () => {},
+  });
+  const server = createServer({ core: factory.core });
+  const { token } = server.keys.create({
+    name: "admin",
+    scope: { projects: "*", actions: ["admin"] },
+  });
+  let release = () => {};
+  let blocker: Promise<void> | undefined;
+  try {
+    const project = await factory.core.createProject({
+      name: "queue",
+      description: "",
+      workspace: "native",
+      tickets: { kind: "markdown" },
+    });
+    const config = await factory.store.getProject(project.id);
+    const tracker = ticketStoreFor(config!.repoPath, { kind: "beads" }, { bd: "must-not-launch" });
+    vi.spyOn(factory.core, "ticketStore").mockResolvedValue(tracker);
+    blocker = withBeadsQueue(
+      config!.repoPath,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await Promise.resolve();
+    vi.useFakeTimers();
+    const pending = server.app.request(`/v1/projects/${project.id}/tickets`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ title: "Queued", body: "Body" }),
+    });
+    await vi.advanceTimersByTimeAsync(30_001);
+    const response = await pending;
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "tracker_unavailable",
+        message: expect.stringContaining("queue wait timed out"),
+      },
+    });
+  } finally {
+    release();
+    await blocker;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await server.close();
+    await factory.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 vi.mock("node:child_process", async (load) => {
   const original = await load<typeof import("node:child_process")>();

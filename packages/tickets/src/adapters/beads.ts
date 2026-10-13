@@ -8,12 +8,15 @@ import type {
   TicketStatus,
   TicketStore,
 } from "../types.js";
+import { withBeadsQueue } from "./beads-queue.js";
 
 export interface BeadsStoreOptions {
   /** Repository containing the `.beads` database. */
   cwd: string;
   bdBinary?: string;
   executor?: LineExecutor;
+  signal?: AbortSignal;
+  queueWaitMs?: number;
 }
 
 const STATUS_LABEL = "matrix:status:";
@@ -60,19 +63,30 @@ function priority(value: number | undefined): Ticket["priority"] {
 export class BeadsStore implements TicketStore {
   readonly kind = "beads" as const;
   readonly #o: BeadsStoreOptions;
+  readonly #issues = new Map<string, BeadsIssue>();
 
   constructor(options: BeadsStoreOptions) {
     this.#o = options;
   }
 
   async #bd(args: string[], stdin?: string): Promise<string> {
-    const result = await runToCompletion(this.#o.executor ?? hostExecutor, {
-      cmd: [this.#o.bdBinary ?? "bd", ...args],
-      cwd: this.#o.cwd,
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp" },
-      ...(stdin !== undefined ? { stdin } : {}),
-      timeoutMs: 60_000,
-    });
+    const result = await withBeadsQueue(
+      this.#o.cwd,
+      () =>
+        runToCompletion(
+          this.#o.executor ?? hostExecutor,
+          {
+            cmd: [this.#o.bdBinary ?? "bd", ...args],
+            cwd: this.#o.cwd,
+            env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "/tmp" },
+            ...(stdin !== undefined ? { stdin } : {}),
+            timeoutMs: 10_000,
+          },
+          this.#o.signal,
+        ),
+      this.#o.signal,
+      this.#o.queueWaitMs,
+    );
     if (result.exitCode !== 0) {
       throw new Error(
         `bd ${args[0]} failed (${result.exitCode}): ${result.stderrTail.trim().slice(-400)}`,
@@ -87,6 +101,7 @@ export class BeadsStore implements TicketStore {
   }
 
   #toTicket(issue: BeadsIssue): Ticket {
+    this.#issues.set(issue.id, issue);
     const labels = issue.labels ?? [];
     const statusLabel = labels.find((l) => l.startsWith(STATUS_LABEL))?.slice(STATUS_LABEL.length);
     const phase = labels.find((l) => l.startsWith(PHASE_LABEL))?.slice(PHASE_LABEL.length);
@@ -129,12 +144,7 @@ export class BeadsStore implements TicketStore {
 
   async list(query: TicketQuery = {}): Promise<Ticket[]> {
     const issues = await this.#json<BeadsIssue[]>(["list", "--all", "--limit", "0"]);
-    const full = await Promise.all(
-      issues.map(async (i) =>
-        (i.dependency_count ?? 0) > 0 ? ((await this.#show(i.id)) ?? i) : i,
-      ),
-    );
-    return full.map((i) => this.#toTicket(i)).filter((t) => matches(t, query));
+    return issues.map((issue) => this.#toTicket(issue)).filter((ticket) => matches(ticket, query));
   }
 
   async create(input: NewTicket): Promise<Ticket> {
@@ -146,12 +156,23 @@ export class BeadsStore implements TicketStore {
     const created = await this.#json<BeadsIssue>(args, input.body);
     for (const dep of input.deps ?? []) await this.link(dep, created.id, "blocks");
     if (input.parent) await this.link(input.parent, created.id, "parent");
-    return (await this.get(created.id)) ?? this.#toTicket(created);
+    created.dependencies = [
+      ...(created.dependencies ?? []),
+      ...(input.deps ?? []).map((id) => ({ id, dependency_type: "blocks" })),
+      ...(input.parent ? [{ id: input.parent, dependency_type: "parent-child" }] : []),
+    ];
+    return this.#toTicket(created);
   }
 
   async update(id: string, patch: TicketPatch): Promise<Ticket> {
-    const current = await this.#show(id);
-    if (!current) throw new Error(`ticket ${id} not found`);
+    const needsCurrent =
+      patch.labels !== undefined ||
+      patch.phase !== undefined ||
+      patch.deps !== undefined ||
+      patch.parent !== undefined;
+    let current = this.#issues.get(id);
+    if (!current && needsCurrent) current = (await this.#show(id)) ?? undefined;
+    if (!current && needsCurrent) throw new Error(`ticket ${id} not found`);
     const args = ["update", assertBeadsId(id)];
     let stdin: string | undefined;
     if (patch.title !== undefined) args.push(`--title=${patch.title}`);
@@ -161,7 +182,7 @@ export class BeadsStore implements TicketStore {
     }
     if (patch.priority !== undefined) args.push("-p", String(patch.priority));
     if (patch.assignee !== undefined) args.push("-a", patch.assignee);
-    const currentLabels = current.labels ?? [];
+    const currentLabels = current?.labels ?? [];
     const labels = new Set(
       patch.labels !== undefined
         ? [
@@ -175,6 +196,9 @@ export class BeadsStore implements TicketStore {
       args.push("-s", mapped.status);
       for (const l of [...labels]) if (l.startsWith(STATUS_LABEL)) labels.delete(l);
       if (mapped.label) labels.add(`${STATUS_LABEL}${mapped.label}`);
+      for (const status of Object.values(TO_BEADS))
+        if (status.label && status.label !== mapped.label)
+          args.push("--remove-label", `${STATUS_LABEL}${status.label}`);
     }
     if (patch.phase !== undefined) {
       for (const l of [...labels]) if (l.startsWith(PHASE_LABEL)) labels.delete(l);
@@ -183,13 +207,34 @@ export class BeadsStore implements TicketStore {
     const before = new Set(currentLabels);
     for (const l of labels) if (!before.has(l)) args.push("--add-label", l);
     for (const l of before) if (!labels.has(l)) args.push("--remove-label", l);
-    if (args.length > 2) await this.#bd(args, stdin);
+    if (args.length > 2) {
+      const result = await this.#json<BeadsIssue | BeadsIssue[]>(args, stdin);
+      current = Array.isArray(result) ? result[0] : result;
+      if (!current) throw new Error(`bd update returned no issue for ${id}`);
+    }
+    if (!current) current = (await this.#show(id)) ?? undefined;
+    if (!current) throw new Error(`ticket ${id} not found`);
     for (const dep of patch.deps ?? [])
-      if (!(await this.get(id))?.deps.includes(dep)) await this.link(dep, id, "blocks");
-    if (patch.parent) await this.link(patch.parent, id, "parent");
-    const updated = await this.get(id);
-    if (!updated) throw new Error(`ticket ${id} vanished after update`);
-    return updated;
+      if (
+        !current.dependencies?.some(
+          (dependency) =>
+            dependency.id === dep && (dependency.dependency_type ?? "blocks") === "blocks",
+        )
+      ) {
+        await this.link(dep, id, "blocks");
+        (current.dependencies ??= []).push({ id: dep, dependency_type: "blocks" });
+      }
+    if (
+      patch.parent &&
+      !current.dependencies?.some(
+        (dependency) =>
+          dependency.id === patch.parent && dependency.dependency_type === "parent-child",
+      )
+    ) {
+      await this.link(patch.parent, id, "parent");
+      (current.dependencies ??= []).push({ id: patch.parent, dependency_type: "parent-child" });
+    }
+    return this.#toTicket(current);
   }
 
   async comment(id: string, body: string): Promise<void> {

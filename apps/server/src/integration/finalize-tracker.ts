@@ -55,7 +55,7 @@ export async function mirrorBacklog(input: {
       if (matches.length > 1) throw new Error("ambiguous init ticket marker");
       const mapped = journal.ticketMap[ticket.id];
       if (mapped) {
-        if (!(await tickets.get(mapped)))
+        if (!existing.some((actual) => actual.id === mapped))
           throw new Error("previously mirrored ticket is missing; refusing recreation");
         continue;
       }

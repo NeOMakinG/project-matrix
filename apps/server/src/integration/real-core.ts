@@ -35,7 +35,7 @@ import {
 } from "../core-port.js";
 import { PrivateState } from "../private-state.js";
 import type { PrivateStateOwner } from "../state-owner.js";
-import { finalizeProject } from "./finalize.js";
+import { type FinalizeJournal, finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
 import {
   DEFAULT_TICKETS,
@@ -99,6 +99,17 @@ export class RealCore implements CorePort {
   private readonly mutations = new Map<string, Promise<unknown>>();
   private readonly ticketSyncs = new Map<string, Promise<void>>();
   private readonly hydratedTickets = new Set<string>();
+  private readonly finalizingProjects = new Set<string>();
+
+  projectDispatchAllowed(projectId: string): boolean {
+    if (this.finalizingProjects.has(projectId)) return false;
+    if (!this.o.stateFile) return true;
+    const journal = new PrivateState<FinalizeJournal | null>(
+      join(this.o.projectsRoot, `${projectId}.init.json`),
+      this.o.stateOwner,
+    ).load(null);
+    return !journal || journal.completed?.result.status === "ok";
+  }
 
   constructor(private readonly o: RealCoreOptions) {
     this.state = new PrivateState(o.stateFile, o.stateOwner);
@@ -571,6 +582,7 @@ export class RealCore implements CorePort {
     return this.mutate(`init:${this.inits.get(sessionId)?.projectId ?? sessionId}`, async () => {
       const session = this.inits.get(sessionId);
       if (!session) throw new CoreError("not_found", `init session ${sessionId} not found`);
+      this.finalizingProjects.add(session.projectId);
       const project = await this.config(session.projectId);
       const expected = resolve(this.o.projectsRoot, project.id);
       if (
@@ -608,6 +620,7 @@ export class RealCore implements CorePort {
       };
       this.inits.set(sessionId, updated);
       this.persist();
+      this.finalizingProjects.delete(session.projectId);
       return structuredClone(updated);
     });
   }
