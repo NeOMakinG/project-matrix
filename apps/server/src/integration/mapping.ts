@@ -1,3 +1,4 @@
+import { recommendedModels } from "@matrix/config";
 import {
   type ApprovalRecord,
   type AutonomyMode,
@@ -99,10 +100,7 @@ export function newProjectConfig(input: {
     repoPath: input.repoPath,
     baseBranch: "main",
     host: input.host,
-    models: {
-      implement: { runner: "codex", model: "gpt-6.1-sol" },
-      review: { runner: "codex", model: "gpt-6-sol" },
-    },
+    models: structuredClone(recommendedModels),
     reviewerFallbacks: [],
     autonomy: { default: "human" },
     reviewLanes: [...REVIEW_LANES],

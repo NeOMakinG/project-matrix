@@ -1,9 +1,11 @@
 # Orca integration
 
-Orca is optional. Matrix's committed CLI implements **hook file planning and MCP
-registration**, not a completed production workspace loop. See ADR 0006 for intent;
-integration PR #27 still awaits actual runtime QA. These steps require operator
-review and are not performed by `matrix doctor`.
+Orca is optional. Integration PR #27 is merged and the native factory loop is
+proven. The CLI provides **hook file planning and project-scoped MCP registration**
+for Claude Code, Codex and OpenCode on each of your machines. Orca-managed
+workspaces remain an optional runtime choice; native-loop validation does not
+certify every Orca installation. These steps require operator review and are not
+performed by `matrix doctor`.
 
 ## Host runtime and local pairing
 
@@ -80,7 +82,7 @@ URL-safe characters. The receiver rejects stale/replayed signatures. Ordinary
 Bearer keys do not replace webhook signing. Do not create hand-written signed
 payload examples containing real secrets.
 
-## MCP: a separate scoped key per agent
+## MCP: a separate scoped key per agent and project
 
 **On the agent machine**, first run the Codex-only plan:
 
@@ -102,6 +104,21 @@ is accepted for loopback, or reviewed Tailscale destinations only with explicit
 This edits MCP configuration, unlike the hook helper. See [MCP](mcp.md) for scopes,
 credential backups, revocation and partial-failure cleanup. Never grant worker admin
 or perform an inference/run as a connectivity probe.
+
+Register more projects without losing access to earlier ones: repeat `--project`
+or pass a comma-separated list, for example `--project travel-journal,example-project`.
+IDs must start with a letter or digit and contain only letters, digits, `_` or `-`.
+Each project gets `matrix-<projectId>` and one project-scoped key per selected
+agent. Re-registering rotates only that project's entry and revokes its previous
+key after writing the new config. Other projects and other machines' credentials
+are untouched. Run registration separately on every agent machine; do not copy
+tokens between machines. Legacy unqualified `matrix` entries are preserved;
+explicitly revoke their keys and remove them after migration.
+
+The init interview now asks for a model plan: Opus 5.5 for large/default work,
+Sonnet 5.5 for small spike/implementation work, and Codex `gpt-6-sol` for independent
+review. See [model routing](models.md) for gateway aliases and the inference-free
+`matrix models check --gateway <url>` check.
 
 ## Remove and verify
 

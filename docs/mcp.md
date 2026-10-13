@@ -2,8 +2,9 @@
 
 The committed server exposes Streamable HTTP MCP at **`/mcp`**, alongside REST
 `/v1/*` and unauthenticated liveness `GET /healthz`. This is not a stdio command or
-an `/sse` connection URL. The server entrypoint uses MemoryCore/in-memory keys;
-restart durability and integrated runs still await QA (PR #27).
+an `/sse` connection URL. PR #27 is merged and the native factory loop is proven.
+Use the durable production runtime described in [self-hosting](self-hosting.md);
+in-memory/demo runtimes are not a restart-durable deployment.
 
 ## Connect from your local agent machine
 
@@ -27,27 +28,43 @@ home and intended agent configuration first:
 bun --env-file="$HOME/.config/matrix/client.env" packages/cli/src/bin.ts orca register-mcp --server http://127.0.0.1:8740 --project example-project --agents codex --actions read --apply
 ```
 
-This calls `POST /v1/keys`, creates an **agent** key per selected agent, and writes
-`~/.codex/config.toml` with a `matrix` MCP table pointing to `/mcp` and a Bearer
-header. Existing Matrix entries are **replaced**, with new credentials; unrelated
+This calls `POST /v1/keys`, creates an **agent** key per selected agent and project,
+and writes `~/.codex/config.toml` with a `matrix-<projectId>` MCP table pointing to
+`/mcp` and a Bearer header. Only the selected project's entry is **replaced** with
+new credentials; other project entries and unrelated
 configuration is preserved, existing files backed up and outputs written 0600.
 Preview the dry-run replacement plan and review a token-redacted diff of intended
 configuration changes before `--apply`. Dry run creates no key and writes nothing.
 
-Replacement **does not revoke the old key**. Through a reviewed, authorized server
-client, use `GET /v1/keys` to identify the exact prior key ID, not just its shared
-agent name. After verifying the new configuration works, deliberately revoke that
-old key with `DELETE /v1/keys/{id}`. There is no CLI revoke command documented here.
+Replacement revokes the exact previous credential's key through
+`DELETE /v1/keys/{id}` **after the new config is written**, not by its shared agent
+name. New keys use the stable name `matrix-mcp:<agent>:<projectId>`. Before deleting
+an old credential, registration reads metadata through `GET /v1/keys` and verifies
+agent kind, that exact registration name, exactly one matching project, and only
+allowed agent actions. Copied human/admin keys, other agents/projects, legacy names,
+or unverifiable metadata are **not revoked**; a warning names the skipped key ID
+for operator review. Rotation only revokes credentials belonging to the same server URL. If
+revocation fails, registration reports failure but keeps the newly installed
+credential valid; use a reviewed authorized client to inspect `GET /v1/keys` and
+retry revocation. There is no standalone CLI revoke command documented here.
 The 0600 backup may still contain the old token. Protect configs/backups and exclude
 them from version control, logs and shared archives; never print or copy tokens
 into terminal output, shell arguments or history. If apply fails, the helper
-attempts to revoke only newly created keys; inspect `GET /v1/keys` and revoke
+attempts to revoke newly created keys that were not installed; inspect `GET /v1/keys` and revoke
 leftovers through the reviewed API if cleanup fails.
 
 Other supported configuration targets are `~/.claude.json` and
 `~/.config/opencode/opencode.json`; default helper selection includes all three.
 Explicit `--agents codex` limits this workflow to Codex and does not call Claude
 or any model. Orca-managed agent homes can differ; use a reviewed `--home` target.
+
+For multiple projects, use `--project travel-journal,example-project` or repeat
+`--project travel-journal --project example-project`. Duplicate IDs are registered
+once. IDs must match `[A-Za-z0-9][A-Za-z0-9_-]*`; unsafe IDs are rejected rather than
+normalized into potentially colliding names. Every minted key still covers exactly
+one project. Register on each machine independently; rotating a local entry does
+not revoke other machines' keys. Legacy `matrix` entries are left untouched: revoke
+their credentials explicitly and remove the entry when migrating.
 
 ## Scope and authority
 
@@ -60,7 +77,7 @@ budgets. Available actions in committed source are `read`, `tickets:write`,
 safe defaults for an untrusted agent. Budgets are not a guarantee of model spend
 accounting or a paid-provider fallback policy.
 
-Use one project and `read` first; add `tickets:write` only after review. Do not
+Use `read` first for each project; add `tickets:write` only after review. Do not
 grant `admin` or all-project scope to workers. `list_projects` and `get_project`
 are read tools; mutating tools do not become safe just because an MCP client
 describes them as such. Do not start runs as a connectivity check.
@@ -74,6 +91,10 @@ reviewed client which reads authorization from a secure prompt/env-file; never
 put the key in curl arguments. Revoke before removing the local agent config and
 its credential-bearing backups. Server revocation invalidates associated browser
 sessions and active run SSE streams; verify reconnection is denied.
+
+Server revocation requires admin authority or ownership (the authenticated creator
+or the key itself), and project-scope coverage. Agent credentials can never revoke
+human keys or keys with admin authority, even when the caller has an admin grant.
 
 Dashboard login is `POST /auth/login` with JSON `{ "token": <human-key> }` over
 protected transport. Agent keys cannot open dashboard sessions. `GET /auth/session`

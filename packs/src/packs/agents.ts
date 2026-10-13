@@ -1,3 +1,4 @@
+import { recommendedModels } from "@matrix/config";
 import type { Pack } from "../types";
 import { includes, list, opt } from "./helpers";
 
@@ -5,6 +6,17 @@ export const agentsPack: Pack = {
   id: "agents",
   title: "Agent capabilities",
   questions: [
+    {
+      id: "models.plan",
+      pack: "agents",
+      kind: "text",
+      field: "models",
+      prompt: "Model plan (JSON): tiers.large/small and per-phase runner/model defaults?",
+      recommended: JSON.stringify(recommendedModels),
+      rationale:
+        "Opus 5.5 for large tasks, Sonnet 5.5 for small tasks, and Codex gpt-6-sol for independent review.",
+      toValue: (value) => JSON.parse(String(value)),
+    },
     {
       id: "agents.browserControl",
       pack: "agents",

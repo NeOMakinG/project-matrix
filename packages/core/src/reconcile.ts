@@ -27,6 +27,7 @@ import {
   requiresApproval,
   type Transition,
 } from "./machine.js";
+import { resolveModel, selectModel } from "./models.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
 import { publicQaReceipt } from "./qa-evidence.js";
@@ -255,13 +256,14 @@ export class Reconciler {
     }
   }
 
-  private modelFor(project: ProjectConfig, phase: Phase): string {
-    return (project.models[phase] ?? project.models.implement).model;
+  private async modelFor(project: ProjectConfig, workflow: WorkflowState): Promise<string> {
+    const ticket = await this.o.tickets(project.id).get(workflow.ticketId);
+    return resolveModel(project, selectModel(project, workflow.phase, ticket ?? undefined).model);
   }
 
   private async blockedBy(project: ProjectConfig, w: WorkflowState): Promise<string | null> {
     const runs = [...this.active.values()];
-    const model = this.modelFor(project, w.phase);
+    const model = await this.modelFor(project, w);
     const { limits } = this.o;
     if (runs.filter((r) => r.projectId === project.id).length >= limits.perProject)
       return "project limit";
@@ -737,7 +739,7 @@ export class Reconciler {
       throw error;
     }
 
-    const model = this.modelFor(project, w.phase);
+    const model = await this.modelFor(project, w);
     // Checks bind to the SHA returned by cleanForChecks; review, QA, merge and deploy must match it.
     const headSha =
       checkedSha ??

@@ -36,6 +36,28 @@ describe("design tree", () => {
 });
 
 describe("config", () => {
+  test("interview recommends the tiered model plan and preserves custom aliases", () => {
+    const { answers } = resolve(defaultPacks, sampleAnswers, { acceptRecommended: true });
+    const built = buildConfig(defaultPacks, answers);
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.config.models.tiers).toEqual({
+      large: { runner: "claude-code", model: "claude-opus-5-5" },
+      small: { runner: "claude-code", model: "claude-sonnet-5-5" },
+    });
+    expect(built.config.models.review).toEqual({ runner: "codex", model: "gpt-6-sol" });
+    const custom = buildConfig(defaultPacks, {
+      ...answers,
+      "models.plan": JSON.stringify({
+        ...built.config.models,
+        aliases: { "claude-opus-5-5": "claude-opus-4-7" },
+      }),
+    });
+    expect(custom.ok && custom.config.models.aliases).toEqual({
+      "claude-opus-5-5": "claude-opus-4-7",
+    });
+    expect(buildConfig(defaultPacks, { ...answers, "models.plan": "not json" }).ok).toBe(false);
+  });
   test("sample answers build a valid config", () => {
     const { answers } = resolve(defaultPacks, sampleAnswers, { acceptRecommended: true });
     const built = buildConfig(defaultPacks, answers);

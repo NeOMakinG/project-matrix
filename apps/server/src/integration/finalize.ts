@@ -283,6 +283,7 @@ export async function finalizeProject(input: {
   const config = outcome.config;
   const updated: StoredProject = {
     ...project,
+    models: config.models,
     autonomy: {
       ...project.autonomy,
       merge: AUTONOMY[config.process.autonomy.merge],

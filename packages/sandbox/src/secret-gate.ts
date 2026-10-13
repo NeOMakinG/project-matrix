@@ -70,9 +70,10 @@ function run(
     });
     child.on("error", reject);
     // A child that exits before reading stdin raises EPIPE; never treat undelivered input as a clean scan.
+    // Only real input can be lost; an empty stdin closing early is harmless.
     let inputLost = false;
     child.stdin.on("error", () => {
-      inputLost = true;
+      if (input) inputLost = true;
     });
     child.on("close", (code) => {
       if (inputLost && code === 0) {

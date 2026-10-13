@@ -39,16 +39,17 @@ export interface ApiKeyRecord {
   ratePerMinute: number;
   createdAt: string;
   revokedAt?: string;
+  createdByKeyId?: string;
 }
 
-export type PublicKey = Omit<ApiKeyRecord, "hash">;
+export type PublicKey = Omit<ApiKeyRecord, "hash" | "createdByKeyId">;
 
 const TOKEN_RE = /^mx_([a-z0-9]{12})_([A-Za-z0-9_-]{43})$/;
 
 const hashSecret = (secret: string) => createHash("sha256").update(secret).digest();
 
 export function toPublic(record: ApiKeyRecord): PublicKey {
-  const { hash: _hash, ...rest } = record;
+  const { hash: _hash, createdByKeyId: _createdByKeyId, ...rest } = record;
   return rest;
 }
 
@@ -139,6 +140,7 @@ export class KeyStore {
     kind?: KeyKind;
     budget?: KeyBudget;
     ratePerMinute?: number;
+    createdByKeyId?: string;
   }): {
     token: string;
     key: PublicKey;
@@ -159,6 +161,7 @@ export class KeyStore {
       budget: KeyBudgetSchema.parse(input.budget ?? {}),
       ratePerMinute: input.ratePerMinute ?? 120,
       createdAt: new Date().toISOString(),
+      ...(input.createdByKeyId ? { createdByKeyId: input.createdByKeyId } : {}),
     };
     this.keys.set(id, record);
     this.persist();
