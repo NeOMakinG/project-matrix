@@ -12,6 +12,7 @@ import {
   Reconciler,
   type RunRecord,
   type Store,
+  scenarioEvidence,
 } from "@matrix/core";
 import { writeGraph } from "@matrix/graph";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
@@ -78,11 +79,27 @@ export async function nativeQaEvidence(
             ? String(output.runStatus)
             : null,
       },
-      receipts: (await store.listReceipts(run.id)).map((receipt) => ({
-        kind: receipt.kind,
-        ok: receipt.ok,
-        summary: message(receipt.summary),
-      })),
+      receipts: (await store.listReceipts(run.id)).map((receipt) => {
+        const probe = scenarioEvidence(receipt);
+        return {
+          kind: receipt.kind,
+          ok: receipt.ok,
+          summary: message(receipt.summary),
+          ...(probe
+            ? {
+                scenario: {
+                  provenance: probe.provenance,
+                  headSha: redact(probe.headSha),
+                  id: redact(probe.id),
+                  command: probe.command.map(redact),
+                  exitCode: probe.exitCode,
+                  output: message(probe.output),
+                  probe: message(probe.probe),
+                },
+              }
+            : {}),
+        };
+      }),
     });
   }
   return evidence;

@@ -1,6 +1,7 @@
 import type { Ticket, TicketStore } from "@matrix/tickets";
+import type { HoldoutScenario } from "./holdout.js";
 import type { AutonomyMode, Phase, Receipt, RunEventKind } from "./ports.js";
-import type { ProjectConfig, WorkflowState } from "./types.js";
+import type { PhaseModel, ProjectConfig, WorkflowState } from "./types.js";
 
 export type Authorization =
   | { ok: true; headSha: string; mode: AutonomyMode; approvalId?: string }
@@ -44,7 +45,10 @@ export interface GitPort {
 }
 
 export interface QaDriver {
-  run(ctx: PhaseContext): Promise<Receipt[]>;
+  run(
+    ctx: PhaseContext,
+    request?: { scenarios: HoldoutScenario[]; reviewer: PhaseModel },
+  ): Promise<Receipt[] | { receipts: Receipt[]; costUsd?: number }>;
 }
 
 export interface ActionRequest {

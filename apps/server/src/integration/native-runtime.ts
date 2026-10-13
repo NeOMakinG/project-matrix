@@ -6,7 +6,6 @@ import {
   FactoryToolingError,
   type MergePort,
   type PhaseContext,
-  type QaDriver,
   type Receipt,
   type Runner,
   type RunnerId,
@@ -34,7 +33,9 @@ import {
 import type { PrivateStateOwner } from "../state-owner.js";
 import { derivedGraphHandover } from "./derived-graph.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
+import { committedQaSnapshot } from "./qa-snapshot.js";
 import type { Runtime } from "./runtime.js";
+import { scenarioQaDriver } from "./scenario-qa.js";
 import { scanCommittedHistory } from "./secret-scan.js";
 import { scanSourceSnapshot } from "./source-scan.js";
 
@@ -188,28 +189,6 @@ function sandboxedRunner(
   };
 }
 
-/** QA receipts from the project's own check commands, run in the sandbox with no network. */
-function sandboxQa(sandbox: Sandbox): QaDriver {
-  return {
-    async run(ctx: PhaseContext): Promise<Receipt[]> {
-      const receipts: Receipt[] = [];
-      for (const check of ctx.project.checks) {
-        const result = await sandbox.exec(
-          { workdir: ctx.workdir, cmd: check.cmd, network: "none", timeoutMs: 15 * 60_000 },
-          ctx.signal,
-        );
-        receipts.push({
-          kind: check.kind === "adr-check" ? "adr-check" : check.kind === "lint" ? "lint" : "test",
-          ok: result.code === 0,
-          summary: `${check.cmd.join(" ")} → exit ${result.code}`,
-          data: { tail: result.stdout.split("\n").slice(-20).join("\n") },
-        });
-      }
-      return receipts;
-    },
-  };
-}
-
 /**
  * Local merge: fast-forwards the base branch of the canonical repo to the approved head, after the
  * secret gate scanned exactly the commits being merged. Never touches a working tree; the ref update
@@ -314,6 +293,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
   let key: string | undefined;
   const gatewayKey = async () => (key ??= await resolveCredential(opts.gatewayKey));
   const git = new WorktreeGitPort({ trusted });
+  const runners = { codex: sandboxedRunner("codex", sandbox, git, opts, gatewayKey) };
   return {
     kind: opts.workspace,
     broker,
@@ -347,11 +327,16 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
           ),
         ];
       },
-      runners: {
-        codex: sandboxedRunner("codex", sandbox, git, opts, gatewayKey),
-      },
+      runners,
       sandbox: checkedSandbox,
-      qa: sandboxQa(checkedSandbox),
+      qa: scenarioQaDriver({
+        sandbox: checkedSandbox,
+        runners,
+        git,
+        snapshot: (ctx) => committedQaSnapshot(ctx, git, trusted, opts.stateOwner),
+        secrets: async () => [await gatewayKey()],
+        ...(opts.stateOwner ? { owner: opts.stateOwner } : {}),
+      }),
       merge: localMerge(opts, gatewayKey),
     },
   };
