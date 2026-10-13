@@ -1,5 +1,5 @@
 import type { AutonomyMode, Phase } from "@matrix/core";
-import { AutonomyConflictError } from "@matrix/core";
+import { AutonomyConflictError, publicQaReceipt } from "@matrix/core";
 import type { NewTicket, TicketPatch, TicketQuery } from "@matrix/tickets";
 import { type Guard, type GuardedOp, HttpError, type Principal } from "./auth/guard.js";
 import {
@@ -251,7 +251,7 @@ export class Operations {
       "read",
       `/runs/${runId}/receipts`,
       projectId,
-    )(() => this.core.listReceipts(runId));
+    )(async () => (await this.core.listReceipts(runId)).map(publicQaReceipt));
   }
 
   async listApprovals(p: Principal, query: { projectId?: string; status?: ApprovalStatus }) {

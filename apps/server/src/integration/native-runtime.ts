@@ -330,6 +330,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       runners,
       sandbox: checkedSandbox,
       qa: scenarioQaDriver({
+        ...(opts.gitleaksBinary ? { gitleaksBinary: opts.gitleaksBinary } : {}),
         sandbox: checkedSandbox,
         runners,
         git,

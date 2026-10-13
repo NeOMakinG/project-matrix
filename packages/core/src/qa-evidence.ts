@@ -10,6 +10,42 @@ export interface ScenarioEvidence {
   probe: string;
 }
 
+export function publicQaReceipt(receipt: Receipt): Receipt {
+  if (receipt.kind === "holdout") {
+    const data = receipt.data as
+      | {
+          satisfied?: unknown;
+          total?: unknown;
+          satisfaction?: unknown;
+        }
+      | undefined;
+    return {
+      kind: receipt.kind,
+      ok: receipt.ok,
+      summary: "QA holdout evaluation complete",
+      ...(data
+        ? {
+            data: {
+              ...(typeof data.satisfied === "number" ? { satisfied: data.satisfied } : {}),
+              ...(typeof data.total === "number" ? { total: data.total } : {}),
+              ...(typeof data.satisfaction === "number" ? { satisfaction: data.satisfaction } : {}),
+            },
+          }
+        : {}),
+    };
+  }
+  if (
+    receipt.data &&
+    typeof receipt.data === "object" &&
+    "provenance" in receipt.data &&
+    receipt.data.provenance === "host-probe"
+  )
+    return { kind: receipt.kind, ok: receipt.ok, summary: "QA scenario probe completed" };
+  if (receipt.data && typeof receipt.data === "object" && "output" in receipt.data)
+    return { kind: receipt.kind, ok: receipt.ok, summary: "QA check completed" };
+  return receipt;
+}
+
 export function scenarioEvidence(receipt: Receipt): ScenarioEvidence | undefined {
   const data = receipt.data;
   if (

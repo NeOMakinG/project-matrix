@@ -7,11 +7,13 @@ import {
   createDefaultHandlers,
   type HoldoutScenario,
   type PhaseContext,
+  publicQaReceipt,
   type Receipt,
   type Sandbox,
   scenarioEvidence,
 } from "@matrix/core";
 import { createHarness, FakeRunner } from "@matrix/core/testing";
+import { scanSecretText } from "@matrix/sandbox";
 import { expect, test, vi } from "vitest";
 import { scenarioQaDriver } from "./scenario-qa.js";
 
@@ -44,10 +46,10 @@ const probes = [
   },
 ];
 
-async function fixture(correct: boolean, plan = JSON.stringify({ probes })) {
+async function fixture(correct: boolean, plan = JSON.stringify({ probes }), committedSecret = "") {
   const root = await mkdtemp(join(tmpdir(), "matrix-qa-probes-"));
   const workdir = join(root, "worktree");
-  const source = `export function add(left: number, right: number): number { return ${correct ? "left + right" : "0"}; }\n`;
+  const source = `export function add(left: number, right: number): number { return ${correct ? "left + right" : "0"}; }\nexport const fixtureSecret = ${JSON.stringify(committedSecret)};\n`;
   const materialize = (directory: string) => {
     mkdirSync(join(directory, "src"), { recursive: true });
     writeFileSync(join(directory, "src/add.ts"), source, { flag: "wx" });
@@ -130,6 +132,7 @@ async function fixture(correct: boolean, plan = JSON.stringify({ probes })) {
     stillOwner: async () => true,
     authorize: async () => ({ ok: false, kind: "gates", reason: "not used" }),
   };
+  const scanOutput = vi.fn(async (_text: string) => true);
   const driver = scenarioQaDriver({
     sandbox,
     runners: { codex: runner },
@@ -140,9 +143,22 @@ async function fixture(correct: boolean, plan = JSON.stringify({ probes })) {
       return { headSha: head, directory, materialize };
     },
     secrets: async () => [planted],
+    scanOutput,
   });
   harness.deps.qa = driver;
-  return { root, source, workdir, context, harness, driver, runner, executions, headSha, planted };
+  return {
+    root,
+    source,
+    workdir,
+    context,
+    harness,
+    driver,
+    runner,
+    executions,
+    headSha,
+    planted,
+    scanOutput,
+  };
 }
 
 test.each([true, false])(
@@ -213,7 +229,7 @@ test("model-claimed output without executable probes cannot create trusted evide
   try {
     const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
     expect(outcome).toMatchObject({ ok: false, failureClass: "factory-tooling", costUsd: 0.125 });
-    expect(outcome.summary).toContain("model-claimed evidence is not trusted");
+    expect(outcome.summary).toContain("QA probe preparation failed");
     expect(setup.executions).toEqual([]);
     expect(outcome.receipts.filter((receipt) => receipt.kind === "holdout")).toEqual([]);
     expect(setup.harness.reviewer.calls).toEqual([]);
@@ -233,9 +249,136 @@ test("SHA change after probe planning aborts before any host execution", async (
     });
     const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
     expect(outcome.ok).toBe(false);
-    expect(outcome.summary).toContain("committed SHA changed");
+    expect(outcome.summary).toContain("QA probe preparation failed");
     expect(setup.executions).toEqual([]);
   } finally {
     await rm(setup.root, { recursive: true, force: true });
   }
 });
+
+test("failed planner cannot echo private scenarios into workflow feedback", async () => {
+  const setup = await fixture(true);
+  const privateText = "PRIVATE holdout add(2,3) must return 5";
+  const events: string[] = [];
+  setup.context.emit = (message) => events.push(message);
+  vi.spyOn(setup.runner, "run").mockImplementation(async (request, emit) => {
+    emit({ runId: request.runId, at: new Date().toISOString(), kind: "log", message: privateText });
+    return {
+      runId: request.runId,
+      status: "failed",
+      summary: privateText,
+      receipts: [{ kind: "log", ok: false, summary: privateText }],
+    };
+  });
+  try {
+    const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
+    expect(outcome).toMatchObject({ ok: false, failureClass: "factory-tooling" });
+    expect(JSON.stringify({ outcome, events })).not.toContain(privateText);
+    expect(setup.executions).toEqual([]);
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test.each(["failed", "ok", "malformed"])("judge %s diagnostics remain private", async (status) => {
+  const setup = await fixture(true);
+  const privateText = "PRIVATE scenario and judge rationale";
+  const events: string[] = [];
+  setup.context.emit = (message) => events.push(message);
+  vi.spyOn(setup.harness.reviewer, "run").mockImplementation(async (request, emit) => {
+    emit({
+      runId: request.runId,
+      at: new Date().toISOString(),
+      kind: "log",
+      message: privateText,
+      data: { scenario: privateText },
+    });
+    return {
+      runId: request.runId,
+      status: status === "failed" ? "failed" : "ok",
+      summary:
+        status === "ok"
+          ? JSON.stringify({
+              verdicts: scenarios.map((item) => ({
+                id: item.id,
+                satisfied: true,
+                reason: privateText,
+              })),
+            })
+          : privateText,
+      receipts: [{ kind: "log", ok: false, summary: privateText }],
+    };
+  });
+  try {
+    const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
+    const visible = {
+      summary: outcome.summary,
+      receipts: outcome.receipts.map(publicQaReceipt),
+      events,
+    };
+    expect(JSON.stringify(visible)).not.toContain(privateText);
+    expect(JSON.stringify(visible)).not.toContain("./src/add.ts");
+    expect(JSON.stringify(visible)).not.toContain("expected");
+    expect(outcome.ok).toBe(status === "ok");
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test.each(["finding", "unavailable"])("probe output is withheld on scanner %s", async (failure) => {
+  const setup = await fixture(true);
+  setup.scanOutput.mockImplementation(async (text) => {
+    expect(text).toContain("import { add }");
+    expect(text).toContain('"actual"');
+    if (failure === "unavailable") throw new Error("scanner unavailable");
+    return false;
+  });
+  try {
+    const result = await setup.driver.run(setup.context, {
+      scenarios,
+      reviewer: { runner: "codex", model: "gpt-6-sol" },
+    });
+    const receipts = Array.isArray(result) ? result : result.receipts;
+    expect(setup.scanOutput).toHaveBeenCalledTimes(4);
+    for (const receipt of receipts) {
+      const evidence = scenarioEvidence(receipt)!;
+      expect(evidence.exitCode).toBe(0);
+      expect(evidence.output).toMatch(/^output withheld; sha256=[a-f0-9]{64}$/);
+      expect(evidence.probe).toBe("probe withheld");
+      expect(JSON.stringify(receipt)).not.toContain('"actual"');
+      expect(JSON.stringify(receipt)).not.toContain(setup.planted);
+    }
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test.skipIf(spawnSync("gitleaks", ["version"]).status !== 0)(
+  "real gitleaks withholds a committed secret unknown to gateway redaction",
+  async () => {
+    const committedSecret = ["gh", "p_", "x7Y2kL9pQ4aB6cD8eF1gH3iJ5mN0oP2rS4tU"].join("");
+    const plan = JSON.stringify({
+      probes: probes.map((probe) => ({
+        ...probe,
+        source: `${probe.source}\nimport { fixtureSecret } from './src/add.ts'; console.log(fixtureSecret);`,
+      })),
+    });
+    const setup = await fixture(true, plan, committedSecret);
+    setup.scanOutput.mockImplementation((text) => scanSecretText(text));
+    try {
+      const result = await setup.driver.run(setup.context, {
+        scenarios,
+        reviewer: { runner: "codex", model: "gpt-6-sol" },
+      });
+      const receipts = Array.isArray(result) ? result : result.receipts;
+      expect(receipts).toHaveLength(4);
+      expect(JSON.stringify(receipts)).not.toContain(committedSecret);
+      for (const receipt of receipts) {
+        expect(scenarioEvidence(receipt)).toMatchObject({ exitCode: 0, probe: "probe withheld" });
+        expect(scenarioEvidence(receipt)?.output).toContain("output withheld; sha256=");
+      }
+    } finally {
+      await rm(setup.root, { recursive: true, force: true });
+    }
+  },
+);

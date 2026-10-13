@@ -17,6 +17,7 @@ import {
 } from "./machine.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
+import { publicQaReceipt } from "./qa-evidence.js";
 import {
   type Actor,
   type ApprovalRecord,
@@ -775,7 +776,7 @@ export class Reconciler {
       runId,
       status,
       summary: outcome.summary,
-      receipts: outcome.receipts,
+      receipts: outcome.receipts.map(publicQaReceipt),
     });
   }
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { Sandbox } from "@matrix/core";
 import {
@@ -11,7 +12,7 @@ import {
   type RunnerId,
   type ScenarioEvidence,
 } from "@matrix/core";
-import { secretNeedles } from "@matrix/sandbox";
+import { scanSecretText, secretNeedles } from "@matrix/sandbox";
 import { z } from "zod";
 import type { PrivateStateOwner } from "../state-owner.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
@@ -41,6 +42,8 @@ export function scenarioQaDriver(options: {
   git: GitPort;
   snapshot(ctx: PhaseContext): Promise<QaSnapshot>;
   secrets(): Promise<string[]>;
+  scanOutput?(text: string): Promise<boolean>;
+  gitleaksBinary?: string;
   owner?: PrivateStateOwner;
 }): QaDriver {
   return {
@@ -108,18 +111,27 @@ export function scenarioQaDriver(options: {
             },
             signal,
           )
-          .catch((error: unknown) => {
+          .catch(() => {
             check();
             throw new FactoryToolingError(
-              error instanceof FactoryToolingError
-                ? redact(error.message)
-                : "QA host probe execution unavailable; no scenario evidence was attested",
+              "QA host probe execution unavailable; no scenario evidence was attested",
               receipts,
             );
           });
         await bound();
-        const output = redact(`${result.stdout}\n${result.stderr}`).slice(0, 4096);
-        return { exitCode: result.code, output };
+        const raw = `${result.stdout}\n${result.stderr}`;
+        const clean = await (
+          options.scanOutput ?? ((text) => scanSecretText(text, options.gitleaksBinary))
+        )(`${probe?.source ?? ""}\n${raw}`).catch(() => false);
+        await bound();
+        const output = clean
+          ? redact(raw).slice(0, 4096)
+          : `output withheld; sha256=${createHash("sha256").update(raw).digest("hex")}`;
+        return {
+          exitCode: result.code,
+          output,
+          probe: clean ? redact(probe?.source ?? "") : "probe withheld",
+        };
       };
       for (const command of ctx.project.checks) {
         if (command.kind === "adr-check") continue;
@@ -146,34 +158,41 @@ export function scenarioQaDriver(options: {
       const runner = options.runners[request.reviewer.runner];
       if (!runner) throw new FactoryToolingError("QA reviewer runner is unavailable", receipts);
       await bound();
-      const plan = await runner.run(
-        {
-          runId: `${ctx.runId}-probes`,
-          projectId: ctx.project.id,
-          ticketId: ctx.ticket.id,
-          phase: "qa",
-          runner: request.reviewer.runner,
-          model: request.reviewer.model,
-          workdir: snapshot.directory,
-          readOnly: true,
-          timeoutMs: ctx.project.runTimeoutMs,
-          prompt: [
-            "Design executable acceptance probes for these private holdout scenarios. You are the QA reviewer, not the implementer.",
-            "Source is a read-only disposable snapshot of the reviewed committed SHA; no git metadata is available. Do not write files or claim execution results.",
-            "Return one probe per scenario. The host will write and execute each probe in a separate fresh copy, with no network, credentials, or worktree access.",
-            "Use bun for TypeScript, node for JavaScript, or python3 for Python. Each probe resides in the project root: import the actual software with relative paths, assert scenario behavior, print observed values, and exit nonzero on failure. Do not simulate the implementation or merely print claims.",
-            `Commit: ${snapshot.headSha}`,
-            `Scenarios: ${JSON.stringify(request.scenarios)}`,
-            'Reply with JSON only: {"probes":[{"id":"s1","tool":"bun","source":"..."}]}',
-          ].join("\n\n"),
-        },
-        (event) => ctx.emit(`QA probe planner: ${event.kind}`, "log"),
-        signal,
-      );
+      const plan = await runner
+        .run(
+          {
+            runId: `${ctx.runId}-probes`,
+            projectId: ctx.project.id,
+            ticketId: ctx.ticket.id,
+            phase: "qa",
+            runner: request.reviewer.runner,
+            model: request.reviewer.model,
+            workdir: snapshot.directory,
+            readOnly: true,
+            timeoutMs: ctx.project.runTimeoutMs,
+            prompt: [
+              "Design executable acceptance probes for these private holdout scenarios. You are the QA reviewer, not the implementer.",
+              "Source is a read-only disposable snapshot of the reviewed committed SHA; no git metadata is available. Do not write files or claim execution results.",
+              "Return one probe per scenario. The host will write and execute each probe in a separate fresh copy, with no network, credentials, or worktree access.",
+              "Use bun for TypeScript, node for JavaScript, or python3 for Python. Each probe resides in the project root: import the actual software with relative paths, assert scenario behavior, print observed values, and exit nonzero on failure. Do not simulate the implementation or merely print claims.",
+              `Commit: ${snapshot.headSha}`,
+              `Scenarios: ${JSON.stringify(request.scenarios)}`,
+              'Reply with JSON only: {"probes":[{"id":"s1","tool":"bun","source":"..."}]}',
+            ].join("\n\n"),
+          },
+          () => ctx.emit("QA probe planner activity", "log"),
+          signal,
+        )
+        .catch(() => {
+          throw new FactoryToolingError(
+            "QA probe planning failed; private evidence unavailable",
+            receipts,
+          );
+        });
       await bound();
       if (plan.status !== "ok")
         throw new FactoryToolingError(
-          `QA reviewer probe planning ${plan.status}: ${redact(plan.summary).slice(0, 2048)}`,
+          "QA probe planning failed; private evidence unavailable",
           receipts,
           plan.costUsd,
         );
@@ -214,12 +233,11 @@ export function scenarioQaDriver(options: {
           id: probe.id,
           command,
           ...result,
-          probe: redact(probe.source),
         };
         receipts.push({
           kind: "test",
           ok: result.exitCode === 0,
-          summary: `host-executed ${probe.id} probe exit ${result.exitCode}`,
+          summary: `host-executed QA probe exit ${result.exitCode}`,
           data,
         });
       }

@@ -39,9 +39,18 @@ function run(
   args: string[],
   env: Record<string, string>,
   input?: string,
+  timeoutMs?: number,
 ): Promise<{ code: number; stdout: Buffer; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { cwd: tmpdir(), env, stdio: ["pipe", "pipe", "pipe"] });
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          child.kill("SIGKILL");
+          reject(new Error("secret scanner timed out"));
+        }, timeoutMs)
+      : undefined;
+    child.once("close", () => clearTimeout(timer));
+    child.once("error", () => clearTimeout(timer));
     const out: Buffer[] = [];
     let stderr = "";
     let size = 0;
@@ -96,6 +105,36 @@ export function secretNeedles(value: string): Buffer[] {
 
 /** Host-owned gitleaks config: default rules, no allowlists. Repo `.gitleaks.toml` is never read. */
 export const GITLEAKS_CONFIG = "[extend]\nuseDefault = true\n";
+
+export async function scanSecretText(text: string, binary = "gitleaks"): Promise<boolean> {
+  if (Buffer.byteLength(text) > 32768) return false;
+  const dir = await mkdtemp(join(tmpdir(), "matrix-output-scan-"));
+  try {
+    const config = join(dir, "gitleaks.toml");
+    await writeFile(config, GITLEAKS_CONFIG, { mode: 0o600 });
+    const result = await run(
+      binary,
+      [
+        "stdin",
+        "--config",
+        config,
+        "--ignore-gitleaks-allow",
+        "--no-banner",
+        "--redact",
+        "--exit-code",
+        "1",
+      ],
+      safeGitEnv(),
+      text,
+      10000,
+    );
+    return result.code === 0;
+  } catch {
+    return false;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
 
 async function scanGitleaks(
   gitDir: string,
