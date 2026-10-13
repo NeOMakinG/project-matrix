@@ -14,11 +14,13 @@
     "@biomejs/biome": "^2.2.0",
     "@clack/prompts": "^1.8.1",
     "@matrix/config": "workspace:*",
+    "@matrix/graph": "workspace:*",
     "@matrix/packs": "workspace:*",
-    "@matrix/tickets": "workspace:*",
-    "zod": "^4",
     "@matrix/rules": "workspace:*",
-    "@matrix/graph": "workspace:*"
+    "@matrix/safe-fs": "workspace:*",
+    "@matrix/tickets": "workspace:*",
+    "jsonc-parser": "^3.3.1",
+    "zod": "^4"
   },
   "bin": {
     "matrix": "./src/bin.ts"

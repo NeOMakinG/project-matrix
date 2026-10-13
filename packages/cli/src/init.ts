@@ -31,6 +31,7 @@ import {
   slug,
 } from "./generate/docs";
 import { scaffoldFiles } from "./generate/scaffold";
+import { skillFiles, skillsFor } from "./generate/skills";
 
 export interface InitOptions {
   answers: Answers;
@@ -240,7 +241,8 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
 
   const built = buildConfig(packs, answers);
   if (!built.ok) return { status: "invalid", issues: built.issues };
-  const config = built.config;
+  const skills = skillsFor(built.config);
+  const config: MatrixConfig = { ...built.config, agents: { ...built.config.agents, skills } };
 
   const date = opts.date ?? new Date().toISOString().slice(0, 10);
   const ds = decisions(packs, answers);
@@ -267,6 +269,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
       2,
     )}\n`,
     ...adrs.files,
+    ...(await skillFiles(skills)),
   };
   const warnings: string[] = [];
   if (opts.scaffold) {

@@ -9,7 +9,19 @@ export interface LintPreset {
   scripts: Record<string, string>;
 }
 
-const IGNORED = ["**/dist", "**/node_modules", ".matrix"];
+/** Build output and generated code of every stack pack. */
+const IGNORED = [
+  "**/dist",
+  "**/node_modules",
+  ".matrix",
+  "**/.next",
+  "**/.output",
+  "**/.expo",
+  "**/.tanstack",
+  "**/routeTree.gen.ts",
+  "**/src-tauri/target",
+  "**/src-tauri/gen",
+];
 
 const json = (v: unknown) => `${JSON.stringify(v, null, 2)}\n`;
 
@@ -21,6 +33,8 @@ function biomePreset(react: boolean): LintPreset {
         $schema: "https://biomejs.dev/schemas/2.2.0/schema.json",
         files: { includes: ["**", ...IGNORED.map((g) => `!${g}`)] },
         formatter: { indentStyle: "space", indentWidth: 2, lineWidth: 100 },
+        // Tailwind v4 (@theme) and NativeWind (@tailwind) directives in CSS.
+        css: { parser: { tailwindDirectives: true } },
         linter: {
           enabled: true,
           rules: {
@@ -31,6 +45,13 @@ function biomePreset(react: boolean): LintPreset {
           ...(react ? { domains: { react: "recommended" } } : {}),
         },
         assist: { actions: { source: { organizeImports: "on" } } },
+        // NativeWind (Tailwind v3) entry CSS uses @tailwind directives.
+        overrides: [
+          {
+            includes: ["**/global.css"],
+            linter: { rules: { suspicious: { noUnknownAtRules: "off" } } },
+          },
+        ],
       }),
     },
     devDependencies: ["@biomejs/biome"],
