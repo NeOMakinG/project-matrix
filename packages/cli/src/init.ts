@@ -3,7 +3,16 @@ import { mkdir, readdir, readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import type { MatrixConfig } from "@matrix/config";
-import { linkTicket, loadProductGraph, saveProductGraph, writeGraph } from "@matrix/graph";
+import {
+  linkTicket,
+  loadProductGraph,
+  readArchitectureReference,
+  readKnowledgeConfig,
+  readProductContext,
+  saveProductGraph,
+  withKnowledgeConfig,
+  writeGraph,
+} from "@matrix/graph";
 import {
   type Answers,
   buildConfig,
@@ -18,6 +27,7 @@ import {
   resolve,
 } from "@matrix/packs";
 import { suggestDisposableArtifacts } from "@matrix/packs/disposable";
+import { readFileSafe, safeJoin } from "@matrix/safe-fs";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
 import { assertSafePath } from "@matrix/tickets/adapters/safe-fs";
 import { trackedArtifactFiles } from "./disposable-artifacts";
@@ -245,6 +255,23 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   if (!built.ok) return { status: "invalid", issues: built.issues };
   const skills = skillsFor(built.config);
   const config: MatrixConfig = { ...built.config, agents: { ...built.config.agents, skills } };
+  if (opts.existingRepo) {
+    const existingKnowledge = await readKnowledgeConfig(opts.existingRepo);
+    const knowledge = { ...existingKnowledge, ...config.knowledge };
+    if (
+      !knowledge.productContext &&
+      (await readFileSafe(
+        opts.existingRepo,
+        safeJoin(opts.existingRepo, "docs/product-context/product-graph.json"),
+        { maxBytes: 4 * 1024 * 1024 },
+      )) !== null
+    )
+      knowledge.productContext = { path: "docs/product-context", format: "product-context-v1" };
+    config.knowledge = knowledge;
+  }
+  if (config.knowledge?.productContext)
+    await readProductContext(opts.outDir, config.knowledge.productContext);
+  if (config.knowledge) await readArchitectureReference(opts.outDir, config.knowledge);
 
   const date = opts.date ?? new Date().toISOString().slice(0, 10);
   const ds = decisions(packs, answers);
@@ -266,6 +293,16 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
       ]),
     ].sort(),
   };
+  const previousConfig =
+    existingMode && config.knowledge
+      ? await readFileSafe(opts.outDir, safeJoin(opts.outDir, "matrix.config.ts"), {
+          maxBytes: 1024 * 1024,
+        })
+      : null;
+  const updatedConfig =
+    previousConfig !== null && config.knowledge
+      ? withKnowledgeConfig(previousConfig, config.knowledge)
+      : null;
 
   const adrs = await planAdrs(opts.outDir, config.process.adrDir, ds, date);
 
@@ -273,7 +310,9 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     "matrix.config.ts": configFile(config),
     ".matrix/answers.json": `${JSON.stringify(answers, null, 2)}\n`,
     "CONTEXT.md": contextFile(config),
-    ".matrix/graph/product.json": productGraph(config, ds, adrs.numbers),
+    ...(!config.knowledge?.productContext
+      ? { ".matrix/graph/product.json": productGraph(config, ds, adrs.numbers) }
+      : {}),
     // Fail-closed floor for `matrix check`: rules may only shrink through a reviewed change.
     ".matrix/rules-manifest.json": `${JSON.stringify(
       {
@@ -320,6 +359,12 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
   const { written, skipped } = await safeWrite(opts.outDir, files, {
     overwrite: !existingMode && opts.force === true,
   });
+  if (updatedConfig !== null && updatedConfig !== previousConfig) {
+    await safeWrite(opts.outDir, { "matrix.config.ts": updatedConfig }, { overwrite: true });
+    written.push("matrix.config.ts");
+    const index = skipped.indexOf("matrix.config.ts");
+    if (index >= 0) skipped.splice(index, 1);
+  }
   if (skipped.length > 0)
     warnings.push(`Kept ${skipped.length} existing file(s): ${skipped.join(", ")}`);
   if (config.process.tickets !== "markdown") {
@@ -332,7 +377,7 @@ export async function runInit(opts: InitOptions): Promise<InitResult> {
     if (formatted) warnings.push(formatted);
   }
   const backlog = await seedBacklog(opts.outDir, config);
-  await linkBacklog(opts.outDir, backlog);
+  if (!config.knowledge?.productContext) await linkBacklog(opts.outDir, backlog);
   if (opts.scaffold) await writeGraph(opts.outDir);
   return {
     status: "ok",

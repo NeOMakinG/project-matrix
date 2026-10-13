@@ -187,8 +187,19 @@ export const Adr = z
 
 export const ProductGraph = z
   .object({
-    nodes: z.array(z.object({ id: z.string(), kind: z.string(), label: z.string() })),
+    nodes: z.array(
+      z.object({
+        id: z.string(),
+        kind: z.string(),
+        label: z.string(),
+        data: z.record(z.string(), z.unknown()).optional(),
+      }),
+    ),
     edges: z.array(z.object({ from: z.string(), to: z.string(), kind: z.string() })),
+    context: z.record(z.string(), z.unknown()).optional(),
+    architecture: z
+      .object({ path: z.string(), readOnly: z.literal(true), graph: z.unknown() })
+      .optional(),
   })
   .openapi("ProductGraph");
 

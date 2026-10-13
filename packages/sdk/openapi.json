@@ -847,6 +847,10 @@
                 },
                 "label": {
                   "type": "string"
+                },
+                "data": {
+                  "type": "object",
+                  "additionalProperties": {}
                 }
               },
               "required": ["id", "kind", "label"]
@@ -869,6 +873,24 @@
               },
               "required": ["from", "to", "kind"]
             }
+          },
+          "context": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "architecture": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "readOnly": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "graph": {}
+            },
+            "required": ["path", "readOnly"]
           }
         },
         "required": ["nodes", "edges"]

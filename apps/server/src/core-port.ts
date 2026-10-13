@@ -84,6 +84,7 @@ export interface GraphNode {
   id: string;
   kind: "goal" | "persona" | "feature" | "decision" | "adr" | "ticket" | "module";
   label: string;
+  data?: Record<string, unknown> | undefined;
 }
 
 export interface GraphEdge {
@@ -95,6 +96,8 @@ export interface GraphEdge {
 export interface ProductGraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  context?: Record<string, unknown> | undefined;
+  architecture?: { path: string; readOnly: true; graph: unknown } | undefined;
 }
 
 export interface InitSession {
