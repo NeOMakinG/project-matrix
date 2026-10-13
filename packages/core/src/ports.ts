@@ -1,5 +1,6 @@
 export const PHASES = [
   "spike",
+  "design",
   "implement",
   "checks",
   "review",
@@ -14,6 +15,7 @@ export type Phase = (typeof PHASES)[number];
 export type RunnerId = "claude-code" | "codex" | "opencode";
 
 export type ReceiptKind =
+  | "design"
   | "test"
   | "lint"
   | "typecheck"
@@ -73,8 +75,17 @@ export interface RunResult {
 }
 
 export interface Runner {
+  readonly readOnlyIsolation?: "os";
   readonly id: RunnerId;
+  readonly figmaMcp?: FigmaMcpCapability;
   run(req: RunRequest, onEvent: (event: RunEvent) => void, signal: AbortSignal): Promise<RunResult>;
+}
+
+export interface FigmaMcpCapability {
+  serverName: string;
+  url: string;
+  policySha256?: string;
+  configurationSha256: string;
 }
 
 export type NetworkPolicy = "none" | "gateway" | "allowlist";

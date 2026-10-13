@@ -1,4 +1,5 @@
 import type { Ticket, TicketStore } from "@matrix/tickets";
+import type { DesignEvidence, DesignScope } from "./design.js";
 import type { AutonomyMode, Phase, Receipt, RunEventKind } from "./ports.js";
 import type { ProjectConfig, WorkflowState } from "./types.js";
 
@@ -8,6 +9,11 @@ export type Authorization =
   | { ok: false; reason: string; kind: "approval" | "gates" };
 
 export interface PhaseContext {
+  classifyDesign?: (plannedPaths: string[]) => Promise<DesignScope>;
+  validateDesign?: () => Promise<void>;
+  headSha?: string;
+  designRequired?: boolean;
+  designEvidence?: DesignEvidence[];
   project: ProjectConfig;
   workflow: WorkflowState;
   ticket: Ticket;

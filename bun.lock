@@ -111,9 +111,24 @@
         "@matrix/tickets": "workspace:*",
         "drizzle-orm": "^0.45.4",
         "postgres": "^3.4.9",
+        "zod": "^4",
       },
       "devDependencies": {
         "drizzle-kit": "^0.31.11",
+      },
+    },
+    "packages/design": {
+      "name": "@matrix/design",
+      "version": "0.0.0",
+      "dependencies": {
+        "@matrix/core": "workspace:*",
+        "@matrix/graph": "workspace:*",
+        "@matrix/safe-fs": "workspace:*",
+        "@matrix/sandbox": "workspace:*",
+        "@matrix/workspace": "workspace:*",
+        "@modelcontextprotocol/sdk": "1.32.1",
+        "playwright-core": "1.64.0",
+        "zod": "4.6.6",
       },
     },
     "packages/graph": {
@@ -385,6 +400,8 @@
     "@matrix/config": ["@matrix/config@workspace:packages/config"],
 
     "@matrix/core": ["@matrix/core@workspace:packages/core"],
+
+    "@matrix/design": ["@matrix/design@workspace:packages/design"],
 
     "@matrix/dashboard": ["@matrix/dashboard@workspace:apps/dashboard"],
 

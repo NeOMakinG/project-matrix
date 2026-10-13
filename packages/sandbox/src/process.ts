@@ -58,6 +58,10 @@ export function splitLines(onLine: (line: string) => void): {
 /** Runs a command on the host, streaming stdout line by line. Only `env` is passed to the child. */
 export const hostExecutor: LineExecutor = (spec, onLine, signal) =>
   new Promise((resolve, reject) => {
+    if (spec.readOnly) {
+      reject(new Error("host executor cannot enforce read-only OS isolation"));
+      return;
+    }
     const [command, ...args] = spec.cmd;
     if (!command) {
       reject(new Error("empty command"));

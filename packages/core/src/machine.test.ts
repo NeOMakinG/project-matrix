@@ -39,6 +39,7 @@ describe("advance", () => {
     let w = at("spike");
     const outcomes: Record<Phase, PhaseOutcome> = {
       spike: ok(),
+      design: ok(),
       implement: { ...ok(), model: "fable-5-1" },
       checks: ok([
         { kind: "typecheck", ok: true, summary: "" },

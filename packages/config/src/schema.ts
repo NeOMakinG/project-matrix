@@ -104,6 +104,7 @@ export const quality = z.object({
 
 export const phase = z.enum([
   "spike",
+  "design",
   "implement",
   "checks",
   "review",
@@ -118,7 +119,11 @@ export const processConfig = z.object({
   tickets: z.enum(["beads", "github", "linear", "markdown"]),
   adrDir: z.string().default("docs/adr"),
   branching: z.enum(["trunk-with-prs", "gitflow"]),
-  autonomy: z.object({ merge: autonomyLevel, deploy: autonomyLevel }),
+  autonomy: z.object({
+    merge: autonomyLevel,
+    deploy: autonomyLevel,
+    design: autonomyLevel.optional(),
+  }),
   reviewLanes: z
     .array(z.enum(["correctness-security", "architecture-adr", "ux-product", "performance"]))
     .min(1),
@@ -141,6 +146,21 @@ export const agentCapabilities = z
   });
 
 export const design = z.object({
+  componentLibrary: z.string().min(1).optional(),
+  figmaFileUrl: z
+    .string()
+    .url()
+    .refine((value) => {
+      const url = new URL(value);
+      return (
+        url.protocol === "https:" &&
+        ["figma.com", "www.figma.com"].includes(url.hostname) &&
+        /^\/(design|file)\/[a-zA-Z0-9]+(?:\/|$)/.test(url.pathname) &&
+        !url.username &&
+        !url.password
+      );
+    })
+    .optional(),
   artDirection: z.string().min(1),
   theme: z.enum(["light", "dark", "both"]),
   brandColors: z.array(z.string()).default([]),

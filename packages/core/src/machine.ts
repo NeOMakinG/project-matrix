@@ -1,3 +1,4 @@
+import { designEvidence } from "./design.js";
 import { isTrustedHoldout } from "./holdout.js";
 import { type AutonomyMode, PHASES, type Phase, type Receipt } from "./ports.js";
 import type {
@@ -27,7 +28,7 @@ export function autonomyFor(config: ProjectConfig, phase: Phase): AutonomyMode {
 }
 
 export function requiresApproval(mode: AutonomyMode, phase: Phase): boolean {
-  if (mode === "human") return phase === "merge" || phase === "deploy";
+  if (mode === "human") return phase === "design" || phase === "merge" || phase === "deploy";
   if (mode === "gated") return phase === "deploy";
   return false;
 }
@@ -49,6 +50,12 @@ export interface GateResult {
 export function gate(phase: Phase, outcome: PhaseOutcome, config: ProjectConfig): GateResult {
   const r = outcome.receipts;
   switch (phase) {
+    case "design": {
+      const designs = r.filter((receipt) => receipt.kind === "design");
+      return outcome.ok && designs.length > 0 && designs.every((receipt) => designEvidence(receipt))
+        ? { pass: true, reason: "verified Figma design evidence" }
+        : { pass: false, reason: "missing or invalid Figma design receipts" };
+    }
     case "checks": {
       const checks = r.filter((x) => CHECK_KINDS.has(x.kind));
       if (checks.length === 0) return { pass: false, reason: "no check receipts" };
@@ -91,7 +98,7 @@ function enter(state: WorkflowState, phase: Phase, config: ProjectConfig): Trans
   const base: WorkflowState = { ...state, phase, attempt: 0, status: "pending" };
   delete base.nextAttemptAt;
   delete base.lastError;
-  if (requiresApproval(autonomyFor(config, phase), phase)) {
+  if (phase !== "design" && requiresApproval(autonomyFor(config, phase), phase)) {
     return {
       state: { ...base, status: "waiting_approval" },
       effects: [{ type: "request_approval", phase }],
@@ -114,6 +121,13 @@ export function advance(
   backoff: BackoffPolicy,
   now: Date,
 ): Transition {
+  if (outcome.restartDesign) {
+    const loops = state.loops + 1;
+    if (loops > config.maxLoops) return block({ ...state, loops }, outcome.summary);
+    const next = enter({ ...state, loops }, "design", config);
+    return { ...next, state: { ...next.state, lastError: outcome.summary } };
+  }
+  if (outcome.blocked) return block(state, outcome.summary);
   if (outcome.requiresApproval && (state.phase === "merge" || state.phase === "deploy")) {
     // Autonomy changed or the approval no longer matches: stop and ask again instead of acting.
     return {
@@ -148,7 +162,22 @@ export function advance(
       : state;
 
   if (result.pass) {
-    const next = nextPhase(state.phase);
+    if (
+      state.phase === "design" &&
+      requiresApproval(autonomyFor(config, "design"), "design") &&
+      !outcome.designApproved
+    ) {
+      return {
+        state: { ...state, status: "waiting_approval" },
+        effects: [{ type: "request_approval", phase: "design" }],
+      };
+    }
+    const next =
+      state.phase === "spike"
+        ? config.agents?.designFirst && outcome.targetsUi
+          ? "design"
+          : "implement"
+        : nextPhase(state.phase);
     if (!next) {
       return { state: { ...withModel, status: "done" }, effects: [{ type: "done" }] };
     }
@@ -179,7 +208,11 @@ export function reject(state: WorkflowState, config: ProjectConfig, reason: stri
   if (state.status !== "waiting_approval") return { state, effects: [] };
   const loops = state.loops + 1;
   if (loops > config.maxLoops) return block({ ...state, loops }, `rejected: ${reason}`);
-  const looped = enter({ ...state, loops }, "implement", config);
+  const looped = enter(
+    { ...state, loops },
+    state.phase === "design" ? "design" : "implement",
+    config,
+  );
   return { ...looped, state: { ...looped.state, lastError: `rejected: ${reason}` } };
 }
 

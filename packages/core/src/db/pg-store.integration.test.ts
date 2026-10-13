@@ -27,8 +27,9 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     const w = await store.getWorkflow(projectId, t.id);
     expect(w?.status).toBe("done");
     const runs = await store.listRuns({ projectId, ticketId: t.id });
-    expect(runs).toHaveLength(PHASES.length);
-    expect(new Set(runs.map((r) => r.phase))).toEqual(new Set(PHASES));
+    const defaultPhases = PHASES.filter((phase) => phase !== "design");
+    expect(runs).toHaveLength(defaultPhases.length);
+    expect(new Set(runs.map((r) => r.phase))).toEqual(new Set(defaultPhases));
     const events = await store.listEvents(runs[0]?.id ?? "");
     expect(events.length).toBeGreaterThan(0);
     expect(await store.getSpend(projectId, "2026-10-12")).toBeGreaterThan(0);

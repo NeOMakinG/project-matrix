@@ -1,0 +1,22 @@
+{
+  "name": "@matrix/design",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@matrix/core": "workspace:*",
+    "@matrix/graph": "workspace:*",
+    "@matrix/safe-fs": "workspace:*",
+    "@matrix/sandbox": "workspace:*",
+    "@matrix/workspace": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "playwright-core": "1.64.0",
+    "zod": "4.6.6"
+  }
+}
