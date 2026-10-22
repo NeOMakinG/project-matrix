@@ -67,11 +67,15 @@ describe("orca workspace", () => {
     fake.worktreeRoot = await realpath(await mkdtemp(join(tmpdir(), "matrix-orca-wt-")));
     const trusted = new TrustedWorktrees();
     const removed: string[] = [];
+    const stopped: string[] = [];
     const ws = new OrcaWorkspace({
       executor: fake.executor(),
       trusted,
       beforeRemove: async (w) => {
         removed.push(w);
+      },
+      stopRunners: async (t) => {
+        stopped.push(`${t.projectId}/${t.ticketId}`);
       },
     });
     const target = {
@@ -100,6 +104,8 @@ describe("orca workspace", () => {
       .trim();
     expect(refs).toContain(`refs/matrix/archive/matrix-NEO-12-${entry.baseSha?.slice(0, 12)}`);
     expect(removed).toEqual([prepared.workdir]);
+    // Runners are stopped before prepare and before the head is pinned.
+    expect(stopped).toEqual(["p/NEO-12", "p/NEO-12"]);
     expect(fake.calls.at(-1)).toEqual([
       "worktree",
       "rm",

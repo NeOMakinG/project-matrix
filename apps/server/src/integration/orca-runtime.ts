@@ -49,6 +49,12 @@ export interface OrcaRuntimeBridge {
  * text, go into Orca titles and objectives.
  */
 export function orcaBridge(o: OrcaBridgeOptions): OrcaRuntimeBridge {
+  // Scripts, stdin/exit files and the Podman env-file are host-local paths: a paired remote
+  // runtime would run terminals on another machine where none of them exist.
+  if (o.environment)
+    throw new Error(
+      "MATRIX_RUNTIME=orca drives the local Orca runtime only; unset MATRIX_ORCA_ENVIRONMENT",
+    );
   const cli =
     o.cli ??
     new OrcaCli({

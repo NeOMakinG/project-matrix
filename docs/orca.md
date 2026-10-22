@@ -30,7 +30,8 @@ exit code to a file, sends `worker_done` itself and deletes itself.
 Matrix drains the coordinator mailbox with `orchestration check --wait`, acks every Delivery
 (unacked ones replay), answers worker `question`s with a fixed "unattended" reply, and treats the
 exit file as completion when a message is lost. A phase that outlives its timeout is
-interrupted and its container removed. `orchestration worker-read --source terminal` is stored
+interrupted and its container removed. Before a worktree is archived or a new one prepared,
+Matrix stops any container still labelled with that ticket. `orchestration worker-read --source terminal` is stored
 as a 0600 evidence file and a `log` receipt with `data.orca = {run, dispatch, task, terminal}`.
 The Linear status comment shows `Orca: Run <id> · dispatch <id>`.
 
@@ -45,7 +46,7 @@ Configuration (server environment):
 | --- | --- |
 | `MATRIX_RUNTIME=orca` | Use Orca worktrees/terminals; needs the same gateway/image settings as `native`. |
 | `MATRIX_ORCA_BINARY` | Absolute Orca IDE CLI. Default `/opt/Orca/resources/bin/orca-ide`. Never rely on `orca` from `PATH`: on Linux `/usr/bin/orca` is often the GNOME screen reader. |
-| `MATRIX_ORCA_ENVIRONMENT` | Optional paired remote environment. Omit on the host that runs Orca. |
+| `MATRIX_ORCA_ENVIRONMENT` | Not supported with `MATRIX_RUNTIME=orca` (startup fails): runner scripts and the sandbox env-file are host-local, so Matrix must run on the Orca host. |
 
 Each repository must be registered once (`orca repo add --path <repo>`). Matrix must run as the
 same user as the Orca runtime: the CLI authenticates with `~/.config/orca/orca-runtime.json`

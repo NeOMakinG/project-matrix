@@ -58,6 +58,11 @@ export interface OrcaWorkspaceOptions {
   trusted?: TrustedWorktrees;
   /** Called before a worktree is removed (e.g. to close its Orca terminals). */
   beforeRemove?: (workdir: string) => Promise<void>;
+  /**
+   * Stops any runner container still attached to a ticket (e.g. `PodmanSandbox.stop`) before its
+   * head is archived or a fresh worktree is prepared, so nothing commits after the pin.
+   */
+  stopRunners?: (target: { projectId: string; ticketId: string }) => Promise<unknown>;
 }
 
 /** What `prepared.ref` carries for an Orca worktree. */
@@ -65,6 +70,8 @@ export interface OrcaWorkspaceRef {
   orca: string;
   commonDir: string;
   branch: string;
+  projectId?: string;
+  ticketId?: string;
 }
 
 export function parseOrcaRef(ref: string): OrcaWorkspaceRef {
@@ -79,7 +86,14 @@ export function parseOrcaRef(ref: string): OrcaWorkspaceRef {
     throw new Error(
       "legacy or malformed Orca workspace ref; refusing to remove without an archive",
     );
-  return { orca, commonDir, branch };
+  const projectId = str(value.projectId);
+  const ticketId = str(value.ticketId);
+  return {
+    orca,
+    commonDir,
+    branch,
+    ...(projectId && ticketId ? { projectId, ticketId } : {}),
+  };
 }
 
 /** Validates an `orca agent-context --json` document against the contract above. Returns problems found. */
@@ -107,10 +121,12 @@ export class OrcaWorkspace implements Workspace {
   readonly kind = "orca" as const;
   readonly cli: OrcaCli;
   readonly #o: OrcaWorkspaceOptions;
+  readonly #trusted: TrustedWorktrees;
   #validated = false;
 
   constructor(options: OrcaWorkspaceOptions = {}) {
     this.#o = options;
+    this.#trusted = options.trusted ?? new TrustedWorktrees();
     this.cli =
       options.cli ??
       new OrcaCli({
@@ -155,6 +171,8 @@ export class OrcaWorkspace implements Workspace {
 
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {
     await this.validate();
+    // Never share a ticket with a previous owner's still-running runner (lease takeover).
+    await this.#o.stopRunners?.({ projectId: target.projectId, ticketId: target.ticketId });
     const dotGit = join(target.repoPath, ".git");
     const stat = await lstat(dotGit);
     if (stat.isSymbolicLink() || !stat.isDirectory())
@@ -198,12 +216,18 @@ export class OrcaWorkspace implements Workspace {
     if (head !== branch)
       throw new Error(`Orca worktree ${workdir} is on ${head}, expected ${branch}`);
     const baseSha = await this.#git(gitdir, ["rev-parse", "--verify", "HEAD^{commit}"]);
-    await (this.#o.trusted ?? new TrustedWorktrees()).record(workdir, {
+    await this.#trusted.record(workdir, {
       gitdir,
       commonDir,
       baseSha,
     });
-    const ref: OrcaWorkspaceRef = { orca: id, commonDir, branch };
+    const ref: OrcaWorkspaceRef = {
+      orca: id,
+      commonDir,
+      branch,
+      projectId: target.projectId,
+      ticketId: target.ticketId,
+    };
     return { workdir, ref: JSON.stringify(ref) };
   }
 
@@ -213,6 +237,8 @@ export class OrcaWorkspace implements Workspace {
    */
   async cleanup(prepared: PreparedWorkspace): Promise<void> {
     const ref = parseOrcaRef(prepared.ref);
+    if (ref.projectId && ref.ticketId)
+      await this.#o.stopRunners?.({ projectId: ref.projectId, ticketId: ref.ticketId });
     const gitdir = await gitdirFromCommonDir(ref.commonDir, prepared.workdir);
     await verifyWorktreeLink(prepared.workdir, gitdir);
     const head = await this.#git(gitdir, ["rev-parse", "--verify", "HEAD^{commit}"]);
@@ -224,6 +250,6 @@ export class OrcaWorkspace implements Workspace {
     ]);
     await this.#o.beforeRemove?.(prepared.workdir).catch(() => undefined);
     await this.cli.call(["worktree", "rm", "--worktree", `id:${ref.orca}`, "--force", "--json"]);
-    await this.#o.trusted?.forget(prepared.workdir);
+    await this.#trusted.forget(prepared.workdir);
   }
 }

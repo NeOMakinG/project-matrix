@@ -53,3 +53,7 @@ test("one Orca Run per ticket worktree; phases yield receipts with Orca refs", a
   await bridge.release(workdir);
   expect(fake.closed.size).toBe(3);
 });
+
+test("a paired remote Orca environment is refused (host-local scripts)", () => {
+  expect(() => orcaBridge({ dataDir: "/tmp", environment: "Bosgame" })).toThrow(/local Orca/);
+});

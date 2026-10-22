@@ -297,7 +297,12 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
         })
       : undefined;
   const workspace = orca
-    ? new OrcaWorkspace({ cli: orca.cli, trusted, beforeRemove: (w) => orca.release(w) })
+    ? new OrcaWorkspace({
+        cli: orca.cli,
+        trusted,
+        beforeRemove: (w) => orca.release(w),
+        stopRunners: (target) => sandbox.stop(target),
+      })
     : new NativeWorkspace({
         root: join(opts.dataDir, "worktrees"),
         trusted,
