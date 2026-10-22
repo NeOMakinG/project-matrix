@@ -4,17 +4,26 @@ import type { TicketStore } from "@matrix/tickets";
 import { BeadsStore } from "@matrix/tickets/adapters/beads";
 import { BeadsQueueTimeoutError } from "@matrix/tickets/adapters/beads-queue";
 import { GitHubStore } from "@matrix/tickets/adapters/github";
+import { LinearTicketStore } from "@matrix/tickets/adapters/linear";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
 import { CoreError } from "../core-port.js";
 import type { PrivateStateOwner } from "../state-owner.js";
 import { publishOwnedFile } from "./owned-files.js";
 
-export type TicketSystem = "beads" | "markdown" | "github";
+export type TicketSystem = "beads" | "markdown" | "github" | "linear";
 
 export interface TicketSettings {
   kind: TicketSystem;
   /** GitHub `owner/name`, for the github adapter. */
   repo?: string;
+  /** Linear team + project label, for the linear adapter. The API key stays in the host env. */
+  linear?: {
+    teamKey: string;
+    projectLabel: string;
+    readyState?: string;
+    /** Host env var NAME holding the key (default `LINEAR_API_KEY`). Never the key itself. */
+    apiKeyEnv?: string;
+  };
 }
 
 export interface TicketBinaries {
@@ -62,7 +71,7 @@ export async function trackerDeadline<T>(
 
 /**
  * Picks the ticket adapter a project chose at init: beads (default, `.beads` in the project repo),
- * markdown (`.matrix/tickets` in the repo) or GitHub Issues.
+ * markdown (`.matrix/tickets` in the repo), GitHub Issues or Linear (host-only API key).
  */
 export function ticketStoreFor(
   repoPath: string,
@@ -121,6 +130,18 @@ export function ticketStoreFor(
         executor,
         ...(binaries.gh ? { ghBinary: binaries.gh } : {}),
       });
+    case "linear": {
+      const linear = settings.linear;
+      if (!linear)
+        throw new Error("the linear ticket adapter needs `linear` (teamKey, projectLabel)");
+      return new LinearTicketStore({
+        teamKey: linear.teamKey,
+        projectLabel: linear.projectLabel,
+        ...(linear.readyState ? { readyState: linear.readyState } : {}),
+        ...(linear.apiKeyEnv ? { apiKeyEnv: linear.apiKeyEnv } : {}),
+        ...(owner ? { signal: owner.signal } : {}),
+      });
+    }
   }
 }
 

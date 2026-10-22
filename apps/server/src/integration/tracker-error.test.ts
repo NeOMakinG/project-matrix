@@ -207,3 +207,12 @@ test("bd init deadline aborts execution, returns typed HTTP 503 and removes the 
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+test("linear tracker resolves from per-project settings without touching the key", () => {
+  expect(() => ticketStoreFor("/tmp/none", { kind: "linear" })).toThrow(/needs `linear`/);
+  const store = ticketStoreFor("/tmp/none", {
+    kind: "linear",
+    linear: { teamKey: "NEO", projectLabel: "project:personal", apiKeyEnv: "MATRIX_TEST_NO_KEY" },
+  });
+  expect(store.kind).toBe("linear");
+});

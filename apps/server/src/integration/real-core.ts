@@ -255,8 +255,10 @@ export class RealCore implements CorePort {
       };
     if (input.checks) config.checks = input.checks;
     await this.o.store.upsertProject(config);
-    if (config.matrix?.tickets.kind !== "github" && !this.o.ticketsFor)
-      this.hydratedTickets.add(id);
+    // Remote trackers (GitHub, Linear) may already hold issues: hydrate them on first use.
+    const remote =
+      config.matrix?.tickets.kind === "github" || config.matrix?.tickets.kind === "linear";
+    if (!remote && !this.o.ticketsFor) this.hydratedTickets.add(id);
     return toProject(config);
   }
 

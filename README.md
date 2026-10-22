@@ -30,7 +30,7 @@ Doctor can return exit 2 when prerequisites/configuration are missing; it never 
 
 Implemented dashboard captures (not live QA receipts): [overview](docs/design/implemented/01-overview.png), [board](docs/design/implemented/02-board.png), [run detail](docs/design/implemented/03-run-detail.png), [init](docs/design/implemented/04-init-interview.png), [knowledge](docs/design/implemented/05-knowledge.png), [monitor](docs/design/implemented/06-prod-monitor.png), [settings](docs/design/implemented/07-settings.png).
 
-[Self-hosting](docs/self-hosting.md) · [MCP](docs/mcp.md) · [Orca](docs/orca.md) · [Architecture](docs/architecture.md) · [Security](docs/security.md) · [ADRs](docs/adr/)
+[Self-hosting](docs/self-hosting.md) · [Linear tracker](docs/linear.md) · [MCP](docs/mcp.md) · [Orca](docs/orca.md) · [Architecture](docs/architecture.md) · [Security](docs/security.md) · [ADRs](docs/adr/)
 
 ## Stack packs
 
