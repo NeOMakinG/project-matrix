@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { scenarioRejectionReason } from "./holdout.js";
 import { stepKey } from "./reconcile.js";
 import { APPROVER, createHarness } from "./testing/harness.js";
 
@@ -153,6 +154,50 @@ describe("reconcile loop", () => {
     await h.reconciler.idle();
     const report = await h.reconciler.tick();
     expect(report.skipped[0]?.reason).toBe("daily budget reached");
+  });
+
+  test("a rejected first scenario batch is logged with a redacted reason before the retry", async () => {
+    let calls = 0;
+    const secretThen = "HOLDOUT-SECRET-THEN-CLAUSE works";
+    const h = createHarness({
+      scenarios: () =>
+        calls++ === 0
+          ? { summary: JSON.stringify({ scenarios: [{ id: "s1", given: secretThen, when: "w" }] }) }
+          : {
+              summary: JSON.stringify({
+                scenarios: [
+                  {
+                    id: "s1",
+                    given: "a user",
+                    when: "they sign up",
+                    then: "they see the dashboard",
+                  },
+                ],
+              }),
+            },
+    });
+    await h.setup();
+    const t = h.tickets.add("Sign-up flow");
+    await h.drain();
+    expect(calls).toBe(2);
+    const spike = (await h.store.listRuns({ ticketId: t.id })).find((r) => r.phase === "spike");
+    const events = await h.store.listEvents(spike?.id ?? "");
+    expect(events.map((e) => e.message)).toContain(
+      "private scenario batch 1 rejected: scenario 0 is missing given/when/then",
+    );
+    expect(JSON.stringify(events)).not.toContain(secretThen);
+  });
+
+  test("scenario rejection reasons only pass the validator's fixed wording", () => {
+    expect(scenarioRejectionReason(new SyntaxError('Unexpected token "secret holdout"'))).toBe(
+      "model output was not valid JSON",
+    );
+    expect(scenarioRejectionReason(new Error("invalid scenario count"))).toBe(
+      "invalid scenario count",
+    );
+    expect(scenarioRejectionReason(new Error("then: the user sees HOLDOUT text"))).toBe(
+      "unrecognized validation failure",
+    );
   });
 
   test("a failing private scenario writer surfaces its redacted cause, not a bare summary", async () => {

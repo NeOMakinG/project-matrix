@@ -19,6 +19,8 @@ export function codexParser(): EventParser {
   let output = 0;
   let sawUsage = false;
   let failure: string | undefined;
+  /** Last stream-level `error` event; a later `turn.completed` means codex recovered from it. */
+  let streamError: string | undefined;
   let completed = false;
   return {
     onLine(line) {
@@ -75,6 +77,7 @@ export function codexParser(): EventParser {
         }
       } else if (type === "turn.completed") {
         completed = true;
+        streamError = undefined;
         const usage = asRecord(event.usage);
         if (usage) {
           sawUsage = true;
@@ -86,19 +89,30 @@ export function codexParser(): EventParser {
             data: { input, output },
           });
         }
-      } else if (type === "turn.failed" || type === "error") {
+      } else if (type === "turn.failed") {
         failure =
           asString(asRecord(event.error)?.message) ??
           asString(event.message) ??
           "codex turn failed";
         out.push({ kind: "error", message: truncate(failure) });
+      } else if (type === "error") {
+        // Codex reports stream retries ("Reconnecting... 1/5 (stream disconnected ...)") as error
+        // events and then usually completes the turn: only an unrecovered error fails the run.
+        const message =
+          asString(event.message) ?? asString(asRecord(event.error)?.message) ?? "codex error";
+        const retrying = /^\s*Reconnecting(?:\.{3}|\u2026)\s*\d+\/\d+/i.test(message);
+        if (!retrying) streamError = message;
+        out.push({ kind: retrying ? "log" : "error", message: truncate(message) });
       }
       return out;
     },
     finish() {
-      const isError = failure !== undefined || !completed;
+      // Success = the final turn completed with no turn.failed and no unrecovered error after it;
+      // transient reconnects before the completion do not count (the CLI exit code still does).
+      const fatal = failure ?? streamError;
+      const isError = fatal !== undefined || !completed;
       return {
-        summary: failure ?? (lastMessage || (completed ? "" : "codex produced no completed turn")),
+        summary: fatal ?? (lastMessage || (completed ? "" : "codex produced no completed turn")),
         isError,
         ...(sawUsage ? { tokens: { input, output } } : {}),
       };

@@ -58,6 +58,16 @@ export function isQuotaError(text: string): boolean {
   return QUOTA_ERROR.test(text);
 }
 
+/**
+ * The model gateway (CLIProxyAPI) did not answer the model-list check before a run started: an
+ * infrastructure condition, not a ticket failure. Matches the runtime's exact wording only.
+ */
+const GATEWAY_UNAVAILABLE = /cannot verify model [^\n:]{1,200}: gateway unavailable/;
+
+export function isGatewayUnavailable(text: string): boolean {
+  return GATEWAY_UNAVAILABLE.test(text);
+}
+
 export interface ProviderCooldown {
   provider: string;
   until: Date;

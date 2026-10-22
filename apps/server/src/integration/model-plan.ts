@@ -106,27 +106,44 @@ export async function assertKnownModels(ids: string[], list?: ModelLister): Prom
     );
 }
 
-/** `GET <baseUrl>/models` on the OpenAI-compatible gateway (baseUrl ends in `/v1`). */
+/**
+ * `GET <baseUrl>/models` on the OpenAI-compatible gateway (baseUrl ends in `/v1`). The gateway can
+ * be slow (relayed path, restarting sidecar): a generous timeout, and one retry on a timeout,
+ * network error or 5xx. A 4xx or malformed body is final.
+ */
 export function gatewayModels(
   baseUrl: string,
   apiKey: string,
   fetcher?: typeof fetch,
-  timeoutMs = 3_000,
+  timeoutMs = 15_000,
+  retries = 1,
 ): ModelLister {
-  return async () => {
+  const once = async (): Promise<string[] | "retry" | undefined> => {
     try {
       const response = await (fetcher ?? globalThis.fetch)(`${baseUrl.replace(/\/$/, "")}/models`, {
         headers: { authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(timeoutMs),
       });
+      if (response.status >= 500) return "retry";
       if (!response.ok) return undefined;
-      const body = (await response.json()) as { data?: unknown };
+      const body = (await response.json().catch((error: unknown) => {
+        // A timed-out body read is retried; a malformed body is final.
+        if (error instanceof DOMException) throw error;
+        return {};
+      })) as { data?: unknown };
       if (!Array.isArray(body.data)) return undefined;
       return body.data
         .map((m) => (m && typeof m === "object" ? (m as { id?: unknown }).id : undefined))
         .filter((id): id is string => typeof id === "string");
     } catch {
-      return undefined;
+      return "retry";
+    }
+  };
+  return async () => {
+    for (let attempt = 0; ; attempt++) {
+      const result = await once();
+      if (result !== "retry") return result;
+      if (attempt >= retries) return undefined;
     }
   };
 }

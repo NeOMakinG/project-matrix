@@ -84,6 +84,35 @@ export function privateQaCause(error: unknown, max = 300): string {
   return text.length > max ? `${text.slice(0, max)}…` : text || "unknown failure";
 }
 
+/** Fixed-wording reasons a scenario batch is rejected; anything else is reported generically. */
+const SCENARIO_REJECTIONS: RegExp[] = [
+  /^scenario model run (?:failed|timeout|cancelled)$/,
+  /^no JSON found in model output$/,
+  /^unterminated JSON in model output$/,
+  /^scenarios must be an array$/,
+  /^invalid scenario count$/,
+  /^scenario \d{1,2} is missing given\/when\/then$/,
+  /^invalid scenario fields$/,
+  /^scenario must specify observable assertions$/,
+  /^absence claim requires an instrumentable assertion$/,
+  /^I\/O absence must name instrumented surfaces$/,
+  /^duplicate scenario ids$/,
+];
+
+/**
+ * Why a private scenario batch was rejected, safe to log: only the validator's own fixed messages
+ * pass through (they never quote holdout text); JSON errors and anything else stay generic.
+ */
+export function scenarioRejectionReason(error: unknown): string {
+  if (error instanceof SyntaxError) return "model output was not valid JSON";
+  const message = error instanceof Error ? error.message : "";
+  // The runner failure, already redacted by callModel for the private path.
+  if (message.startsWith("Private QA model unavailable (")) return privateQaCause(error);
+  return SCENARIO_REJECTIONS.some((shape) => shape.test(message))
+    ? message
+    : "unrecognized validation failure";
+}
+
 export async function retryPrivateQa<T>(
   signal: AbortSignal,
   operation: (attempt: number) => Promise<T>,

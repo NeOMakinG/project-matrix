@@ -41,6 +41,7 @@ export interface HarnessOptions {
   qaReceipts?: () => Receipt[];
   leaseMs?: number;
   quota?: QuotaPolicy;
+  gatewayReady?: (model: string) => Promise<string | null>;
   maxRequeuesPerDay?: number;
   pullRequests?: PullRequestPort;
   merge?: MergePort;
@@ -139,6 +140,7 @@ export function createHarness(opts: HarnessOptions = {}) {
       },
       backoff: { baseMs: 1000, maxMs: 60_000 },
       ...(opts.quota ? { quota: opts.quota } : {}),
+      ...(opts.gatewayReady ? { gatewayReady: opts.gatewayReady } : {}),
       ...(opts.maxRequeuesPerDay !== undefined
         ? { maxRequeuesPerDay: opts.maxRequeuesPerDay }
         : {}),

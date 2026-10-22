@@ -43,6 +43,7 @@ import type {
 } from "./ports-internal.js";
 import { publicQaReceipt } from "./qa-evidence.js";
 import {
+  isGatewayUnavailable,
   isQuotaError,
   type ProviderCooldown,
   providerOf,
@@ -84,6 +85,11 @@ export interface ReconcilerOptions {
    * on rate-limit errors, per-ticket runner minutes). Absent: only the classic limits apply.
    */
   quota?: QuotaPolicy;
+  /**
+   * Model gateway preflight for model phases: a reason when the gateway cannot confirm the model
+   * right now (unreachable, no recent model list). The ticket then stays queued, no attempt spent.
+   */
+  gatewayReady?: (model: string) => Promise<string | null>;
   /** How often a human may re-queue one blocked ticket per UTC day (state flapping guard). */
   maxRequeuesPerDay?: number;
   /**
@@ -532,7 +538,9 @@ export class Reconciler {
         return "daily budget reached";
       }
     }
-    return this.quotaBlock(provider);
+    const quota = await this.quotaBlock(provider);
+    if (quota || !provider || !this.o.gatewayReady) return quota;
+    return this.o.gatewayReady(model);
   }
 
   /** Subscription quota: provider cooldown, concurrency, hourly runs and 5h runner minutes. */
@@ -1352,7 +1360,7 @@ export class Reconciler {
         ...outcome,
         ok: false,
         runStatus: "failed",
-        summary: `quota: ${outcome.summary}`,
+        summary: `${isGatewayUnavailable(quota.reason) ? "gateway" : "quota"}: ${outcome.summary}`,
       };
     await this.finish(project, runId, key, outcome, reserved, fenced);
     if (fenced) return;
@@ -1388,13 +1396,17 @@ export class Reconciler {
       .filter((event) => event.kind === "error" && !event.message.startsWith("tool error:"))
       .map((event) => event.message.slice(-500));
     const text = [...errors, outcome.summary.slice(-500)].join("\n");
-    if (!isQuotaError(text)) return undefined;
+    // A gateway that could not confirm the model is infrastructure, deferred like a quota hit.
+    const gateway = isGatewayUnavailable(text);
+    if (!gateway && !isQuotaError(text)) return undefined;
     // Past the cap (until a success or a human re-queue) failures count as attempts again and no
     // longer touch the shared cooldown: one poisoned ticket cannot stall the provider.
     const deferrals = (this.quotaDeferrals.get(key) ?? 0) + 1;
     this.quotaDeferrals.set(key, deferrals);
     if (deferrals > MAX_QUOTA_DEFERRALS) return undefined;
-    const line = text.split("\n").find((l) => isQuotaError(l)) ?? "rate limited";
+    const line =
+      text.split("\n").find((l) => (gateway ? isGatewayUnavailable(l) : isQuotaError(l))) ??
+      (gateway ? "gateway unavailable" : "rate limited");
     const cooldown = this.cooldowns.hit(provider, line.trim().slice(0, 200), this.clock());
     this.o.bus.publish({
       type: "quota.cooldown",
@@ -1416,7 +1428,9 @@ export class Reconciler {
       ...w,
       status: "pending",
       nextAttemptAt: cooldown.until,
-      lastError: `waiting for ${cooldown.provider} quota: ${cooldown.reason}`,
+      lastError: isGatewayUnavailable(cooldown.reason)
+        ? `waiting for the model gateway: ${cooldown.reason}`
+        : `waiting for ${cooldown.provider} quota: ${cooldown.reason}`,
     };
     delete next.leaseOwner;
     delete next.leaseExpiresAt;
