@@ -20,6 +20,37 @@ test("public holdout receipts expose numeric counts only, never reasons or ids",
   expect(JSON.stringify(receipt)).not.toContain("PRIVATE");
 });
 
+test("failed QA run replaces initial implementer label with actual reviewer model", async () => {
+  const harness = createHarness({
+    project: {
+      models: {
+        implement: { runner: "codex", model: "gpt-6.1-sol" },
+        review: { runner: "codex", model: "gpt-6-sol" },
+      },
+    },
+  });
+  harness.deps.qa = {
+    run: async (_context, request) => {
+      expect(request?.reviewer.model).toBe("gpt-6-sol");
+      throw new FactoryToolingError("private planner failure");
+    },
+  };
+  try {
+    await harness.setup();
+    const ticket = harness.tickets.add("addition");
+    await harness.drain();
+    const runs = await harness.store.listRuns({ ticketId: ticket.id });
+    expect(runs.find((run) => run.phase === "qa")).toMatchObject({
+      status: "failed",
+      model: "gpt-6-sol",
+    });
+    expect(JSON.stringify(runs)).not.toContain("private planner failure");
+  } finally {
+    harness.reconciler.stop();
+    await harness.reconciler.idle();
+  }
+});
+
 test("QA bus and private Store never retain raw scenario probes or judge rationale", async () => {
   const privateText = "PRIVATE holdout scenario";
   const harness = createHarness({

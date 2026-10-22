@@ -24,9 +24,9 @@ const scenarios: HoldoutScenario[] = [
   { id: "s3", given: "negative operand", when: "add(-2,1)", then: "returns -1" },
   {
     id: "s4",
-    given: "unchanged state",
+    given: "console.log stub installed before import",
     when: "repeated add(2,3)",
-    then: "same sum and no side effects",
+    then: "every call returns 5 and assert zero console.log calls using the stub",
   },
 ];
 
@@ -74,14 +74,176 @@ const probes = [
     id: "s4",
     tool: "bun",
     source:
-      'import { add } from "./src/add.ts";\nconst before = Object.keys(globalThis).sort().join(",");\nconst sums = Array.from({length: 5}, () => add(2, 3));\nconsole.log(JSON.stringify({ sums }));\nif (sums.some(sum => sum !== 5) || before !== Object.keys(globalThis).sort().join(",")) throw new Error("side effect or inconsistent sum");\n',
+      'const original = console.log;\nlet calls = 0;\nconsole.log = () => { calls++; };\nconst { add } = await import("./src/add.ts");\nconst sums = Array.from({length: 5}, () => add(2, 3));\nconsole.log = original;\nconsole.log(JSON.stringify({ sums, calls }));\nif (sums.some(sum => sum !== 5) || calls !== 0) throw new Error("side effect or inconsistent sum");\n',
   },
 ];
 
-async function fixture(correct: boolean, plan = JSON.stringify({ probes }), committedSecret = "") {
+test("scenario writer regenerates unverifiable absence claims without exposing holdouts to implementer", async () => {
+  const setup = await fixture(true);
+  try {
+    const writer = vi.spyOn(setup.harness.reviewer, "run");
+    const result = (summary: string) => ({
+      runId: "spike",
+      status: "ok" as const,
+      summary,
+      receipts: [],
+    });
+    writer
+      .mockResolvedValueOnce(result("public plan"))
+      .mockResolvedValueOnce(
+        result(
+          JSON.stringify({
+            scenarios: [{ ...scenarios[3], then: "returns 5 and produces no observable I/O" }],
+          }),
+        ),
+      )
+      .mockResolvedValueOnce(result(JSON.stringify({ scenarios })));
+    const outcome = await createDefaultHandlers(setup.harness.deps).spike({
+      ...setup.context,
+      workflow: { ...setup.context.workflow, phase: "spike" },
+    });
+    expect(outcome.ok).toBe(true);
+    expect(writer).toHaveBeenCalledTimes(3);
+    const [implementer, firstAuthor, regeneration] = writer.mock.calls.map(([request]) => request);
+    expect(implementer?.model).toBe("gpt-6.1-sol");
+    expect(implementer?.prompt).not.toContain("holdout");
+    expect(firstAuthor?.model).toBe("gpt-6-sol");
+    expect(regeneration?.prompt).toContain("previous preparation failed validation");
+    expect(firstAuthor?.workdir).not.toBe(setup.workdir);
+    expect(
+      await setup.harness.holdout.load(setup.context.project.id, setup.context.ticket.id),
+    ).toEqual(scenarios);
+    expect(JSON.stringify(outcome)).not.toContain("console.log stub");
+    expect(JSON.stringify(setup.harness.tickets.comments)).not.toContain("console.log stub");
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test("no I/O probe must cover fs, net, and console, not merely correct sums", async () => {
+  const setup = await fixture(true);
+  try {
+    const outcome = await setup.driver
+      .run(setup.context, {
+        scenarios: scenarios.map((scenario) =>
+          scenario.id === "s4"
+            ? {
+                ...scenario,
+                then: "every call returns 5 and no observable I/O: stub fs/net/console and assert zero calls",
+              }
+            : scenario,
+        ),
+        reviewer: { runner: "codex", model: "gpt-6-sol" },
+      })
+      .catch((error) => error);
+    expect(outcome).toBeInstanceOf(Error);
+    expect(setup.runner.calls).toHaveLength(2);
+    expect(setup.executions).toHaveLength(0);
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test("absence claims without instrumentation retry once and fail closed", async () => {
+  const plan = JSON.stringify({
+    probes: probes.map((probe) =>
+      probe.id === "s4"
+        ? {
+            ...probe,
+            source:
+              'import { add } from "./src/add.ts"; if (add(2, 3) !== 5) throw new Error("wrong sum");',
+          }
+        : probe,
+    ),
+  });
+  const setup = await fixture(true, plan);
+  try {
+    const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
+    expect(outcome).toMatchObject({
+      ok: false,
+      failureClass: "factory-tooling",
+      model: "gpt-6-sol",
+    });
+    expect(setup.runner.calls).toHaveLength(2);
+    expect(setup.executions).toHaveLength(0);
+    expect(setup.harness.reviewer.calls).toHaveLength(0);
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test("instrumented absence assertion catches correct sums with console I/O", async () => {
+  const setup = await fixture(true, undefined, "", 'console.log("unexpected I/O");');
+  try {
+    const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
+    expect(outcome.ok).toBe(false);
+    expect(outcome.receipts.find((receipt) => receipt.kind === "holdout")?.data).toMatchObject({
+      satisfied: 3,
+      total: 4,
+    });
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test.each(["error", "malformed"])(
+  "planner and judge recover from one %s and record actual reviewer model",
+  async (failure) => {
+    const setup = await fixture(true);
+    try {
+      setup.context.project.models.aliases = { "gpt-6-sol": "gateway-review" };
+      const planner = vi.spyOn(setup.runner, "run");
+      const judge = vi.spyOn(setup.harness.reviewer, "run");
+      if (failure === "error") {
+        planner.mockRejectedValueOnce(new Error("private model error"));
+        judge.mockRejectedValueOnce(new Error("private model error"));
+      } else {
+        const invalid = {
+          runId: "invalid",
+          status: "ok" as const,
+          summary: "private malformed output",
+          receipts: [],
+        };
+        planner.mockResolvedValueOnce(invalid);
+        judge.mockResolvedValueOnce(invalid);
+      }
+      const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
+      expect(outcome).toMatchObject({ ok: true, model: "gateway-review" });
+      expect(planner).toHaveBeenCalledTimes(2);
+      expect(judge).toHaveBeenCalledTimes(2);
+      expect(
+        [...planner.mock.calls, ...judge.mock.calls].every(
+          ([request]) => request.model === "gateway-review",
+        ),
+      ).toBe(true);
+      expect(outcome.receipts.find((receipt) => receipt.kind === "holdout")?.data).toMatchObject({
+        judgeModel: "gateway-review",
+      });
+      expect(
+        outcome.receipts
+          .filter((receipt) => scenarioEvidence(receipt))
+          .every((receipt) => scenarioEvidence(receipt)?.plannerModel === "gateway-review"),
+      ).toBe(true);
+      expect(planner.mock.calls[0]?.[0].prompt).toContain(
+        "Every assertion in the full then clause",
+      );
+      expect(judge.mock.calls[0]?.[0].prompt).toContain("Every assertion in the full then clause");
+      expect(JSON.stringify(outcome)).not.toContain("private model error");
+    } finally {
+      await rm(setup.root, { recursive: true, force: true });
+    }
+  },
+);
+
+async function fixture(
+  correct: boolean,
+  plan = JSON.stringify({ probes }),
+  committedSecret = "",
+  sideEffect = "",
+) {
   const root = await mkdtemp(join(tmpdir(), "matrix-qa-probes-"));
   const workdir = join(root, "worktree");
-  const source = `export function add(left: number, right: number): number { return ${correct ? "left + right" : "0"}; }\nexport const fixtureSecret = ${JSON.stringify(committedSecret)};\n`;
+  const source = `export function add(left: number, right: number): number { ${sideEffect} return ${correct ? "left + right" : "0"}; }\nexport const fixtureSecret = ${JSON.stringify(committedSecret)};\n`;
   const materialize = (directory: string) => {
     mkdirSync(join(directory, "src"), { recursive: true });
     writeFileSync(join(directory, "src/add.ts"), source, { flag: "wx" });
@@ -261,7 +423,12 @@ test("model-claimed output without executable probes cannot create trusted evide
   );
   try {
     const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
-    expect(outcome).toMatchObject({ ok: false, failureClass: "factory-tooling", costUsd: 0.125 });
+    expect(outcome).toMatchObject({
+      ok: false,
+      failureClass: "factory-tooling",
+      costUsd: 0.25,
+      model: "gpt-6-sol",
+    });
     expect(outcome.summary).toContain("QA probe preparation failed");
     expect(setup.executions).toEqual([]);
     expect(outcome.receipts.filter((receipt) => receipt.kind === "holdout")).toEqual([]);
@@ -353,6 +520,8 @@ test.each(["failed", "ok", "malformed"])("judge %s diagnostics remain private", 
     expect(JSON.stringify(visible)).not.toContain("./src/add.ts");
     expect(JSON.stringify(visible)).not.toContain("expected");
     expect(outcome.ok).toBe(status === "ok");
+    expect(setup.harness.reviewer.run).toHaveBeenCalledTimes(status === "ok" ? 1 : 2);
+    if (status !== "ok") expect(outcome.failureClass).toBe("factory-tooling");
   } finally {
     await rm(setup.root, { recursive: true, force: true });
   }

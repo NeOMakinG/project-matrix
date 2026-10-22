@@ -14,7 +14,14 @@ import {
   screenshotHash,
   spikePlanSchema,
 } from "./design.js";
-import { HoldoutStore, holdoutReceipt, parseScenarios, parseVerdicts } from "./holdout.js";
+import {
+  HoldoutStore,
+  holdoutReceipt,
+  parseScenarios,
+  parseVerdicts,
+  QA_JUDGE_CRITERIA,
+  retryPrivateQa,
+} from "./holdout.js";
 import { findingsOf } from "./machine.js";
 import { resolveModel, selectModel } from "./models.js";
 import type {
@@ -171,35 +178,49 @@ const spike =
     deps.holdout.assertOutside(ctx.workdir);
     // The author sees only the ticket, in an empty directory outside the worktree.
     const authorDir = await ctx.scratchDir();
-    const scen = await callModel(
-      deps,
-      ctx,
-      author,
-      [
-        "Write acceptance scenarios for this ticket that a black-box tester can check against the running software.",
-        `Ticket: ${ctx.ticket.title}`,
-        ctx.ticket.body,
-        'Reply with JSON only: {"scenarios":[{"id":"s1","given":"...","when":"...","then":"..."}]} with 3 to 12 scenarios.',
-      ].join("\n\n"),
-      { phase: "spike", workdir: authorDir, readOnly: true, privateHoldout: true },
-    );
-    if (scen.status !== "ok")
-      return {
-        ok: false,
-        summary: "Private QA scenario preparation failed",
-        receipts: [],
-        runStatus: scen.status,
-      };
+    let scenarioCost = 0;
+    const scenarioRun: { status: RunResult["status"] } = { status: "failed" };
     try {
-      const scenarios = parseScenarios(scen.summary);
+      const scenarios = await retryPrivateQa(ctx.signal, async (attempt) => {
+        const scen = await callModel(
+          deps,
+          ctx,
+          author,
+          [
+            "Write acceptance scenarios for this ticket that a black-box tester can check against the running software.",
+            "Every scenario must be observable and executable-probe-verifiable, with concrete inputs and assertions for the entire then clause. Avoid subjective or unobservable claims. Phrase negative/absence claims as instrumentable checks: name the surfaces, install stubs/spies before loading the software, and assert zero calls (e.g. fs/net/console for no I/O), or snapshot named state and assert equality. Do not use blanket 'no side effects' without defining and instrumenting the observed surfaces. Invalid scenarios will be rejected; regenerate valid scenarios.",
+            `Ticket: ${ctx.ticket.title}`,
+            ctx.ticket.body,
+            ...(attempt
+              ? [
+                  "The previous preparation failed validation. Regenerate concrete, observable, fully probe-verifiable scenarios; explicitly instrument and assert every absence claim.",
+                ]
+              : []),
+            'Reply with JSON only: {"scenarios":[{"id":"s1","given":"...","when":"...","then":"..."}]} with 3 to 12 scenarios.',
+          ].join("\n\n"),
+          { phase: "spike", workdir: authorDir, readOnly: true, privateHoldout: true },
+        );
+        scenarioCost += scen.costUsd ?? 0;
+        scenarioRun.status = scen.status;
+        if (scen.status !== "ok") throw new Error("scenario preparation failed");
+        scenarioRun.status = "failed";
+        return parseScenarios(scen.summary);
+      });
       await deps.holdout.save(ctx.project.id, ctx.ticket.id, scenarios);
       ctx.emit(`stored ${scenarios.length} holdout scenarios`, "log");
     } catch {
+      const costUsd = (plan.costUsd ?? 0) + scenarioCost;
       return {
         ok: false,
         summary: "Private QA scenario preparation failed",
         receipts: [],
-        runStatus: "failed",
+        // Cancellation and timeouts keep their status so they are not mistaken for model failures.
+        runStatus: ctx.signal.aborted
+          ? "cancelled"
+          : scenarioRun.status === "ok"
+            ? "failed"
+            : scenarioRun.status,
+        ...(costUsd > 0 ? { costUsd } : {}),
       };
     }
     const outcome = outcomeFrom(plan, model, [
@@ -212,7 +233,7 @@ const spike =
     ]);
     outcome.targetsUi = requiresDesign;
     // Account for every model call made in this step, not just the plan.
-    const costUsd = (plan.costUsd ?? 0) + (scen.costUsd ?? 0);
+    const costUsd = (plan.costUsd ?? 0) + scenarioCost;
     return costUsd > 0 ? { ...outcome, costUsd } : outcome;
   };
 
@@ -509,6 +530,7 @@ const qa =
       // Only core's judge may produce a holdout receipt; anything the driver supplies is discarded.
       const scenarios = await deps.holdout.load(ctx.project.id, ctx.ticket.id);
       const judge = pickReviewer(ctx.project, ctx.workflow.implementerModel);
+      const qaModel = resolveModel(ctx.project, judge.model);
       let qaResult: Awaited<ReturnType<QaDriver["run"]>>;
       try {
         qaResult = await deps.qa.run(ctx, { scenarios, reviewer: judge });
@@ -518,8 +540,11 @@ const qa =
           ok: false,
           summary: "QA probe preparation failed; retry QA or contact the operator",
           receipts: error.receipts.map(persistedQaReceipt),
-          runStatus: "failed",
-          failureClass: "factory-tooling",
+          ...(ctx.signal.aborted
+            ? { runStatus: "cancelled" as const }
+            : { runStatus: "failed" as const, failureClass: "factory-tooling" as const }),
+          model: qaModel,
+          runner: judge.runner,
           ...(error.costUsd !== undefined ? { costUsd: error.costUsd } : {}),
         };
       }
@@ -585,29 +610,37 @@ const qa =
       }
       // The judge works from the QA evidence in an empty directory: it can neither read nor edit the worktree.
       const judgeDir = await ctx.scratchDir();
-      const verdict = await callModel(
-        deps,
-        ctx,
-        judge,
-        [
-          "Judge from the QA evidence below whether the software satisfies each scenario. A scenario the evidence does not demonstrate is not satisfied.",
-          "For host-probe evidence, inspect the probe source and actual command output. Printed claims or simulations without exercising the software do not demonstrate behavior. A nonzero host exit code cannot satisfy its scenario.",
-          `QA evidence:\n${formatQaEvidence(evidence, judgeEvidence)}`,
-          `Scenarios:\n${JSON.stringify(scenarios, null, 2)}`,
-          'Reply with JSON only: {"verdicts":[{"id":"s1","satisfied":true,"reason":"..."}]}',
-        ].join("\n\n"),
-        { phase: "qa", workdir: judgeDir, readOnly: true, privateHoldout: true },
-      );
-      const costUsd = qaCost + (verdict.costUsd ?? 0);
-      if (verdict.status !== "ok")
-        return {
-          ok: false,
-          summary: "QA judgment failed; retry QA or contact the operator",
-          receipts: evidence,
-          runStatus: verdict.status,
-          ...(costUsd > 0 ? { costUsd } : {}),
-        };
+      let costUsd = qaCost;
+      const verdictRun: { status: RunResult["status"] } = { status: "failed" };
       try {
+        const parsedVerdicts = await retryPrivateQa(ctx.signal, async () => {
+          const verdict = await callModel(
+            deps,
+            ctx,
+            judge,
+            [
+              "Judge from the QA evidence below whether the software satisfies each scenario. A scenario the evidence does not demonstrate is not satisfied.",
+              "For host-probe evidence, inspect the probe source and actual command output. Printed claims or simulations without exercising the software do not demonstrate behavior. A nonzero host exit code cannot satisfy its scenario.",
+              QA_JUDGE_CRITERIA,
+              `QA evidence:\n${formatQaEvidence(evidence, judgeEvidence)}`,
+              `Scenarios:\n${JSON.stringify(scenarios, null, 2)}`,
+              'Reply with JSON only: {"verdicts":[{"id":"s1","satisfied":true,"reason":"..."}]}',
+            ].join("\n\n"),
+            { phase: "qa", workdir: judgeDir, readOnly: true, privateHoldout: true },
+          );
+          costUsd += verdict.costUsd ?? 0;
+          verdictRun.status = verdict.status;
+          if (verdict.status !== "ok") throw new Error("judgment failed");
+          verdictRun.status = "failed";
+          const parsed = parseVerdicts(verdict.summary);
+          if (
+            parsed.length !== scenarios.length ||
+            new Set(parsed.map((item) => item.id)).size !== parsed.length ||
+            parsed.some((item) => !scenarios.some((scenario) => scenario.id === item.id))
+          )
+            throw new Error("invalid verdict coverage");
+          return parsed;
+        });
         const failed = new Set(
           evidence.flatMap((receipt) => {
             const probe = scenarioEvidence(receipt);
@@ -615,18 +648,19 @@ const qa =
             return probe && probe.exitCode !== 0 && scenario ? [scenario.id] : [];
           }),
         );
-        const verdicts = parseVerdicts(verdict.summary).map((item) =>
+        const verdicts = parsedVerdicts.map((item) =>
           failed.has(item.id)
             ? { ...item, satisfied: false, reason: "Host-executed scenario probe failed" }
             : item,
         );
-        const receipt = holdoutReceipt(scenarios, verdicts, judge.model);
+        const receipt = holdoutReceipt(scenarios, verdicts, qaModel);
         return {
           ok: evidence.every((r) => r.ok),
           summary: receipt.summary,
           receipts: [...evidence, receipt],
           runStatus: "ok",
-          model: judge.model,
+          model: qaModel,
+          runner: judge.runner,
           ...(costUsd > 0 ? { costUsd } : {}),
         };
       } catch {
@@ -634,7 +668,14 @@ const qa =
           ok: false,
           summary: "QA judgment failed; retry QA or contact the operator",
           receipts: evidence,
-          runStatus: "failed",
+          ...(ctx.signal.aborted
+            ? { runStatus: "cancelled" as const }
+            : verdictRun.status === "timeout"
+              ? { runStatus: "timeout" as const }
+              : { runStatus: "failed" as const, failureClass: "factory-tooling" as const }),
+          model: qaModel,
+          runner: judge.runner,
+          ...(costUsd > 0 ? { costUsd } : {}),
         };
       }
     } catch (error) {

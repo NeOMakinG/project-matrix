@@ -5,13 +5,16 @@ import {
   extractJson,
   FactoryToolingError,
   type GitPort,
+  hasAbsenceClaim,
   type JudgeScenarioEvidence,
   type PhaseContext,
+  QA_JUDGE_CRITERIA,
   type QaDriver,
   type Receipt,
   type Runner,
   type RunnerId,
   resolveModel,
+  retryPrivateQa,
   type ScenarioEvidence,
   selectModel,
 } from "@matrix/core";
@@ -175,71 +178,106 @@ export function scenarioQaDriver(options: {
       const runner = options.runners[request.reviewer.runner];
       if (!runner) throw new FactoryToolingError("QA reviewer runner is unavailable", receipts);
       await bound();
-      const plan = await runner
-        .run(
-          {
-            runId: `${ctx.runId}-probes`,
-            projectId: ctx.project.id,
-            ticketId: ctx.ticket.id,
-            phase: "qa",
-            runner: request.reviewer.runner,
-            model: reviewerModel,
-            workdir: snapshot.directory,
-            readOnly: true,
-            timeoutMs: ctx.project.runTimeoutMs,
-            prompt: [
-              "Design executable acceptance probes for these private holdout scenarios. You are the QA reviewer, not the implementer.",
-              "Source is a read-only disposable snapshot of the reviewed committed SHA; no git metadata is available. Do not write files or claim execution results.",
-              "Return one probe per scenario. The host will write and execute each probe in a separate fresh copy, with no network, credentials, or worktree access.",
-              "Use bun for TypeScript, node for JavaScript, or python3 for Python. Each probe resides in the project root: import the actual software with relative paths, assert scenario behavior, print observed values, and exit nonzero on failure. Do not simulate the implementation or merely print claims.",
-              `Commit: ${snapshot.headSha}`,
-              `Scenarios: ${JSON.stringify(request.scenarios)}`,
-              'Reply with JSON only: {"probes":[{"id":"s1","tool":"bun","source":"..."}]}',
-            ].join("\n\n"),
-          },
-          () => ctx.emit("QA probe planner activity", "log"),
-          signal,
-        )
-        .catch(() => {
+      let planningCost = 0;
+      const probes = await retryPrivateQa(signal, async () => {
+        await bound();
+        const plan = await runner
+          .run(
+            {
+              runId: `${ctx.runId}-probes`,
+              projectId: ctx.project.id,
+              ticketId: ctx.ticket.id,
+              phase: "qa",
+              runner: request.reviewer.runner,
+              model: reviewerModel,
+              workdir: snapshot.directory,
+              readOnly: true,
+              timeoutMs: ctx.project.runTimeoutMs,
+              prompt: [
+                "Design executable acceptance probes for these private holdout scenarios. You are the QA reviewer, not the implementer.",
+                "Source is a read-only disposable snapshot of the reviewed committed SHA; no git metadata is available. Do not write files or claim execution results.",
+                "Return one probe per scenario. The host will write and execute each probe in a separate fresh copy, with no network, credentials, or worktree access.",
+                "Use bun for TypeScript, node for JavaScript, or python3 for Python. Each probe resides in the project root: import the actual software with relative paths, assert scenario behavior, print observed values, and exit nonzero on failure. Do not simulate the implementation or merely print claims.",
+                QA_JUDGE_CRITERIA,
+                "Assert every part of each scenario's then clause. For absence claims install instrumentation before importing the software and assert zero calls for every named surface; import-time I/O counts too. Restore instrumentation before printing probe diagnostics. Do not substitute global key comparisons for I/O instrumentation.",
+                `Commit: ${snapshot.headSha}`,
+                `Scenarios: ${JSON.stringify(request.scenarios)}`,
+                'Reply with JSON only: {"probes":[{"id":"s1","tool":"bun","source":"..."}]}',
+              ].join("\n\n"),
+            },
+            () => ctx.emit("QA probe planner activity", "log"),
+            signal,
+          )
+          .catch(() => {
+            throw new FactoryToolingError(
+              "QA probe planning failed; private evidence unavailable",
+              receipts,
+            );
+          });
+        await bound();
+        planningCost += plan.costUsd ?? 0;
+        if (plan.status !== "ok")
           throw new FactoryToolingError(
             "QA probe planning failed; private evidence unavailable",
             receipts,
+            planningCost,
           );
-        });
-      await bound();
-      if (plan.status !== "ok")
-        throw new FactoryToolingError(
-          "QA probe planning failed; private evidence unavailable",
-          receipts,
-          plan.costUsd,
-        );
-      let probes: z.infer<typeof probePlan>["probes"];
-      try {
-        if (plan.status !== "ok" || plan.summary.length > 256 * 1024)
-          throw new Error("invalid planner result");
-        probes = probePlan.parse(extractJson(plan.summary)).probes;
-        if (
-          probes.length !== request.scenarios.length ||
-          new Set(probes.map((item) => item.id)).size !== probes.length ||
-          probes.some((probe) => !request.scenarios.some((item) => item.id === probe.id))
-        )
-          throw new Error("scenario coverage mismatch");
-        const needles = secrets
-          .flatMap((secret) => [Buffer.from(secret), ...secretNeedles(secret)])
-          .filter((needle) => needle.length);
-        if (
-          probes.some((probe) =>
-            needles.some((needle) => Buffer.from(probe.source).includes(needle)),
+        let probes: z.infer<typeof probePlan>["probes"];
+        try {
+          if (plan.status !== "ok" || plan.summary.length > 256 * 1024)
+            throw new Error("invalid planner result");
+          probes = probePlan.parse(extractJson(plan.summary)).probes;
+          if (
+            probes.length !== request.scenarios.length ||
+            new Set(probes.map((item) => item.id)).size !== probes.length ||
+            probes.some((probe) => !request.scenarios.some((item) => item.id === probe.id))
           )
-        )
-          throw new Error("secret in probe");
-      } catch {
+            throw new Error("scenario coverage mismatch");
+          for (const probe of probes) {
+            const scenario = request.scenarios.find((item) => item.id === probe.id)!;
+            if (
+              hasAbsenceClaim(scenario.then) &&
+              (!/\b(?:spyOn|mock|stub|patch|defineProperty|Proxy)\b|\b(?:console|fs|net)\s*\.\s*\w+\s*=/i.test(
+                probe.source,
+              ) ||
+                !/\b(?:assert\w*|expect|throw|raise|exit)\b/i.test(probe.source))
+            )
+              throw new Error("absence claim lacks probe instrumentation");
+            if (
+              /\b(?:no|without)\s+(?:observable\s+)?I\/O\b/i.test(scenario.then) &&
+              !["fs", "net", "console"].every((surface) =>
+                new RegExp(`\\b${surface}\\b`, "i").test(probe.source),
+              )
+            )
+              throw new Error("I/O absence lacks surface coverage");
+          }
+          const needles = secrets
+            .flatMap((secret) => [Buffer.from(secret), ...secretNeedles(secret)])
+            .filter((needle) => needle.length);
+          if (
+            probes.some((probe) =>
+              needles.some((needle) => Buffer.from(probe.source).includes(needle)),
+            )
+          )
+            throw new Error("secret in probe");
+        } catch {
+          throw new FactoryToolingError(
+            "QA planner must provide executable, credential-free probes for every scenario; model-claimed evidence is not trusted",
+            receipts,
+            planningCost,
+          );
+        }
+        return probes;
+      }).catch((error: unknown) => {
+        // Keep the specific tooling reason (e.g. worktree changed) but always report all planning spend.
         throw new FactoryToolingError(
-          "QA planner must provide executable, credential-free probes for every scenario; model-claimed evidence is not trusted",
+          error instanceof FactoryToolingError
+            ? error.message
+            : "QA probe planning failed; private evidence unavailable",
           receipts,
-          plan.costUsd,
+          planningCost,
         );
-      }
+      });
       for (const [index, probe] of probes.entries()) {
         const file = `.matrix-qa-probe-${index}.${probe.tool === "bun" ? "ts" : probe.tool === "node" ? "mjs" : "py"}`;
         const command = [probe.tool, file];
@@ -255,6 +293,7 @@ export function scenarioQaDriver(options: {
           probeBytes: result.probeBytes,
           outputBytes: result.outputBytes,
           passed: result.exitCode === 0,
+          plannerModel: reviewerModel,
         };
         judgeEvidence.push({
           headSha: snapshot.headSha,
@@ -275,7 +314,7 @@ export function scenarioQaDriver(options: {
       return {
         receipts,
         judgeEvidence,
-        ...(plan.costUsd !== undefined ? { costUsd: plan.costUsd } : {}),
+        ...(planningCost > 0 ? { costUsd: planningCost } : {}),
       };
     },
   };
