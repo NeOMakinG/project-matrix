@@ -11,6 +11,7 @@ export interface ScenarioEvidence {
   probeBytes: number;
   outputBytes: number;
   passed: boolean;
+  plannerModel?: string;
 }
 
 export interface JudgeScenarioEvidence {
@@ -108,6 +109,9 @@ export function scenarioEvidence(receipt: Receipt): ScenarioEvidence | undefined
     probeBytes: data.probeBytes,
     outputBytes: data.outputBytes,
     passed: data.passed,
+    ...("plannerModel" in data && typeof data.plannerModel === "string"
+      ? { plannerModel: data.plannerModel }
+      : {}),
   };
 }
 

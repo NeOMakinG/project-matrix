@@ -2,11 +2,60 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { HoldoutStore, holdoutReceipt, parseScenarios, parseVerdicts } from "./holdout.js";
+import {
+  HoldoutStore,
+  holdoutReceipt,
+  parseScenarios,
+  parseVerdicts,
+  retryPrivateQa,
+} from "./holdout.js";
 import { parseFindings, pickReviewer, reviewReceipt } from "./review.js";
 import { testProject } from "./testing/fakes.js";
 
 describe("model output parsing", () => {
+  test.each([
+    "returns 5 and produces no observable I/O",
+    "same sum and no side effects",
+    "works correctly",
+    "state remains unchanged",
+  ])("rejects uninstrumentable or unobservable claim: %s", (then) => {
+    expect(() =>
+      parseScenarios(JSON.stringify([{ given: "2,3", when: "add called repeatedly", then }])),
+    ).toThrow();
+  });
+
+  test("accepts instrumented absence checks and rejects malformed fields and duplicate ids", () => {
+    const scenario = {
+      id: "s4",
+      given: "stub fs/net/console before import",
+      when: "add(2,3) called repeatedly",
+      then: "every call returns 5 and assert zero intercepted fs/net/console calls",
+    };
+    expect(parseScenarios(JSON.stringify([scenario]))).toEqual([scenario]);
+    expect(() => parseScenarios(JSON.stringify([{ ...scenario, then: 5 }]))).toThrow();
+    expect(() => parseScenarios(JSON.stringify([scenario, scenario]))).toThrow();
+  });
+
+  test("retry is bounded and cancellation never retries", async () => {
+    let calls = 0;
+    await expect(
+      retryPrivateQa(new AbortController().signal, async () => {
+        calls++;
+        throw new Error("private");
+      }),
+    ).rejects.toThrow();
+    expect(calls).toBe(2);
+    const controller = new AbortController();
+    calls = 0;
+    await expect(
+      retryPrivateQa(controller.signal, async () => {
+        calls++;
+        controller.abort();
+        throw new Error("private");
+      }),
+    ).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
   test("findings tolerate prose and code fences", () => {
     const text =
       'Here is my review:\n```json\n{"findings":[{"severity":"P1","title":"SQL injection","file":"api.ts:9"}]}\n```';

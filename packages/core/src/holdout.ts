@@ -17,6 +17,60 @@ export interface ScenarioVerdict {
 
 const SAFE_ID = /^[A-Za-z0-9._-]+$/;
 
+export const QA_JUDGE_CRITERIA =
+  "Every assertion in the full then clause must be demonstrated by host-executed evidence. Inspect probe source and actual output; exit zero, printed claims, simulations, or checking only part of the clause are insufficient. Absence claims require instrumentation installed before importing/exercising the software, covering the named surfaces (e.g. fs, net, console), and assertions of zero intercepted calls. A nonzero host exit cannot satisfy a scenario.";
+
+export function hasAbsenceClaim(text: string): boolean {
+  return /\b(?:no|without|never|absence|unchanged|unmodified)\b|\bzero\s+(?:[\w./:-]+\s+){0,4}(?:calls|writes|requests|effects)\b|\b(?:side[- ]effects?|I\/O|pure|purity)\b|\b(?:not|doesn't|cannot)\s+(?:produce|perform|write|log|mutate|modify|access|emit)\b/i.test(
+    text,
+  );
+}
+
+export function validateScenario(scenario: HoldoutScenario): void {
+  if (
+    ![scenario.given, scenario.when, scenario.then].every(
+      (text) => typeof text === "string" && text.trim(),
+    )
+  )
+    throw new Error("invalid scenario fields");
+  if (
+    /^(?:it )?(?:works(?: correctly)?|behaves correctly|is correct|is good|is fast|is secure)[.!]?$/i.test(
+      scenario.then.trim(),
+    )
+  )
+    throw new Error("scenario must specify observable assertions");
+  if (
+    hasAbsenceClaim(scenario.then) &&
+    (!/\b(?:stub|spy|mock|instrument|intercept|snapshot|capture)\w*\b/i.test(
+      `${scenario.given} ${scenario.then}`,
+    ) ||
+      !/\b(?:assert|verify|check|expect)\w*\b/i.test(scenario.then))
+  )
+    throw new Error("absence claim requires an instrumentable assertion");
+  if (
+    /\b(?:no|without)\s+(?:observable\s+)?I\/O\b/i.test(scenario.then) &&
+    !["fs", "net", "console"].every((surface) =>
+      new RegExp(`\\b${surface}\\b`, "i").test(`${scenario.given} ${scenario.then}`),
+    )
+  )
+    throw new Error("I/O absence must name instrumented surfaces");
+}
+
+export async function retryPrivateQa<T>(
+  signal: AbortSignal,
+  operation: (attempt: number) => Promise<T>,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    signal.throwIfAborted();
+    try {
+      return await operation(attempt);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (attempt === 1) throw error;
+    }
+  }
+}
+
 /** Only holdout receipts produced by core's own judge carry this tag; drivers' receipts are dropped. */
 export const HOLDOUT_PROVENANCE = "core-judge";
 
@@ -43,16 +97,22 @@ export function parseScenarios(text: string): HoldoutScenario[] {
   const value = extractJson(text);
   const list = Array.isArray(value) ? value : (value as { scenarios?: unknown }).scenarios;
   if (!Array.isArray(list)) throw new Error("scenarios must be an array");
-  return list.map((raw, i) => {
+  if (!list.length || list.length > 16) throw new Error("invalid scenario count");
+  const scenarios = list.map((raw, i) => {
     const s = raw as Partial<HoldoutScenario>;
     if (!s.given || !s.when || !s.then) throw new Error(`scenario ${i} is missing given/when/then`);
-    return {
+    const scenario = {
       id: s.id && SAFE_ID.test(s.id) ? s.id : `s${i + 1}`,
       given: s.given,
       when: s.when,
       then: s.then,
     };
+    validateScenario(scenario);
+    return scenario;
   });
+  if (new Set(scenarios.map((scenario) => scenario.id)).size !== scenarios.length)
+    throw new Error("duplicate scenario ids");
+  return scenarios;
 }
 
 export function parseVerdicts(text: string): ScenarioVerdict[] {
