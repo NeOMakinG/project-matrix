@@ -1,8 +1,9 @@
 # Project model routing
 
 `matrix init` asks `models.plan` as a JSON model plan, including runner/model pairs
-for each tier and phase. Recommendations are large `claude-code/claude-opus-5-5`,
-small `claude-code/claude-sonnet-5-5`, and reviewer `codex/gpt-6-sol`. Finalizing the
+for each tier and phase. Recommendations are large `claude-code/claude-opus-4-7`
+(Opus 5.5 on CLIProxyAPI), small `claude-code/claude-sonnet-5-5`, and reviewer
+`codex/gpt-6-sol`. Finalizing the
 server interview also saves this plan into the stored project used by the factory.
 
 Example `models` section in `matrix.config.ts`:
@@ -10,14 +11,14 @@ Example `models` section in `matrix.config.ts`:
 ```json
 {
   "tiers": {
-    "large": { "runner": "claude-code", "model": "claude-opus-5-5" },
+    "large": { "runner": "claude-code", "model": "claude-opus-4-7" },
     "small": { "runner": "claude-code", "model": "claude-sonnet-5-5" }
   },
   "smallEstimateThreshold": 3,
-  "implement": { "runner": "claude-code", "model": "claude-opus-5-5" },
+  "implement": { "runner": "claude-code", "model": "claude-opus-4-7" },
   "review": { "runner": "codex", "model": "gpt-6-sol" },
   "qa": { "runner": "codex", "model": "gpt-6-sol" },
-  "aliases": { "claude-opus-5-5": "claude-opus-4-7" }
+  "aliases": { "opus": "claude-opus-4-7" }
 }
 ```
 
@@ -36,8 +37,16 @@ model is configured, the factory fails closed instead of self-reviewing.
 Aliases map logical IDs directly to gateway IDs at runner invocation; they are not
 recursive. Workflow implementation identity records the resolved ID used by the
 runner so later alias changes cannot enable self-review. The example alias
-supports this deployment's CLIProxyAPI v8.0.8 routing of Opus 5.5 as
+maps a logical `opus` to this deployment's CLIProxyAPI id for Opus 5.5,
 `claude-opus-4-7`; configure aliases explicitly for your gateway, not globally.
+
+Every model id is checked against the gateway's `GET /v1/models` when a project is
+created, registered or its models are patched: all phases, tiers, reviewer fallbacks
+and alias targets of the resulting config, defaults included. An id the gateway does
+not serve, or a gateway that does not answer, is a 400 with the offending ids. The
+native/Orca runtime repeats the check per run and accepts any served model (Claude,
+GPT, GLM, ...) on the `codex` or `claude-code` runner; both CLIs ship in the runner
+image.
 
 ```sh
 matrix models check --gateway http://127.0.0.1:8317

@@ -6,6 +6,11 @@ export interface TrustedWorktree {
   commonDir: string;
   /** HEAD when the host created the worktree; commits after it are agent work and get inspected. */
   baseSha?: string;
+  /**
+   * Branch the host created the worktree on, as read back from git/Orca (e.g. Orca's
+   * `branchPrefix: git-username` yields `<user>/matrix-NEO-7`). The commit gate trusts this name.
+   */
+  branch?: string;
 }
 
 /**

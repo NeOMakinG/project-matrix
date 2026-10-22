@@ -87,10 +87,10 @@ export class NativeWorkspace implements Workspace {
     const gitdir = await gitdirFromCommonDir(commonDir, workdir);
     await verifyWorktreeLink(workdir, gitdir);
     const baseSha = await this.#git(gitdir, ["rev-parse", "--verify", "HEAD^{commit}"]);
-    await this.trusted.record(workdir, { gitdir, commonDir, baseSha });
     const branch = await this.#git(gitdir, ["symbolic-ref", "--short", "HEAD"]);
     if (branch !== target.branch)
       throw new Error(`workspace ${workdir} is on ${branch}, expected ${target.branch}`);
+    await this.trusted.record(workdir, { gitdir, commonDir, baseSha, branch });
     return { workdir, ref: JSON.stringify({ commonDir, gitdir }) };
   }
 

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readlink, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { GitPort, Receipt } from "@matrix/core";
 import {
@@ -64,6 +64,25 @@ async function readSource(root: string, path: string): Promise<Buffer> {
 }
 
 /** GitPort for agent-touched worktrees: host-owned gitdir only, hardened git, no symlink following. */
+/**
+ * Branches the implementation commit gate accepts: `matrix/<ticket>` (native worktrees),
+ * `matrix-<ticket>` (Orca) or Orca's `branchPrefix: git-username` form `<user>/matrix-<ticket>`,
+ * and, when the host recorded the branch at prepare time, only exactly that one. Worktrees recorded before the
+ * branch was (no `recorded`) accept the prefixed form only when the host-owned worktree path ends
+ * in that same `matrix-<ticket>` (Orca names the checkout directory after `--name`).
+ */
+export function isTicketBranch(ref: string, recorded?: string, workdir?: string): boolean {
+  if (!ref.startsWith("refs/heads/")) return false;
+  const name = ref.slice("refs/heads/".length);
+  const prefixed = /^[^/]+\/(matrix-[^/]+)$/.exec(name);
+  const ticket = name.startsWith("matrix/") || name.startsWith("matrix-") || prefixed !== null;
+  if (!ticket) return false;
+  // A recorded branch pins the gate to exactly that name.
+  if (recorded !== undefined) return name === recorded;
+  if (!prefixed) return true;
+  return workdir !== undefined && basename(workdir) === prefixed[1];
+}
+
 export class WorktreeGitPort implements GitPort {
   readonly #executor: LineExecutor;
   readonly #trusted: TrustedWorktrees;
@@ -247,8 +266,8 @@ export class WorktreeGitPort implements GitPort {
     if (head !== options.expectedHead)
       throw new Error("implementation HEAD changed before handover");
     const branch = (await this.#git(workdir, ["symbolic-ref", "HEAD"])).trim();
-    // Native worktrees use `matrix/<ticket>`; Orca turns the `/` into `-` (`matrix-<ticket>`).
-    if (!branch.startsWith("refs/heads/matrix/") && !branch.startsWith("refs/heads/matrix-"))
+    const trusted = await this.#trusted.lookup(workdir);
+    if (!isTicketBranch(branch, trusted.branch, workdir))
       throw new Error("implementation commit requires a Matrix ticket branch");
     const state = await this.treeState(workdir);
     const status = await this.#git(
@@ -282,7 +301,7 @@ export class WorktreeGitPort implements GitPort {
         }
       }
     }
-    const { gitdir } = await this.#trusted.lookup(workdir);
+    const { gitdir } = trusted;
     const temporary = await mkdtemp(join(tmpdir(), "matrix-handover-"));
     try {
       const source = join(temporary, "source");

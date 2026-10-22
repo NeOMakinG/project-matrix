@@ -312,6 +312,18 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
     );
     expect(await port.cleanForChecks(prepared.workdir)).toBe(committed.headSha);
   }, 30_000);
+  test("commit gate accepts the recorded Orca user-prefixed branch, refuses other branches", async () => {
+    const prefixed = await fixture({ branch: "NeOMakinG/matrix-NEO-7" });
+    await writeFile(join(prefixed.prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+    await expect(
+      prefixed.port.commitImplementation(prefixed.prepared.workdir, prefixed.options),
+    ).resolves.toMatchObject({ headSha: expect.stringMatching(/^[0-9a-f]{40}$/) });
+    const other = await fixture({ branch: "feature/NEO-7" });
+    await writeFile(join(other.prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+    await expect(
+      other.port.commitImplementation(other.prepared.workdir, other.options),
+    ).rejects.toThrow(/Matrix ticket branch/);
+  }, 30_000);
   test("existing-repo policy: custom editable paths, Orca branch names, no .matrix in the commit", async () => {
     const { prepared, port, options, git } = await fixture({ branch: "matrix-NEO-7" });
     await mkdir(join(prepared.workdir, "app/src/features"), { recursive: true });

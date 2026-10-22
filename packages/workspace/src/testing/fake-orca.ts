@@ -26,6 +26,10 @@ export class FakeOrca {
   interrupted = new Set<string>();
   acked = new Set<string>();
   replies: Array<{ id: string; body: string }> = [];
+  /** Orca's `branchPrefix: git-username` setting: worktree branches become `<prefix>/<name>`. */
+  branchPrefix = "";
+  /** Run ids `run-use` may bind; unknown ids fail like the real runtime. */
+  runs = new Set<string>();
   readonly #queue: Message[] = [];
   #delivery: { id: string; messages: Message[] } | undefined;
   #n = 0;
@@ -58,8 +62,19 @@ export class FakeOrca {
     return this.#queue.length + (this.#delivery ? this.#delivery.messages.length : 0);
   }
 
+  /** Flags Orca's usage line marks as required; the real CLI refuses calls without them. */
+  static readonly REQUIRED: Record<string, string[]> = {
+    "orchestration task-create": ["spec"],
+    "orchestration dispatch": ["task", "to"],
+    "orchestration run-create": ["objective"],
+    "orchestration run-use": ["id"],
+    "worktree create": ["name"],
+  };
+
   #handle(args: string[]): unknown {
     const cmd = `${args[0]} ${args[1]}`;
+    for (const flag of FakeOrca.REQUIRED[cmd] ?? [])
+      if (!this.#flag(args, flag)) throw new Error(`Missing required --${flag}`);
     switch (cmd) {
       case "agent-context --json":
         return {
@@ -83,8 +98,9 @@ export class FakeOrca {
         if (!repo) throw new Error("unknown repo");
         const path = join(this.worktreeRoot, name);
         const base = this.#flag(args, "base-branch");
-        execFileSync("git", ["-C", repo.path, "worktree", "add", "-q", "-b", name, path, base]);
-        return { worktree: { id: `wt-${name}`, path, branch: `refs/heads/${name}` } };
+        const branch = this.branchPrefix ? `${this.branchPrefix}/${name}` : name;
+        execFileSync("git", ["-C", repo.path, "worktree", "add", "-q", "-b", branch, path, base]);
+        return { worktree: { id: `wt-${name}`, path, branch: `refs/heads/${branch}` } };
       }
       case "worktree rm":
         return { removed: true };
@@ -94,8 +110,16 @@ export class FakeOrca {
         this.closed.add(this.#flag(args, "terminal"));
         this.#children.get(this.#flag(args, "terminal"))?.kill("SIGKILL");
         return { closed: true };
-      case "orchestration run-create":
-        return { run: { id: this.#id("run") } };
+      case "orchestration run-create": {
+        const id = this.#id("run");
+        this.runs.add(id);
+        return { run: { id } };
+      }
+      case "orchestration run-use": {
+        const id = this.#flag(args, "id");
+        if (!this.runs.has(id)) throw new Error(`Run not found: ${id}`);
+        return { run: { id } };
+      }
       case "orchestration task-create":
         return { task: { id: this.#id("task") } };
       case "orchestration dispatch": {

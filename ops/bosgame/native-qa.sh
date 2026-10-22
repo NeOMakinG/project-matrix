@@ -13,7 +13,7 @@ awk -v cores="$cores" '{ if ($1 >= cores) exit 1 }' /proc/loadavg || exit 1
 awk '/MemAvailable:/ { if ($2 < 4194304) exit 1; found=1 } END { if (!found) exit 1 }' /proc/meminfo || exit 1
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 image="${MATRIX_RUNNER_IMAGE:-matrix-runner:dev}"
-bash "$repo/ops/bosgame/check-runner-image.sh" "$image" git codex node bun
+bash "$repo/ops/bosgame/check-runner-image.sh" "$image" git codex claude node bun
 "${MATRIX_GITLEAKS:-gitleaks}" version >/dev/null
 export MATRIX_NATIVE_QA_OUTPUT="${MATRIX_NATIVE_QA_OUTPUT:-$HOME/.matrix/native-qa-receipts}"
 "${MATRIX_BUN_BINARY:-$HOME/.bun/bin/bun}" "$repo/apps/server/src/integration/native-qa.ts"

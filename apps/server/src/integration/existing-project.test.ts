@@ -1,13 +1,17 @@
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fakeLinear } from "@matrix/tickets/testing/linear-fake";
 import { afterEach, expect, test, vi } from "vitest";
 import { createServer } from "../http/app.js";
 import { makeRepo } from "./existing-repo.test-helpers.js";
 import { createFactory } from "./factory.js";
 import type { StoredProject } from "./mapping.js";
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 const linear = { teamKey: "NEO", projectLabel: "project:wayline", apiKeyEnv: "LINEAR_API_KEY" };
 
@@ -151,5 +155,48 @@ test("model ids are checked against the gateway when it answers", async () => {
   });
   expect(bad.status).toBe(400);
   expect(JSON.stringify(bad.body)).toMatch(/gpt-9-imaginary/);
+  await factory.stop();
+});
+
+test("an unreachable gateway model list is a clear 400, not a silent pass", async () => {
+  const { repo, call, factory } = await boot(["gpt-6-sol"]);
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("down", { status: 502 })),
+  );
+  const res = await call("POST", "/v1/projects", {
+    name: "x",
+    repo: { path: repo },
+    tickets: { kind: "linear", linear },
+    models: { review: { runner: "codex", model: "gpt-6-sol" } },
+  });
+  expect(res.status).toBe(400);
+  expect(JSON.stringify(res.body)).toMatch(/cannot verify model ids/);
+  await factory.stop();
+});
+
+test("blocked-ticket labels reach Linear: the project ticket store forwards addLabel/removeLabel", async () => {
+  const { repo, call, factory } = await boot();
+  const created = await call("POST", "/v1/projects", {
+    name: "Travel Journal",
+    repo: { path: repo },
+    tickets: { kind: "linear", linear },
+  });
+  expect(created.status).toBe(200);
+  const fake = fakeLinear();
+  vi.stubGlobal("fetch", fake.fetch);
+  vi.stubEnv("LINEAR_API_KEY", `lin_api_${"x".repeat(16)}`);
+  const core = factory.core as unknown as {
+    ticketStore(id: string): Promise<import("@matrix/tickets").TicketStore>;
+  };
+  const store = await core.ticketStore(String(created.body.id));
+  expect(store.addLabel).toBeTypeOf("function");
+  expect(store.removeLabel).toBeTypeOf("function");
+  expect(store.listComments).toBeTypeOf("function");
+  const ticket = await store.create({ title: "Choose photos does nothing", body: "" });
+  await store.addLabel?.(ticket.id, "needs-human");
+  expect((await store.get(ticket.id))?.labels).toContain("needs-human");
+  await store.removeLabel?.(ticket.id, "needs-human");
+  expect((await store.get(ticket.id))?.labels).not.toContain("needs-human");
   await factory.stop();
 });

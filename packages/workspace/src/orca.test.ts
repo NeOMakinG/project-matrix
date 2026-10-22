@@ -4,6 +4,7 @@ import { mkdtemp, readdir, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
+import { isTicketBranch } from "./git-port.js";
 import { checkOrcaContract, ORCA_REQUIRED_COMMANDS, OrcaWorkspace } from "./orca.js";
 import { OrcaCli, shellQuote } from "./orca-cli.js";
 import {
@@ -132,6 +133,42 @@ describe("orca workspace", () => {
     );
   });
 
+  test("Orca's git-username branch prefix is read back, recorded and accepted by the gate", async () => {
+    const repoPath = await repo();
+    const fake = new FakeOrca();
+    fake.branchPrefix = "NeOMakinG";
+    fake.repos = [{ id: "r1", path: repoPath }];
+    fake.worktreeRoot = await realpath(await mkdtemp(join(tmpdir(), "matrix-orca-wt-")));
+    const trusted = new TrustedWorktrees();
+    const ws = new OrcaWorkspace({ executor: fake.executor(), trusted });
+    const prepared = await ws.prepare({
+      projectId: "p",
+      ticketId: "NEO-7",
+      repoPath,
+      branch: "matrix/NEO-7",
+      baseBranch: "main",
+    });
+    expect(JSON.parse(prepared.ref)).toMatchObject({ branch: "NeOMakinG/matrix-NEO-7" });
+    const entry = await trusted.lookup(prepared.workdir);
+    expect(entry.branch).toBe("NeOMakinG/matrix-NEO-7");
+    expect(isTicketBranch("refs/heads/NeOMakinG/matrix-NEO-7", entry.branch)).toBe(true);
+    // Only the recorded name: another prefixed branch, or an unrecorded one, is refused.
+    expect(isTicketBranch("refs/heads/evil/matrix-NEO-7", entry.branch)).toBe(false);
+    expect(isTicketBranch("refs/heads/NeOMakinG/matrix-NEO-7")).toBe(false);
+    // Legacy records (no branch): only when the host-owned checkout dir names the same ticket.
+    expect(isTicketBranch("refs/heads/NeOMakinG/matrix-NEO-7", undefined, "/w/matrix-NEO-7")).toBe(
+      true,
+    );
+    expect(isTicketBranch("refs/heads/NeOMakinG/matrix-NEO-8", undefined, "/w/matrix-NEO-7")).toBe(
+      false,
+    );
+    expect(isTicketBranch("refs/heads/main", "main")).toBe(false);
+    expect(isTicketBranch("refs/heads/a/b/matrix-NEO-7", "a/b/matrix-NEO-7")).toBe(false);
+    expect(isTicketBranch("refs/heads/matrix-NEO-7")).toBe(true);
+    expect(isTicketBranch("refs/heads/matrix-NEO-8", "NeOMakinG/matrix-NEO-7")).toBe(false);
+    expect(isTicketBranch("refs/heads/matrix/NEO-7")).toBe(true);
+  });
+
   test("non-Linear ticket ids are not linked", async () => {
     const repoPath = await repo();
     const fake = new FakeOrca();
@@ -211,6 +248,36 @@ describe("orca launcher", () => {
     expect(fake.pending()).toBe(0);
     const send = fake.calls.find((c) => c[1] === "send" && c.includes("--text")) ?? [];
     expect(send.join(" ")).not.toContain("touch");
+  });
+
+  test("an invalidated coordinator is closed and its replacement rebinds the same Run", async () => {
+    const fake = new FakeOrca();
+    const cli = new OrcaCli({ binary: BIN, executor: fake.executor() });
+    const session = new OrcaTicketSession(cli, "/tmp/matrix-NEO-7", "NEO-7 · p", 20);
+    const first = await session.open();
+    session.invalidate();
+    const second = await session.open();
+    expect(second.runId).toBe(first.runId);
+    expect(second.coordinator).not.toBe(first.coordinator);
+    expect(fake.closed.has(first.coordinator)).toBe(true);
+    expect(fake.calls.filter((c) => c[1] === "run-create")).toHaveLength(1);
+    expect(fake.calls.find((c) => c[1] === "run-use")).toEqual(
+      expect.arrayContaining(["--id", first.runId, "--from", second.coordinator]),
+    );
+    await session.close();
+  });
+
+  test("close() during open() neither resurrects the session nor leaks the coordinator", async () => {
+    const fake = new FakeOrca();
+    const cli = new OrcaCli({ binary: BIN, executor: fake.executor() });
+    const session = new OrcaTicketSession(cli, "/tmp/matrix-NEO-9", "NEO-9 · p", 20);
+    const opening = session.open();
+    await session.close();
+    await expect(opening).rejects.toThrow(/closed while opening/);
+    expect(session.ref).toBeUndefined();
+    const coordinator = fake.calls.find((c) => c[0] === "terminal" && c[1] === "create");
+    expect(coordinator).toBeDefined();
+    expect(fake.closed.size).toBe(1);
   });
 
   test("worker questions get the fixed unattended answer", async () => {

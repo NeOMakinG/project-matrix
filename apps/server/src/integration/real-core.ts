@@ -46,7 +46,14 @@ import {
 } from "./existing-repo.js";
 import { type FinalizeJournal, finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
-import { applyModelPlan, assertKnownModels, type ModelLister } from "./model-plan.js";
+import {
+  applyModelPlan,
+  assertKnownModels,
+  configModelIds,
+  type ModelLister,
+  type ModelPlan,
+  planModelIds,
+} from "./model-plan.js";
 import { TicketSnapshotLock } from "./ticket-snapshot-lock.js";
 import {
   DEFAULT_TICKETS,
@@ -227,6 +234,27 @@ export class RealCore implements CorePort {
       indexed.upsertComment = (id, key, body) =>
         this.withTicketSnapshotLock(projectId, () => upsert(id, key, body));
     }
+    // Optional capabilities must be forwarded: dropping addLabel here is why a blocked ticket got
+    // its "needs-human" comment but never the label (the reconciler saw no addLabel and skipped).
+    if (store.addLabel) {
+      const add = store.addLabel.bind(store);
+      indexed.addLabel = (id, label) =>
+        this.withTicketSnapshotLock(projectId, async () => {
+          await add(id, label);
+          const ticket = await store.get(id);
+          if (ticket) await this.index(projectId, ticket);
+        });
+    }
+    if (store.removeLabel) {
+      const remove = store.removeLabel.bind(store);
+      indexed.removeLabel = (id, label) =>
+        this.withTicketSnapshotLock(projectId, async () => {
+          await remove(id, label);
+          const ticket = await store.get(id);
+          if (ticket) await this.index(projectId, ticket);
+        });
+    }
+    if (store.listComments) indexed.listComments = store.listComments.bind(store);
     if (store.ensureScope) indexed.ensureScope = store.ensureScope.bind(store);
     const owned = this.o.stateOwner?.fence(indexed) ?? indexed;
     this.ticketStores.set(projectId, owned);
@@ -285,10 +313,8 @@ export class RealCore implements CorePort {
         review: { runner: "codex", model: "fake-reviewer" },
       };
     if (input.checks) config.checks = input.checks;
-    if (input.models) {
-      await assertKnownModels(input.models, this.o.listModels);
-      applyModelPlan(config, input.models);
-    }
+    if (input.models) applyModelPlan(config, input.models);
+    await this.assertServedModels(config, input.models);
     await this.o.store.upsertProject(config);
     // Remote trackers (GitHub, Linear) may already hold issues: hydrate them on first use.
     const remote =
@@ -318,9 +344,6 @@ export class RealCore implements CorePort {
       const own = await realpath(this.o.projectsRoot).catch(() => resolve(this.o.projectsRoot));
       if (repo.path === own || repo.path.startsWith(`${own}/`))
         throw new CoreError("invalid_request", "repos Matrix created cannot be registered again");
-      if (input.models) await assertKnownModels(input.models, this.o.listModels);
-      await this.o.verifyRepo?.(repo.path);
-      this.o.stateOwner?.assertOwned();
       const id = randomUUID();
       const config = newProjectConfig({
         id,
@@ -349,9 +372,22 @@ export class RealCore implements CorePort {
           review: { runner: "codex", model: "fake-reviewer" },
         };
       if (input.models) applyModelPlan(config, input.models);
+      // Every model the project would call, defaults included, before anything is registered.
+      await this.assertServedModels(config, input.models);
+      await this.o.verifyRepo?.(repo.path);
+      this.o.stateOwner?.assertOwned();
       await this.o.store.upsertProject(config);
       return toProject(config);
     });
+  }
+
+  /**
+   * Model ids must be served by the gateway. Real runtimes check the whole resulting config
+   * (defaults and aliases included); the fake runtime's internal models are not gateway ids.
+   */
+  private async assertServedModels(config: StoredProject, plan?: ModelPlan): Promise<void> {
+    const ids = this.o.fakeRuntime ? (plan ? planModelIds(plan) : []) : configModelIds(config);
+    await assertKnownModels(ids, this.o.listModels);
   }
 
   /** Tracker, checks and model plan after registration (host-side config only). */
@@ -376,14 +412,16 @@ export class RealCore implements CorePort {
       const editable = patch.repo?.editablePaths
         ? validateEditablePaths(patch.repo.editablePaths)
         : undefined;
-      if (patch.models) await assertKnownModels(patch.models, this.o.listModels);
       const config = structuredClone(await this.config(projectId));
       if (patch.tickets && config.matrix)
         config.matrix = { ...config.matrix, tickets: patch.tickets };
       if (editable && config.matrix?.repo) config.matrix.repo.editablePaths = editable;
       if (patch.checks)
         config.checks = patch.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] }));
-      if (patch.models) applyModelPlan(config, patch.models);
+      if (patch.models) {
+        applyModelPlan(config, patch.models);
+        await this.assertServedModels(config, patch.models);
+      }
       this.o.stateOwner?.assertOwned();
       await this.o.store.upsertProject(config);
       if (patch.tickets) {

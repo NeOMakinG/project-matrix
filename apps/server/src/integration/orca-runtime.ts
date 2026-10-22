@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Receipt, RunRequest } from "@matrix/core";
 import type { LineExecutor } from "@matrix/sandbox";
 import {
   OrcaCli,
   type OrcaPhaseEvidence,
+  type OrcaRunMemory,
   OrcaTicketSession,
   orcaLauncher,
   safeSegment,
@@ -44,6 +45,50 @@ export interface OrcaRuntimeBridge {
 }
 
 /**
+ * Host-private `worktree -> Orca Run id` map (`<dataDir>/orca-runs.json`, 0600), so a ticket's
+ * retries and a server restart rebind to the ticket's existing Run instead of creating another.
+ */
+export function fileRunMemory(path: string): OrcaRunMemory {
+  let chain: Promise<unknown> = Promise.resolve();
+  const load = async (): Promise<Record<string, string>> => {
+    try {
+      const value = JSON.parse(await readFile(path, "utf8")) as unknown;
+      return value && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, string>)
+        : {};
+    } catch {
+      return {};
+    }
+  };
+  const update = (change: (all: Record<string, string>) => void) => {
+    const next = chain.then(async () => {
+      const all = await load();
+      change(all);
+      const tmp = `${path}.${process.pid}.tmp`;
+      await writeFile(tmp, `${JSON.stringify(all, null, 2)}\n`, { mode: 0o600 });
+      await rename(tmp, path);
+    });
+    chain = next.catch(() => undefined);
+    return next;
+  };
+  return {
+    get: async (worktree) => {
+      await chain;
+      const id = (await load())[worktree];
+      return typeof id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : undefined;
+    },
+    set: (worktree, runId) =>
+      update((all) => {
+        all[worktree] = runId;
+      }),
+    delete: (worktree) =>
+      update((all) => {
+        delete all[worktree];
+      }),
+  };
+}
+
+/**
  * Glue between the Matrix runtime and Orca: one OrcaTicketSession (coordinator terminal + Run)
  * per ticket worktree, one Orca task/terminal/dispatch per runner call. Ids only, never ticket
  * text, go into Orca titles and objectives.
@@ -62,6 +107,7 @@ export function orcaBridge(o: OrcaBridgeOptions): OrcaRuntimeBridge {
       ...(o.environment ? { environment: o.environment } : {}),
     });
   const sessions = new Map<string, OrcaTicketSession>();
+  const memory = fileRunMemory(join(o.dataDir, "orca-runs.json"));
   let counter = 0;
   const sessionFor = (req: RunRequest) => {
     let session = sessions.get(req.workdir);
@@ -71,6 +117,7 @@ export function orcaBridge(o: OrcaBridgeOptions): OrcaRuntimeBridge {
         req.workdir,
         `${safeSegment(req.ticketId)} · ${safeSegment(req.projectId)}`,
         o.pollMs,
+        memory,
       );
       sessions.set(req.workdir, session);
     }

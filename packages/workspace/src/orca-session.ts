@@ -16,6 +16,13 @@ export interface OrcaRunRef {
   worktree: string;
 }
 
+/** Remembers each ticket worktree's Run across coordinator restarts and server restarts. */
+export interface OrcaRunMemory {
+  get(worktree: string): Promise<string | undefined>;
+  set(worktree: string, runId: string): Promise<void>;
+  delete(worktree: string): Promise<void>;
+}
+
 type Waiter = {
   onMessage(message: OrcaMessage): void;
 };
@@ -68,14 +75,20 @@ export class OrcaTicketSession {
   #closed = false;
   #ref: OrcaRunRef | undefined;
   #opening: Promise<OrcaRunRef> | undefined;
+  /** The ticket's Run id; survives `invalidate()` so retries reuse one Run. */
+  #runId: string | undefined;
+  readonly #memory: OrcaRunMemory | undefined;
+  #stale: string | undefined;
 
   constructor(
     cli: OrcaCli,
     readonly worktree: string,
     readonly label: string,
     readonly pollMs = 2_000,
+    memory?: OrcaRunMemory,
   ) {
     this.#cli = cli;
+    this.#memory = memory;
   }
 
   get ref(): OrcaRunRef | undefined {
@@ -86,6 +99,12 @@ export class OrcaTicketSession {
   open(): Promise<OrcaRunRef> {
     if (this.#ref) return Promise.resolve(this.#ref);
     this.#opening ??= (async () => {
+      const stale = this.#stale;
+      this.#stale = undefined;
+      if (stale)
+        await this.#cli
+          .call(["terminal", "close", "--terminal", stale, "--json"])
+          .catch(() => undefined);
       const created = record(
         await this.#cli.call([
           "terminal",
@@ -101,19 +120,16 @@ export class OrcaTicketSession {
       );
       const coordinator = str(record(created.terminal).handle);
       if (!coordinator) throw new OrcaCliError("orca terminal create returned no handle");
-      const run = record(
-        await this.#cli.call([
-          "orchestration",
-          "run-create",
-          "--objective",
-          orcaLabel(this.label, 120),
-          "--from",
-          coordinator,
-          "--json",
-        ]),
-      );
-      const runId = str(record(run.run).id);
-      if (!runId) throw new OrcaCliError("orca run-create returned no run id");
+      const runId = (await this.#reuseRun(coordinator)) ?? (await this.#createRun(coordinator));
+      if (this.#closed) {
+        // close() ran meanwhile: do not resurrect the session or leak the coordinator.
+        await this.#cli
+          .call(["terminal", "close", "--terminal", coordinator, "--json"])
+          .catch(() => undefined);
+        await this.#memory?.delete(this.worktree).catch(() => undefined);
+        throw new OrcaCliError("Orca ticket session closed while opening");
+      }
+      this.#runId = runId;
       this.#ref = { runId, coordinator, worktree: this.worktree };
       return this.#ref;
     })().finally(() => {
@@ -122,12 +138,53 @@ export class OrcaTicketSession {
     return this.#opening;
   }
 
+  /** Binds a new coordinator to the ticket's existing Run (`run-use`); undefined when none/stale. */
+  async #reuseRun(coordinator: string): Promise<string | undefined> {
+    const known = this.#runId ?? (await this.#memory?.get(this.worktree).catch(() => undefined));
+    if (!known) return undefined;
+    try {
+      await this.#cli.call([
+        "orchestration",
+        "run-use",
+        "--id",
+        known,
+        "--from",
+        coordinator,
+        "--json",
+      ]);
+      return known;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #createRun(coordinator: string): Promise<string> {
+    const run = record(
+      await this.#cli.call([
+        "orchestration",
+        "run-create",
+        "--objective",
+        orcaLabel(this.label, 120),
+        "--from",
+        coordinator,
+        "--json",
+      ]),
+    );
+    const runId = str(record(run.run).id);
+    if (!runId) throw new OrcaCliError("orca run-create returned no run id");
+    await this.#memory?.set(this.worktree, runId).catch(() => undefined);
+    return runId;
+  }
+
   /**
-   * Forgets the Run binding (e.g. the coordinator tab was closed in Orca) so the next phase opens
-   * a fresh coordinator and Run instead of failing forever.
+   * Forgets the coordinator binding (e.g. its tab was closed in Orca) so the next phase opens a
+   * fresh coordinator, rebound to the same Run, instead of failing forever.
    */
   invalidate(): void {
-    if (this.#waiters.size === 0) this.#ref = undefined;
+    if (this.#waiters.size > 0 || !this.#ref) return;
+    // Closed by the next open(), before the Run is rebound to a new coordinator.
+    this.#stale = this.#ref.coordinator;
+    this.#ref = undefined;
   }
 
   /** Registers interest in one dispatch's messages; returns an unsubscribe. */
@@ -223,9 +280,17 @@ export class OrcaTicketSession {
   async close(): Promise<void> {
     this.#closed = true;
     this.#waiters.clear();
+    await this.#opening?.catch(() => undefined);
     await this.#pumping;
     const ref = this.#ref;
     this.#ref = undefined;
+    this.#runId = undefined;
+    if (this.#stale)
+      await this.#cli
+        .call(["terminal", "close", "--terminal", this.#stale, "--json"])
+        .catch(() => undefined);
+    this.#stale = undefined;
+    await this.#memory?.delete(this.worktree).catch(() => undefined);
     if (ref)
       await this.#cli
         .call(["terminal", "close", "--terminal", ref.coordinator, "--json"])

@@ -36,6 +36,7 @@ import {
 import type { PrivateStateOwner } from "../state-owner.js";
 import { derivedGraphHandover } from "./derived-graph.js";
 import type { StoredProject } from "./mapping.js";
+import { gatewayModels, type ModelLister } from "./model-plan.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
 import { type OrcaRuntimeBridge, orcaBridge } from "./orca-runtime.js";
 import { committedQaSnapshot } from "./qa-snapshot.js";
@@ -71,6 +72,8 @@ export interface NativeRuntimeOptions {
    * keep Matrix artifacts (the derived code graph) host-side instead of committing them.
    */
   projectPolicy?: (projectId: string) => Promise<ProjectEditPolicy>;
+  /** Gateway model list (default: GET <gatewayUrl>/v1/models with the gateway key). Tests inject it. */
+  listModels?: ModelLister;
 }
 
 export interface ProjectEditPolicy {
@@ -110,12 +113,49 @@ export const NATIVE_SOURCE_PATHS = [
   "Cargo.lock",
 ];
 
+/** Executable each runner needs in the runner image (packages/sandbox/images/runner). */
+export const RUNNER_BINARY: Record<RunnerId, string> = {
+  codex: "codex",
+  "claude-code": "claude",
+  opencode: "opencode",
+};
+
+/** Runners the native/Orca runtime wires (both CLIs ship in the runner image). */
+export const NATIVE_RUNNERS = ["codex", "claude-code"] as const satisfies readonly RunnerId[];
+
+/** Gateway model list, cached briefly, used to refuse ids the gateway does not serve. */
+export function servedModels(list: ModelLister, ttlMs = 60_000, now = () => Date.now()) {
+  let cache: { at: number; ids: Set<string> } | undefined;
+  let inflight: Promise<string[] | undefined> | undefined;
+  return {
+    async assert(model: string): Promise<void> {
+      if (!cache || now() - cache.at > ttlMs || !cache.ids.has(model)) {
+        // Parallel misses share one fetch.
+        inflight ??= list()
+          .catch(() => undefined)
+          .finally(() => {
+            inflight = undefined;
+          });
+        const ids = await inflight;
+        if (!ids)
+          throw new FactoryToolingError(
+            `cannot verify model ${model}: the gateway model list (GET /v1/models) did not answer`,
+          );
+        cache = { at: now(), ids: new Set(ids) };
+      }
+      if (!cache.ids.has(model))
+        throw new Error(`model ${model} is not served by the gateway (GET /v1/models)`);
+    },
+  };
+}
+
 function sandboxedRunner(
   id: RunnerId,
   sandbox: PodmanSandbox,
   git: WorktreeGitPort,
   opts: NativeRuntimeOptions,
   gatewayKey: () => Promise<string>,
+  served: ReturnType<typeof servedModels>,
   orca?: OrcaRuntimeBridge,
 ): Runner {
   const local = `http://127.0.0.1:${LLM_PORT}`;
@@ -126,12 +166,13 @@ function sandboxedRunner(
         ? AbortSignal.any([callerSignal, opts.stateOwner.signal])
         : callerSignal;
       opts.stateOwner?.assertOwned();
-      if (!req.model.endsWith("-sol")) throw new Error("native model calls are restricted to SOL");
+      // Any model the gateway serves (Claude, GPT, GLM, ...); never an id it does not list.
+      await served.assert(req.model);
       assertHostCapacity();
       await validateImageCapabilities(
         sandbox,
         req.workdir,
-        await requiredStackTools(req.workdir, [id]),
+        await requiredStackTools(req.workdir, [RUNNER_BINARY[id]]),
         signal,
       );
       const expectedHead = req.phase === "implement" ? await git.headSha(req.workdir) : undefined;
@@ -156,7 +197,7 @@ function sandboxedRunner(
           ...(viaOrca ? { launcher: viaOrca.launcher } : {}),
         }),
         skipPermissions: true,
-        baseEnv: { CODEX_HOME: "/home/agent" },
+        baseEnv: id === "codex" ? { CODEX_HOME: "/home/agent" } : {},
       }).run(
         {
           ...req,
@@ -334,7 +375,20 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
   let key: string | undefined;
   const gatewayKey = async () => (key ??= await resolveCredential(opts.gatewayKey));
   const git = new WorktreeGitPort({ trusted });
-  const runners = { codex: sandboxedRunner("codex", sandbox, git, opts, gatewayKey, orca) };
+  const served = servedModels(
+    opts.listModels ??
+      (async () =>
+        gatewayModels(
+          `${opts.gatewayUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`,
+          await gatewayKey(),
+        )()),
+  );
+  const runners = Object.fromEntries(
+    NATIVE_RUNNERS.map((id) => [
+      id,
+      sandboxedRunner(id, sandbox, git, opts, gatewayKey, served, orca),
+    ]),
+  ) as Partial<Record<RunnerId, Runner>>;
   return {
     kind: opts.workspace,
     broker,

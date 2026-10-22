@@ -31,7 +31,8 @@ export const ORCA_REQUIRED_COMMANDS: Record<string, string[]> = {
   "terminal send": ["terminal", "text", "enter", "interrupt", "json"],
   "terminal close": ["terminal", "json"],
   "orchestration run-create": ["objective", "from", "json"],
-  "orchestration task-create": ["task-title", "run", "from", "json"],
+  "orchestration run-use": ["id", "from", "json"],
+  "orchestration task-create": ["spec", "task-title", "run", "from", "json"],
   "orchestration dispatch": ["task", "to", "from", "run", "json"],
   "orchestration check": ["terminal", "run", "ack", "types", "wait", "timeout-ms", "json"],
   "orchestration reply": ["id", "body", "run", "from", "json"],
@@ -231,11 +232,7 @@ export class OrcaWorkspace implements Workspace {
     if (head !== branch)
       throw new Error(`Orca worktree ${workdir} is on ${head}, expected ${branch}`);
     const baseSha = await this.#git(gitdir, ["rev-parse", "--verify", "HEAD^{commit}"]);
-    await this.#trusted.record(workdir, {
-      gitdir,
-      commonDir,
-      baseSha,
-    });
+    await this.#trusted.record(workdir, { gitdir, commonDir, baseSha, branch });
     const ref: OrcaWorkspaceRef = {
       orca: id,
       commonDir,

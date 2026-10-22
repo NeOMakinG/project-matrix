@@ -52,6 +52,7 @@ test("handover refusals retain specific redacted reasons in summary and receipt 
     image: "mock-image-not-executed",
     gatewayUrl: "http://127.0.0.1:1",
     gatewayKey: { value: key },
+    listModels: async () => ["gpt-6.1-sol"],
   });
   try {
     const result = await runtime.deps.runners.codex!.run(
@@ -109,6 +110,7 @@ test("native Codex provider isolates OAuth/config, preserves reviewer model and 
     image: "mock-image-not-executed",
     gatewayUrl: "http://127.0.0.1:1",
     gatewayKey: { value: "synthetic-unit-test-key-not-real" },
+    listModels: async () => ["gpt-6-sol"],
   });
   const runner = runtime.deps.runners.codex!;
   const request = {
@@ -138,7 +140,7 @@ test("native Codex provider isolates OAuth/config, preserves reviewer model and 
   expect(calls[1]?.cmd).toContain("model_providers.matrix.requires_openai_auth=false");
   await expect(
     runner.run({ ...request, model: "direct-paid-model" }, () => {}, new AbortController().signal),
-  ).rejects.toThrow("restricted to SOL");
+  ).rejects.toThrow("model direct-paid-model is not served by the gateway");
   await runtime.broker.closeAll();
 });
 test.each(["undeclared mock", "raw host"])(
@@ -180,3 +182,68 @@ test.each(["undeclared mock", "raw host"])(
     expect(undeclared).not.toHaveBeenCalled();
   },
 );
+
+test("native runtime wires a sandboxed claude-code runner for any gateway-served model", async () => {
+  const calls: ProcessSpec[] = [];
+  vi.spyOn(PodmanSandbox.prototype, "lineExecutor").mockImplementation((policy) =>
+    registerReadOnlyExecutor(async (spec, emit) => {
+      calls.push(spec);
+      if (policy.network === "gateway") {
+        emit(JSON.stringify({ type: "system", subtype: "init", model: "claude-opus-4-7" }));
+        emit(
+          JSON.stringify({
+            type: "result",
+            subtype: "success",
+            result: "spike notes",
+            usage: { input_tokens: 2, output_tokens: 3 },
+          }),
+        );
+      } else expect(policy.network).toBe("none");
+      return { exitCode: 0, cancelled: false, timedOut: false, stderrTail: "" };
+    }),
+  );
+  const directory = await mkdtemp(join(tmpdir(), "matrix-native-claude-"));
+  const runtime = nativeRuntime({
+    workspace: "native",
+    dataDir: directory,
+    image: "mock-image-not-executed",
+    gatewayUrl: "http://127.0.0.1:1",
+    gatewayKey: { value: "synthetic-unit-test-key-not-real" },
+    listModels: async () => ["claude-opus-4-7", "GLM-5.1"],
+  });
+  try {
+    const runner = runtime.deps.runners["claude-code"];
+    expect(runner?.id).toBe("claude-code");
+    const request = {
+      runId: "unit",
+      projectId: "unit",
+      ticketId: "NEO-7",
+      phase: "spike" as const,
+      runner: "claude-code" as const,
+      model: "claude-opus-4-7",
+      prompt: "unit",
+      workdir: directory,
+      timeoutMs: 1000,
+      env: { ANTHROPIC_API_KEY: "must-not-propagate" },
+    };
+    const result = await runner!.run(request, () => {}, new AbortController().signal);
+    expect(result).toMatchObject({ status: "ok", summary: "spike notes" });
+    // Preflight asks the image for the `claude` executable, not the runner id.
+    expect(calls[0]?.cmd).toContain("claude");
+    expect(calls[0]?.cmd).not.toContain("claude-code");
+    expect(calls[1]?.readOnly).toBe(true);
+    expect(calls[1]?.cmd).toEqual(expect.arrayContaining(["claude", "--model", "claude-opus-4-7"]));
+    expect(calls[1]?.env).toMatchObject({
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:18080",
+      ANTHROPIC_AUTH_TOKEN: "__MATRIX_RUN_TOKEN__",
+    });
+    expect(calls[1]?.env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(calls[1]?.env.CODEX_HOME).toBeUndefined();
+    await expect(
+      runner!.run({ ...request, model: "claude-opus-5-5" }, () => {}, new AbortController().signal),
+    ).rejects.toThrow("model claude-opus-5-5 is not served by the gateway");
+  } finally {
+    await runtime.broker.closeAll();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
