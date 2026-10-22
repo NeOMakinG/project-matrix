@@ -252,6 +252,7 @@ async function createOwnedFactory(
     backoff: { baseMs: 5_000, maxMs: 10 * 60_000 },
     // The fake runtime has no subscription to protect; real runtimes always get the guard.
     ...(options.runtime === "fake" && !options.quota ? {} : resolveQuota(options.quota)),
+    ...(runtime.gatewayReady ? { gatewayReady: runtime.gatewayReady } : {}),
     host: options.host,
     scratchRoot: join(options.dataDir, "scratch"),
     pullRequests: stateOwner.fence(pullRequests),

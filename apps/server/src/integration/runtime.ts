@@ -11,6 +11,8 @@ export interface Runtime {
   workspace: Workspace;
   git: GitPort;
   deps: Omit<HandlerDeps, "store" | "holdout">;
+  /** Model gateway preflight (reason to wait, or null); the reconciler defers model phases on it. */
+  gatewayReady?: (model: string) => Promise<string | null>;
 }
 
 export class RuntimeUnavailableError extends Error {}

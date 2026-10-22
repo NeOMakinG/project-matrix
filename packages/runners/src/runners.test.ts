@@ -325,6 +325,40 @@ describe("codex runner", () => {
     expect(result.status).toBe("failed");
     expect(result.summary).toContain("rate limited");
   });
+
+  const reconnect = JSON.stringify({
+    type: "error",
+    message: "Reconnecting... 1/5 (stream disconnected before completion: idle timeout)",
+  });
+
+  test("a mid-stream reconnect followed by a completed turn is a success", async () => {
+    const { executor } = fakeExecutor([...lines.slice(0, 2), reconnect, ...lines.slice(2)]);
+    const events: RunEvent[] = [];
+    const result = await codexRunner({ gateway, executor }).run(
+      req,
+      (e) => events.push(e),
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({ status: "ok", summary: "All done" });
+    // Logged, not an error event (quota classification reads error events).
+    expect(events.find((e) => e.message.startsWith("Reconnecting"))?.kind).toBe("log");
+  });
+
+  test("an error with no completed turn after it still fails", async () => {
+    for (const tail of [
+      [reconnect],
+      [JSON.stringify({ type: "error", message: "stream disconnected: retries exhausted" })],
+      [...lines.slice(2), JSON.stringify({ type: "error", message: "late fatal error" })],
+    ]) {
+      const { executor } = fakeExecutor([...lines.slice(0, 2), ...tail]);
+      const result = await codexRunner({ gateway, executor }).run(
+        req,
+        () => {},
+        new AbortController().signal,
+      );
+      expect(result.status).toBe("failed");
+    }
+  });
 });
 
 describe("opencode runner", () => {

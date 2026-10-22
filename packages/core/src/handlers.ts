@@ -22,6 +22,7 @@ import {
   privateQaCause,
   QA_JUDGE_CRITERIA,
   retryPrivateQa,
+  scenarioRejectionReason,
 } from "./holdout.js";
 import { findingsOf } from "./machine.js";
 import { resolveModel, selectModel } from "./models.js";
@@ -183,31 +184,44 @@ const spike =
     const authorDir = await ctx.scratchDir();
     let scenarioCost = 0;
     const scenarioRun: { status: RunResult["status"] } = { status: "failed" };
+    const authorScenarios = async (attempt: number) => {
+      const scen = await callModel(
+        deps,
+        ctx,
+        author,
+        [
+          "Write acceptance scenarios for this ticket that a black-box tester can check against the running software.",
+          "Every scenario must be observable and executable-probe-verifiable, with concrete inputs and assertions for the entire then clause. Avoid subjective or unobservable claims. Phrase negative/absence claims as instrumentable checks: name the surfaces, install stubs/spies before loading the software, and assert zero calls (e.g. fs/net/console for no I/O), or snapshot named state and assert equality. Do not use blanket 'no side effects' without defining and instrumenting the observed surfaces. Invalid scenarios will be rejected; regenerate valid scenarios.",
+          ticketContext(ctx.ticket),
+          ...(attempt
+            ? [
+                "The previous preparation failed validation. Regenerate concrete, observable, fully probe-verifiable scenarios; explicitly instrument and assert every absence claim.",
+              ]
+            : []),
+          'Reply with JSON only: {"scenarios":[{"id":"s1","given":"...","when":"...","then":"..."}]} with 3 to 12 scenarios.',
+        ].join("\n\n"),
+        { phase: "spike", workdir: authorDir, readOnly: true, privateHoldout: true },
+      );
+      scenarioCost += scen.costUsd ?? 0;
+      scenarioRun.status = scen.status;
+      // The run summary can quote model output (holdout text): report the status only.
+      if (scen.status !== "ok") throw new Error(`scenario model run ${scen.status}`);
+      scenarioRun.status = "failed";
+      return parseScenarios(scen.summary);
+    };
     try {
       const scenarios = await retryPrivateQa(ctx.signal, async (attempt) => {
-        const scen = await callModel(
-          deps,
-          ctx,
-          author,
-          [
-            "Write acceptance scenarios for this ticket that a black-box tester can check against the running software.",
-            "Every scenario must be observable and executable-probe-verifiable, with concrete inputs and assertions for the entire then clause. Avoid subjective or unobservable claims. Phrase negative/absence claims as instrumentable checks: name the surfaces, install stubs/spies before loading the software, and assert zero calls (e.g. fs/net/console for no I/O), or snapshot named state and assert equality. Do not use blanket 'no side effects' without defining and instrumenting the observed surfaces. Invalid scenarios will be rejected; regenerate valid scenarios.",
-            ticketContext(ctx.ticket),
-            ...(attempt
-              ? [
-                  "The previous preparation failed validation. Regenerate concrete, observable, fully probe-verifiable scenarios; explicitly instrument and assert every absence claim.",
-                ]
-              : []),
-            'Reply with JSON only: {"scenarios":[{"id":"s1","given":"...","when":"...","then":"..."}]} with 3 to 12 scenarios.',
-          ].join("\n\n"),
-          { phase: "spike", workdir: authorDir, readOnly: true, privateHoldout: true },
-        );
-        scenarioCost += scen.costUsd ?? 0;
-        scenarioRun.status = scen.status;
-        // The run summary can quote model output (holdout text): report the status only.
-        if (scen.status !== "ok") throw new Error(`scenario model run ${scen.status}`);
-        scenarioRun.status = "failed";
-        return parseScenarios(scen.summary);
+        try {
+          return await authorScenarios(attempt);
+        } catch (error) {
+          // Redacted: only the validator's fixed reason, never model output or holdout text.
+          if (!ctx.signal.aborted)
+            ctx.emit(
+              `private scenario batch ${attempt + 1} rejected: ${scenarioRejectionReason(error)}`,
+              "log",
+            );
+          throw error;
+        }
       });
       await deps.holdout.save(ctx.project.id, ctx.ticket.id, scenarios);
       ctx.emit(`stored ${scenarios.length} holdout scenarios`, "log");

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   DEFAULT_QUOTA,
+  isGatewayUnavailable,
   isQuotaError,
   providerOf,
   QuotaCooldowns,
@@ -242,5 +243,56 @@ describe("untrusted ticket content", () => {
     expect(prompt).toContain("<<<UNTRUSTED TICKET CONTENT");
     expect(prompt).toContain("- ada: use the v2 API");
     expect(prompt).not.toContain("Spike plan");
+  });
+});
+
+describe("model gateway outages", () => {
+  const down = "cannot verify model claude-x: gateway unavailable (GET /v1/models did not answer)";
+
+  test("a gateway preflight failure keeps model phases queued without dispatching", async () => {
+    let reason: string | null = down;
+    const h = createHarness({ quota: quota(), gatewayReady: async () => reason });
+    await h.setup();
+    const t = h.tickets.add("Gateway down");
+    const report = await h.reconciler.tick();
+    expect(report.dispatched).toEqual([]);
+    expect(report.skipped).toContainEqual({ ticketId: t.id, reason: down });
+    expect(await h.store.listRuns({ ticketId: t.id })).toEqual([]);
+    reason = null;
+    await h.drain();
+    expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
+  });
+
+  test("a run failing on gateway verification is deferred, not an attempt", async () => {
+    let calls = 0;
+    const h = createHarness({
+      quota: quota(),
+      implement: () => {
+        if (calls++ === 0) throw new Error(down);
+        return {};
+      },
+    });
+    await h.setup();
+    const t = h.tickets.add("Gateway blip");
+    for (let i = 0; i < 3; i++) {
+      await h.reconciler.tick();
+      await h.reconciler.idle();
+    }
+    const w = await h.store.getWorkflow("pilot", t.id);
+    expect(w).toMatchObject({ status: "pending", phase: "implement", attempt: 0 });
+    expect(w?.lastError).toMatch(/^waiting for the model gateway: cannot verify model/);
+    h.advanceClock(61_000);
+    await h.drain();
+    expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
+    const attempts = (await h.store.listRuns({ ticketId: t.id }))
+      .filter((r) => r.phase === "implement")
+      .map((r) => r.attempt);
+    expect(attempts).toEqual([0, 0]);
+  });
+
+  test("gateway wording detection is exact", () => {
+    expect(isGatewayUnavailable(down)).toBe(true);
+    expect(isGatewayUnavailable("the gateway unavailable page renders")).toBe(false);
+    expect(isGatewayUnavailable("model x is not served by the gateway")).toBe(false);
   });
 });

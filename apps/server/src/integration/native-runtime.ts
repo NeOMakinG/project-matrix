@@ -35,6 +35,7 @@ import {
 } from "@matrix/workspace";
 import type { PrivateStateOwner } from "../state-owner.js";
 import { derivedGraphHandover } from "./derived-graph.js";
+import { servedModels } from "./gateway-models.js";
 import type { StoredProject } from "./mapping.js";
 import { gatewayModels, type ModelLister } from "./model-plan.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
@@ -122,32 +123,6 @@ export const RUNNER_BINARY: Record<RunnerId, string> = {
 
 /** Runners the native/Orca runtime wires (both CLIs ship in the runner image). */
 export const NATIVE_RUNNERS = ["codex", "claude-code"] as const satisfies readonly RunnerId[];
-
-/** Gateway model list, cached briefly, used to refuse ids the gateway does not serve. */
-export function servedModels(list: ModelLister, ttlMs = 60_000, now = () => Date.now()) {
-  let cache: { at: number; ids: Set<string> } | undefined;
-  let inflight: Promise<string[] | undefined> | undefined;
-  return {
-    async assert(model: string): Promise<void> {
-      if (!cache || now() - cache.at > ttlMs || !cache.ids.has(model)) {
-        // Parallel misses share one fetch.
-        inflight ??= list()
-          .catch(() => undefined)
-          .finally(() => {
-            inflight = undefined;
-          });
-        const ids = await inflight;
-        if (!ids)
-          throw new FactoryToolingError(
-            `cannot verify model ${model}: the gateway model list (GET /v1/models) did not answer`,
-          );
-        cache = { at: now(), ids: new Set(ids) };
-      }
-      if (!cache.ids.has(model))
-        throw new Error(`model ${model} is not served by the gateway (GET /v1/models)`);
-    },
-  };
-}
 
 function sandboxedRunner(
   id: RunnerId,
@@ -383,6 +358,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
           `${opts.gatewayUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`,
           await gatewayKey(),
         )()),
+    { cacheFile: join(opts.dataDir, "gateway-models.json") },
   );
   const runners = Object.fromEntries(
     NATIVE_RUNNERS.map((id) => [
@@ -392,6 +368,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
   ) as Partial<Record<RunnerId, Runner>>;
   return {
     kind: opts.workspace,
+    gatewayReady: (model) => served.ready(model),
     broker,
     workspace,
     git,
