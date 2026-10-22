@@ -14,6 +14,8 @@ const make = (fake = fakeLinear()) => ({
     sleep: async () => {},
   }),
 });
+const bodies = (fake: ReturnType<typeof fakeLinear>) =>
+  [...fake.comments.values()].map((c) => c.body.split("\n\n<!--")[0]);
 const column = (fake: ReturnType<typeof fakeLinear>, id: string) => fake.issues.get(id)?.state.name;
 
 describe("LinearTicketStore board columns", () => {
@@ -94,7 +96,7 @@ describe("LinearTicketStore live comment", () => {
     await store.update(t.id, { status: "in_progress", phase: "implement", body: "edited" });
     await store.upsertComment(t.id, "status", "v2");
     await store.upsertComment(t.id, "status", "v3");
-    expect([...fake.comments.values()].map((c) => c.body)).toEqual(["v3"]);
+    expect(bodies(fake)).toEqual(["v3"]);
     expect(fake.calls.filter((c) => c.op === "MatrixComment")).toHaveLength(1);
     const issue = fake.issues.get(t.id);
     const { text, meta } = readBody(issue?.description ?? null);
@@ -109,7 +111,7 @@ describe("LinearTicketStore live comment", () => {
     await store.upsertComment(t.id, "status", "v1");
     fake.comments.clear();
     await store.upsertComment(t.id, "status", "v2");
-    expect([...fake.comments.values()].map((c) => c.body)).toEqual(["v2"]);
+    expect(bodies(fake)).toEqual(["v2"]);
     await expect(store.upsertComment(t.id, "Bad Key", "x")).rejects.toThrow(/invalid comment key/);
   });
 
@@ -121,6 +123,71 @@ describe("LinearTicketStore live comment", () => {
     await store.upsertComment(t.id, "status", "v1");
     expect(fake.calls.some((c) => c.op === "MatrixCommentUpdate")).toBe(false);
     expect(fake.comments.size).toBe(1);
+  });
+
+  test("another issue's or a human's comment id is never edited", async () => {
+    const { fake, store } = make();
+    const a = await store.create({ title: "A", body: "" });
+    const b = await store.create({ title: "B", body: "" });
+    await store.upsertComment(a.id, "status", "a1");
+    const [aId] = [...fake.comments.keys()];
+    fake.comments.set("human-1", { issueId: "uuid-2", body: "mine", isMe: false });
+    for (const forged of [aId, "human-1"]) {
+      const issue = fake.issues.get(b.id);
+      if (issue) issue.description = `x\n\n<!-- matrix:{"comments":{"status":"${forged}"}} -->`;
+      await store.upsertComment(b.id, "status", "b1");
+    }
+    expect(fake.comments.get(aId as string)?.body).toContain("a1");
+    expect(fake.comments.get("human-1")?.body).toBe("mine");
+  });
+
+  test("a lost id (description write failed) is recovered by marker, not duplicated", async () => {
+    const { fake, store } = make();
+    const t = await store.create({ title: "T", body: "" });
+    const realFetch = fake.fetch;
+    let failDescription = true;
+    fake.fetch = async (url, init) => {
+      if (failDescription && init.body.includes("MatrixIssueUpdate")) {
+        failDescription = false;
+        return realFetch(url, { ...init, body: init.body.replace("MatrixIssueUpdate", "Nope") });
+      }
+      return realFetch(url, init);
+    };
+    const flaky = new LinearTicketStore({
+      teamKey: "NEO",
+      projectLabel: "project:demo",
+      fetch: (u, i) => fake.fetch(u, i),
+      env: { LINEAR_API_KEY: KEY },
+      sleep: async () => {},
+    });
+    await expect(flaky.upsertComment(t.id, "status", "v1")).rejects.toThrow();
+    await flaky.upsertComment(t.id, "status", "v2");
+    await flaky.upsertComment(t.id, "status", "v3");
+    expect(bodies(fake)).toEqual(["v3"]);
+  });
+
+  test("boards without a phase column fall back to the coarse column", async () => {
+    const fake = fakeLinear();
+    fake.states.splice(
+      fake.states.findIndex((s) => s.name === "Spike"),
+      1,
+    );
+    const { store } = make(fake);
+    const t = await store.create({ title: "T", body: "" });
+    await store.update(t.id, { status: "in_progress", phase: "spike" });
+    expect(column(fake, t.id)).toBe("Implement");
+    await store.setPhase(t.id, { phase: "spike", status: "running" });
+    expect(column(fake, t.id)).toBe("Implement");
+  });
+
+  test("a phase start does not reopen an issue a human canceled", async () => {
+    const { fake, store } = make();
+    const t = await store.create({ title: "T", body: "" });
+    await store.update(t.id, { status: "closed" });
+    await store.update(t.id, { status: "in_progress", phase: "implement" });
+    expect(column(fake, t.id)).toBe("Canceled");
+    await store.update(t.id, { status: "done" });
+    expect(column(fake, t.id)).toBe("Done");
   });
 
   test("ensureScope creates the project label once", async () => {

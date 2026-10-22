@@ -185,6 +185,8 @@ export const linearTickets = z.object({
   apiKeyEnv: z
     .string()
     .regex(/^[A-Z_][A-Z0-9_]*$/, "must be an env var name, not a key")
+    // Only Linear-named vars: the value is sent to api.linear.app as the Authorization header.
+    .regex(/^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$/, "must be an env var name containing LINEAR")
     .default("LINEAR_API_KEY"),
 });
 

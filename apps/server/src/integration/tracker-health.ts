@@ -1,5 +1,5 @@
 import type { EventBus, TrackerFailedEvent } from "@matrix/core";
-import { singleLine } from "@matrix/monitor";
+import { redact, singleLine } from "@matrix/monitor";
 
 export interface TrackerFailure {
   ticketId?: string;
@@ -38,7 +38,7 @@ export class TrackerHealth {
     const failure: TrackerFailure = {
       ...(event.ticketId ? { ticketId: singleLine(event.ticketId, 80) } : {}),
       operation: singleLine(event.operation, 40),
-      message: singleLine(event.message, 500),
+      message: singleLine(redact(event.message), 500),
       at: event.at,
     };
     this.log(

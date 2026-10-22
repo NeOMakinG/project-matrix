@@ -22,10 +22,14 @@ interface Entry {
   dirty: boolean;
   sentPosition?: string;
   sentBody?: string;
+  /** Set by a failed write in the current attempt; drives the capped retry. */
+  failed: boolean;
+  retries: number;
 }
 
 export const STATUS_COMMENT_KEY = "matrix-status";
 const MAX_LINKS = 5;
+const MAX_RETRIES = 3;
 
 /**
  * Mirrors workflow progress into trackers that support it: moves the ticket to its phase column
@@ -82,7 +86,7 @@ export class TrackerSync {
     const key = `${projectId}\u0000${ticketId}`;
     let entry = this.#entries.get(key);
     if (!entry) {
-      entry = { projectId, ticketId, links: [], dirty: false };
+      entry = { projectId, ticketId, links: [], dirty: false, failed: false, retries: 0 };
       this.#entries.set(key, entry);
       this.#evict();
     }
@@ -102,6 +106,7 @@ export class TrackerSync {
       const w = event.workflow;
       const entry = this.#entry(w.projectId, w.ticketId);
       entry.latest = w;
+      entry.retries = 0;
       this.#schedule(entry);
     } else if (event.type === "run.started") {
       this.#runs.set(event.runId, `${event.projectId}\u0000${event.ticketId}`);
@@ -137,10 +142,23 @@ export class TrackerSync {
 
   #run(entry: Entry): void {
     entry.dirty = false;
+    entry.failed = false;
     entry.running = this.#write(entry).finally(() => {
       entry.running = undefined;
-      if (entry.dirty) this.#schedule(entry);
-      else if (entry.latest?.status === "done") this.#forget(entry);
+      if (entry.dirty) return this.#schedule(entry);
+      if (entry.failed && entry.retries < MAX_RETRIES) {
+        // Retry the latest state with backoff instead of waiting for the next workflow change.
+        entry.retries += 1;
+        const delay = Math.min(this.#o.debounceMs * 2 ** entry.retries, 5 * 60_000);
+        entry.timer = setTimeout(() => {
+          entry.timer = undefined;
+          this.#run(entry);
+        }, delay);
+        entry.timer.unref?.();
+        return;
+      }
+      if (!entry.failed) entry.retries = 0;
+      if (!entry.failed && entry.latest?.status === "done") this.#forget(entry);
     });
   }
 
@@ -183,6 +201,7 @@ export class TrackerSync {
   }
 
   #failed(entry: Entry, operation: string, error: unknown): void {
+    entry.failed = true;
     this.#o.bus.publish({
       type: "tracker.failed",
       projectId: entry.projectId,

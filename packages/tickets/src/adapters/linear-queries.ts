@@ -59,6 +59,16 @@ mutation MatrixComment($input: CommentCreateInput!) {
   commentCreate(input: $input) { success comment { id } }
 }`;
 
+export const COMMENT = `
+query MatrixCommentLookup($id: String!) {
+  comment(id: $id) { id issue { id } user { isMe } }
+}`;
+
+export const ISSUE_COMMENTS = `
+query MatrixIssueComments($id: String!) {
+  issue(id: $id) { comments(first: 100) { nodes { id body user { isMe } } } }
+}`;
+
 export const UPDATE_COMMENT = `
 mutation MatrixCommentUpdate($id: String!, $input: CommentUpdateInput!) {
   commentUpdate(id: $id, input: $input) { success }

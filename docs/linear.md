@@ -15,7 +15,7 @@ process: {
     teamKey: "NEO",                 // Linear team key
     projectLabel: "project:personal", // label that scopes this Matrix project
     readyState: "Ready",            // optional, default "Ready"
-    apiKeyEnv: "LINEAR_API_KEY",    // optional, NAME of the host env var
+    apiKeyEnv: "LINEAR_API_KEY",    // optional, NAME of the host env var (must contain LINEAR)
   },
   // ...
 }
@@ -56,7 +56,9 @@ runner environments, logs or error messages.
 - **Live status comment:** one comment per issue (key `matrix-status`), created once and then
   edited in place with phase, status, attempt/review loops, the last error (redacted, one line),
   https links from run receipts (PR, evidence) and a timestamp. Its comment id rides in the hidden
-  Matrix body block; a deleted comment is recreated. Updates are debounced (1.5 s) and coalesced
+  Matrix body block and is only trusted when it is Matrix's own comment on that same issue; a
+  lost id is recovered by the `<!-- matrix-comment:matrix-status -->` marker, a deleted comment is
+  recreated. Failed writes retry up to 3 times with backoff. Updates are debounced (1.5 s) and coalesced
   per issue, and nothing is written when the rendered status did not change.
 - **Project label:** created on the team (if missing) on the project's first ticket sync.
 - **Tracker outages never fail a workflow.** Every failed tracker write (status update, comment,

@@ -122,6 +122,17 @@ describe("TrackerSync", () => {
   });
 });
 
+test("a failed write is retried without waiting for the next workflow change", async () => {
+  const { fake, linear, bus, events, sync } = setup();
+  const t = await linear.create({ title: "T", body: "" });
+  fake.queue.push({ status: 200, body: { data: null, errors: [{ message: "boom" }] } });
+  bus.publish({ type: "workflow.changed", workflow: wf(t.id, { status: "done" }) });
+  await sync.flush();
+  expect(events.some((e) => e.type === "tracker.failed")).toBe(true);
+  expect(fake.issues.get(t.id)?.state.name).toBe("Done");
+  expect(fake.comments.size).toBe(1);
+});
+
 describe("tracker status rendering", () => {
   test("redacts and single-lines errors; only https links", () => {
     const body = renderStatus(

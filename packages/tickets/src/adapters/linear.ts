@@ -108,6 +108,11 @@ export class LinearTicketStore implements TicketStore {
     return this.#stateIdByName(this.#names[status]);
   }
 
+  /** State id by name, or undefined when the team has no such column (custom boards). */
+  async #optionalStateId(name: string): Promise<string | undefined> {
+    return (await this.#loadTeam()).states.get(norm(name))?.id;
+  }
+
   async #stateIdByName(name: string): Promise<string> {
     const state = (await this.#loadTeam()).states.get(norm(name));
     if (!state)
@@ -256,9 +261,12 @@ export class LinearTicketStore implements TicketStore {
         patch.phase !== undefined && PHASED.has(patch.status)
           ? columnFor({ phase: patch.phase, status: "running" }, this.#names, this.#phases)
           : undefined;
-      input.stateId = column
-        ? await this.#stateIdByName(column)
-        : await this.#stateId(patch.status);
+      // A phase start never pulls an issue a human finished or canceled back onto the board.
+      const reopen = isTerminal(issue.state.type) && PHASED.has(patch.status);
+      if (!reopen)
+        input.stateId =
+          (column ? await this.#optionalStateId(column) : undefined) ??
+          (await this.#stateId(patch.status));
     }
     if (patch.labels !== undefined)
       input.labelIds = await this.#labelIds([this.#label, ...patch.labels]);
@@ -304,9 +312,12 @@ export class LinearTicketStore implements TicketStore {
     if (norm(issue.state.name) === norm(column)) return;
     // A human closed or canceled it while Matrix worked: leave it there.
     if (isTerminal(issue.state.type)) return;
+    // Boards without this column keep the coarse column the reconciler already set.
+    const stateId = await this.#optionalStateId(column);
+    if (!stateId) return;
     const data = await this.#client.request<{ issueUpdate: { success: boolean } }>(Q.UPDATE_ISSUE, {
       id: issue.id,
-      input: { stateId: await this.#stateIdByName(column) },
+      input: { stateId },
     });
     if (!data.issueUpdate.success) throw new LinearApiError(`Linear move of ${id} failed`);
   }
@@ -318,26 +329,53 @@ export class LinearTicketStore implements TicketStore {
   async upsertComment(id: string, key: string, body: string): Promise<void> {
     if (!isCommentKey(key)) throw new Error(`invalid comment key ${JSON.stringify(key)}`);
     const issue = await this.#must(id);
-    const { text, meta } = readBody(issue.description);
-    const existing = meta.comments?.[key];
-    if (existing) {
-      try {
-        const data = await this.#client.request<{ commentUpdate: { success: boolean } }>(
-          Q.UPDATE_COMMENT,
-          { id: existing, input: { body } },
-        );
-        if (data.commentUpdate.success) return;
-      } catch (error) {
-        if (!(error instanceof LinearApiError && /not found/i.test(error.message))) throw error;
-      }
+    const marked = `${body}\n\n<!-- matrix-comment:${key} -->`;
+    const known = readBody(issue.description).meta.comments?.[key];
+    // The stored id is untrusted (anyone can edit the description): only edit our own comment
+    // on this very issue. Otherwise recover a lost id by marker, else create a new comment.
+    const target =
+      (known && (await this.#ownComment(known, issue.id)) ? known : undefined) ??
+      (await this.#markedComment(issue.id, key));
+    if (target) {
+      const data = await this.#client.request<{ commentUpdate: { success: boolean } }>(
+        Q.UPDATE_COMMENT,
+        { id: target, input: { body: marked } },
+      );
+      if (!data.commentUpdate.success) throw new LinearApiError(`Linear comment on ${id} failed`);
+      if (target === known) return;
     }
-    const commentId = await this.#createComment(issue, body);
+    const commentId = target ?? (await this.#createComment(issue, marked));
+    // Re-read right before writing so a human edit since the first read is kept.
+    const fresh = await this.#must(id);
+    const { text, meta } = readBody(fresh.description);
     meta.comments = { ...meta.comments, [key]: commentId };
     const data = await this.#client.request<{ issueUpdate: { success: boolean } }>(Q.UPDATE_ISSUE, {
       id: issue.id,
       input: { description: writeBody(text, meta) },
     });
     if (!data.issueUpdate.success) throw new LinearApiError(`Linear issueUpdate ${id} failed`);
+  }
+
+  async #ownComment(commentId: string, issueUuid: string): Promise<boolean> {
+    try {
+      const data = await this.#client.request<{
+        comment: { issue: { id: string } | null; user: { isMe: boolean } | null } | null;
+      }>(Q.COMMENT, { id: commentId });
+      return data.comment?.issue?.id === issueUuid && data.comment.user?.isMe === true;
+    } catch (error) {
+      if (error instanceof LinearApiError && /not found/i.test(error.message)) return false;
+      throw error;
+    }
+  }
+
+  async #markedComment(issueUuid: string, key: string): Promise<string | undefined> {
+    const data = await this.#client.request<{
+      issue: {
+        comments: { nodes: Array<{ id: string; body: string; user: { isMe: boolean } | null }> };
+      } | null;
+    }>(Q.ISSUE_COMMENTS, { id: issueUuid });
+    const marker = `<!-- matrix-comment:${key} -->`;
+    return data.issue?.comments.nodes.find((c) => c.user?.isMe && c.body.includes(marker))?.id;
   }
 
   /** Makes sure the project label exists on the team (created when missing). */
