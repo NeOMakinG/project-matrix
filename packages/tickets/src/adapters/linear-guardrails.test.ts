@@ -88,4 +88,17 @@ describe("LinearTicketStore guardrails", () => {
     await store.removeLabel(t.id, NEEDS_HUMAN_LABEL);
     expect((await store.ready()).map((r) => r.id)).toEqual([t.id]);
   });
+
+  test("legacy blocked flag without origin needs the label gone, never auto-restarts", async () => {
+    const { fake, store } = make();
+    const t = await store.create({ title: "T", body: "b" });
+    await store.update(t.id, { status: "ready" });
+    await store.addLabel(t.id, NEEDS_HUMAN_LABEL);
+    const issue = fake.issues.get(t.id);
+    if (!issue) throw new Error("fixture");
+    issue.description = `b\n\n<!-- matrix:${JSON.stringify({ blocked: true })} -->`;
+    expect(await store.ready()).toEqual([]);
+    await store.removeLabel(t.id, NEEDS_HUMAN_LABEL);
+    expect((await store.ready()).map((r) => r.id)).toEqual([t.id]);
+  });
 });

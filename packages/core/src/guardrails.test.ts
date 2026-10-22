@@ -198,6 +198,8 @@ describe("quota helpers", () => {
     ])
       expect(isQuotaError(text)).toBe(true);
     expect(isQuotaError("tests failed: 3 assertions")).toBe(false);
+    expect(isQuotaError("rate limiter returned 429 as expected")).toBe(false);
+    expect(isQuotaError("implement the rate limit middleware")).toBe(false);
   });
 
   test("cooldown doubles up to the cap and resets on success", () => {

@@ -52,7 +52,7 @@ export function providerOf(
  * Codex CLIs ("usage limit reached", "rate limit", "quota exceeded", "too many requests").
  */
 const QUOTA_ERROR =
-  /\b429\b|rate[ _-]?limit(?:ed)?|usage[ _-]?limit|quota (?:exceeded|exhausted|reached)|insufficient[ _-]quota|too many requests|limit will reset|resets? at \d|overloaded_error/i;
+  /usage[ _-]limit[ _-](?:reached|exceeded)|hit your usage limit|rate_limit_error|rate[ _-]limit (?:reached|exceeded) for|insufficient_quota|quota[ _-](?:exceeded|exhausted)|API Error: 429|(?:HTTP|status(?: code)?:?) 429\b|429 Too Many Requests|last status: 429/i;
 
 export function isQuotaError(text: string): boolean {
   return QUOTA_ERROR.test(text);

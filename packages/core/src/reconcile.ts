@@ -361,7 +361,9 @@ export class Reconciler {
         ...w,
         status: "pending",
         attempt: 0,
-        loops: 0,
+        // Irreversible phases keep `loops`: it is part of their action key, so a merge/deploy
+        // whose result was lost dedupes downstream instead of running twice.
+        loops: IRREVERSIBLE.has(w.phase) ? w.loops : 0,
         priority: priority ?? w.priority,
         generation: (w.generation ?? 0) + 1,
         requeuedAt: now,
@@ -498,6 +500,8 @@ export class Reconciler {
   private async ticketCapReason(project: ProjectConfig, w: WorkflowState): Promise<string | null> {
     const minutesCap = this.o.quota?.perTicketRunnerMinutes;
     if (project.perTicketBudgetUsd === undefined && minutesCap === undefined) return null;
+    // Only gate work that would spend more: finished model work never blocks a merge or deploy.
+    if (!MODEL_PHASES.has(w.phase)) return null;
     const since = w.requeuedAt?.getTime() ?? 0;
     const now = this.clock().getTime();
     const runs = (
@@ -1287,10 +1291,8 @@ export class Reconciler {
     outcome: PhaseOutcome,
   ): Promise<ProviderCooldown | undefined> {
     if (!this.cooldowns) return undefined;
-    const run = this.active.get(runId);
-    if (!run?.provider) return undefined;
-    const provider =
-      outcome.runner || outcome.model ? providerOf(outcome.runner, outcome.model) : run?.provider;
+    // The provider the dispatch was gated on, so the cooldown gates the same name.
+    const provider = this.active.get(runId)?.provider;
     if (!provider) return undefined;
     const key = `${projectId}\u0000${ticketId}`;
     if (outcome.ok) {
@@ -1299,11 +1301,18 @@ export class Reconciler {
       return undefined;
     }
     if (outcome.runStatus !== "failed") return undefined;
+    // Runner-level errors and the summary tail (where the CLI's stderr lands) only: failed tool
+    // calls carry arbitrary content (a curl to an API returning 429 is not our quota).
     const errors = (await this.o.store.listEvents(runId))
-      .filter((event) => event.kind === "error")
-      .map((event) => event.message);
-    const text = [...errors, outcome.summary.slice(-2_000)].join("\n");
+      .filter((event) => event.kind === "error" && !event.message.startsWith("tool error:"))
+      .map((event) => event.message.slice(-500));
+    const text = [...errors, outcome.summary.slice(-500)].join("\n");
     if (!isQuotaError(text)) return undefined;
+    // Past the cap (until a success or a human re-queue) failures count as attempts again and no
+    // longer touch the shared cooldown: one poisoned ticket cannot stall the provider.
+    const deferrals = (this.quotaDeferrals.get(key) ?? 0) + 1;
+    this.quotaDeferrals.set(key, deferrals);
+    if (deferrals > MAX_QUOTA_DEFERRALS) return undefined;
     const line = text.split("\n").find((l) => isQuotaError(l)) ?? "rate limited";
     const cooldown = this.cooldowns.hit(provider, line.trim().slice(0, 200), this.clock());
     this.o.bus.publish({
@@ -1313,10 +1322,7 @@ export class Reconciler {
       projectId,
       ticketId,
     });
-    // Past the cap (until a success or a human re-queue) failures count as attempts again.
-    const deferrals = (this.quotaDeferrals.get(key) ?? 0) + 1;
-    this.quotaDeferrals.set(key, deferrals);
-    return deferrals > MAX_QUOTA_DEFERRALS ? undefined : cooldown;
+    return cooldown;
   }
 
   /** Puts the workflow back in the queue until the provider's cooldown ends; attempt unchanged. */
@@ -1333,8 +1339,13 @@ export class Reconciler {
     };
     delete next.leaseOwner;
     delete next.leaseExpiresAt;
-    const saved = await this.o.store.saveWorkflow(next);
-    this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+    try {
+      const saved = await this.o.store.saveWorkflow(next);
+      this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+    } catch (error) {
+      // Someone else moved the workflow meanwhile (cancel, takeover): their state wins.
+      if (!(error instanceof VersionConflictError)) throw error;
+    }
   }
 
   private async saveOwned(
@@ -1487,6 +1498,11 @@ export class Reconciler {
       if (effect.type === "request_approval") {
         await this.requestApproval(project, saved, effect.phase);
       } else if (effect.type === "blocked") {
+        // Label first: on Linear its absence is a re-queue signal for tickets blocked in Ready.
+        if (tickets.addLabel)
+          await this.trackerWrite(project.id, saved.ticketId, "addLabel", async () =>
+            tickets.addLabel?.(saved.ticketId, NEEDS_HUMAN_LABEL),
+          );
         await this.trackerWrite(project.id, saved.ticketId, "update", () =>
           tickets.update(saved.ticketId, { status: "blocked" }),
         );
@@ -1499,10 +1515,6 @@ export class Reconciler {
             ].join("\n\n"),
           ),
         );
-        if (tickets.addLabel)
-          await this.trackerWrite(project.id, saved.ticketId, "addLabel", async () =>
-            tickets.addLabel?.(saved.ticketId, NEEDS_HUMAN_LABEL),
-          );
         this.o.bus.publish({
           type: "workflow.blocked",
           projectId: project.id,

@@ -187,7 +187,8 @@ export class LinearTicketStore implements TicketStore {
   #requeueable(issue: Q.LinearIssue): boolean {
     const { blocked, blockedIn } = readBody(issue.description).meta;
     if (!blocked) return true;
-    if (blockedIn === undefined || norm(blockedIn) !== norm(issue.state.name)) return true;
+    // Unknown origin (blocked before `blockedIn` existed) counts as blocked in Ready.
+    if (blockedIn !== undefined && norm(blockedIn) !== norm(issue.state.name)) return true;
     return !issue.labels.nodes.some((l) => l.name === NEEDS_HUMAN_LABEL);
   }
 
