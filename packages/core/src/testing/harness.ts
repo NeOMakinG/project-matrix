@@ -6,7 +6,7 @@ import type { FigmaDesignPort, UiContextPort } from "../design.js";
 import { createDefaultHandlers, type HandlerDeps } from "../handlers.js";
 import { HoldoutStore } from "../holdout.js";
 import type { Receipt, RunRequest, RunResult } from "../ports.js";
-import type { ActionRequest } from "../ports-internal.js";
+import type { ActionRequest, MergePort, PullRequestPort } from "../ports-internal.js";
 import type { QuotaPolicy } from "../quota.js";
 import { Reconciler } from "../reconcile.js";
 import { type Actor, MemoryStore, type Store } from "../store.js";
@@ -40,6 +40,8 @@ export interface HarnessOptions {
   leaseMs?: number;
   quota?: QuotaPolicy;
   maxRequeuesPerDay?: number;
+  pullRequests?: PullRequestPort;
+  merge?: MergePort;
 }
 
 const SCENARIOS = JSON.stringify({
@@ -99,7 +101,7 @@ export function createHarness(opts: HarnessOptions = {}) {
     holdout,
     store,
     qa: { run: async () => opts.qaReceipts?.() ?? qaEvidence() },
-    merge: {
+    merge: opts.merge ?? {
       merge: async (_ctx, request) => {
         merges.push(request);
         return { ok: true, summary: "merged PR #1", url: "https://example.test/pr/1" };
@@ -137,6 +139,7 @@ export function createHarness(opts: HarnessOptions = {}) {
       ...(opts.maxRequeuesPerDay !== undefined
         ? { maxRequeuesPerDay: opts.maxRequeuesPerDay }
         : {}),
+      ...(opts.pullRequests ? { pullRequests: opts.pullRequests } : {}),
       leaseMs: opts.leaseMs ?? 600_000,
       heartbeatMs: 3_600_000,
       host: "bosgame",

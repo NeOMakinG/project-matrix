@@ -56,6 +56,38 @@ export function projectRoutes(app: App, ops: Operations) {
               }
             : {}),
           ...(body.checks ? { checks: body.checks } : {}),
+          ...(body.repo
+            ? {
+                repo: {
+                  path: body.repo.path,
+                  baseBranch: body.repo.baseBranch,
+                  remote: body.repo.remote,
+                },
+              }
+            : {}),
+          ...(body.models ? { models: modelPlan(body.models) } : {}),
+        }),
+      );
+    },
+  );
+
+  app.openapi(
+    route({
+      method: "patch",
+      path: "/v1/projects/{projectId}",
+      tag: "projects",
+      summary: "Update a project's tracker, checks or per-phase model plan (host-side config)",
+      params: ProjectParam,
+      body: S.UpdateProject,
+      response: S.Project,
+    }),
+    async (c) => {
+      const body = c.req.valid("json");
+      return c.json(
+        await ops.updateProject(c.var.principal, c.req.valid("param").projectId, {
+          ...(body.tickets ? { tickets: ticketSettings(body.tickets) } : {}),
+          ...(body.checks ? { checks: body.checks } : {}),
+          ...(body.models ? { models: modelPlan(body.models) } : {}),
         }),
       );
     },
@@ -310,4 +342,16 @@ function linearSettings(l: z.infer<typeof S.LinearTickets>) {
     ...(l.readyState ? { readyState: l.readyState } : {}),
     ...(l.apiKeyEnv ? { apiKeyEnv: l.apiKeyEnv } : {}),
   };
+}
+
+function ticketSettings(t: NonNullable<z.infer<typeof S.UpdateProject>["tickets"]>) {
+  return {
+    kind: t.kind,
+    ...(t.repo ? { repo: t.repo } : {}),
+    ...(t.linear ? { linear: linearSettings(t.linear) } : {}),
+  };
+}
+
+function modelPlan(plan: z.infer<typeof S.ModelPlan>) {
+  return Object.fromEntries(Object.entries(plan).filter(([, v]) => v !== undefined));
 }

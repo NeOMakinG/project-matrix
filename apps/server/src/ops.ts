@@ -18,9 +18,11 @@ import {
   type ApprovalStatus,
   CoreError,
   type CorePort,
+  type CreateProjectInput,
   type IncidentStatus,
   type Project,
   type Run,
+  type UpdateProjectInput,
 } from "./core-port.js";
 import { initProgress, reviseAnswer, validateAnswers } from "./init-progress.js";
 import { autonomyEtag, settingsEtag } from "./settings-etag.js";
@@ -41,7 +43,14 @@ async function core<T>(fn: () => Promise<T>): Promise<T> {
       throw new HttpError(412, "precondition_failed", error.message);
     if (error instanceof CoreError) {
       if (error.code === "tracker_unavailable") throw new HttpError(503, error.code, error.message);
-      const status = error.code === "not_found" ? 404 : error.code === "forbidden" ? 403 : 409;
+      const status =
+        error.code === "not_found"
+          ? 404
+          : error.code === "forbidden"
+            ? 403
+            : error.code === "invalid_request"
+              ? 400
+              : 409;
       throw new HttpError(status, error.code, error.message);
     }
     throw error;
@@ -116,21 +125,17 @@ export class Operations {
     });
   }
 
-  createProject(
-    p: Principal,
-    input: {
-      name: string;
-      description: string;
-      workspace: Project["workspace"];
-      tickets?: {
-        kind: "beads" | "markdown" | "github" | "linear";
-        repo?: string;
-        linear?: { teamKey: string; projectLabel: string; readyState?: string; apiKeyEnv?: string };
-      };
-      checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
-    },
-  ) {
+  createProject(p: Principal, input: CreateProjectInput) {
     return this.op(p, "admin", "/projects")(() => this.core.createProject(input));
+  }
+
+  updateProject(p: Principal, projectId: string, patch: UpdateProjectInput) {
+    return this.op(
+      p,
+      "admin",
+      `/projects/${projectId}`,
+      projectId,
+    )(() => this.core.updateProject(projectId, patch));
   }
 
   getProjectPolicy(p: Principal, projectId: string) {

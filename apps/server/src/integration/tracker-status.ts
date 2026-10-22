@@ -47,6 +47,7 @@ export function renderStatus(
   w: WorkflowState,
   links: readonly StatusLink[],
   orca?: OrcaStatusRef,
+  pullRequest?: StatusLink,
 ): string {
   const lines = [
     `**Matrix** · phase ${code(w.phase)} · ${code(w.status)}`,
@@ -57,6 +58,8 @@ export function renderStatus(
     lines.push(
       `- Orca: Run ${code(orca.run)}${orca.dispatch ? ` · dispatch ${code(orca.dispatch)}` : ""} (open in Orca desktop/mobile)`,
     );
+  if (pullRequest)
+    lines.push(`- Draft PR: [${pullRequest.label}](${pullRequest.url}) (awaiting a human merge)`);
   if (links.length) lines.push(`- Links: ${links.map((l) => `[${l.label}](${l.url})`).join(", ")}`);
   return lines.join("\n");
 }

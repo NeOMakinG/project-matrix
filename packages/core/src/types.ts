@@ -71,6 +71,11 @@ export interface ProjectConfig {
   maxLoops: number;
   maxAttempts: number;
   runTimeoutMs: number;
+  /**
+   * Last phase of the loop; the workflow is done once it passes. Existing-repo projects end at
+   * `merge` (the human merges the draft PR on GitHub); unset runs every phase.
+   */
+  lastPhase?: Phase;
   dailyBudgetUsd?: number;
   /** Reserved against the daily budget before dispatch, settled with the actual cost after. */
   estimatedRunUsd?: number;

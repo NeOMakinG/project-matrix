@@ -72,7 +72,42 @@ export interface MergePort {
   merge(
     ctx: PhaseContext,
     request: ActionRequest,
-  ): Promise<{ ok: boolean; summary: string; url?: string; mergedSha?: string }>;
+  ): Promise<{
+    ok: boolean;
+    summary: string;
+    url?: string;
+    mergedSha?: string;
+    /** Nothing failed, the merge just has not happened yet: the workflow waits for approval again. */
+    pending?: boolean;
+  }>;
+}
+
+/** Evidence of one earlier phase, quoted in the pull request body. */
+export interface PullRequestEvidence {
+  phase: Phase;
+  summary: string;
+  /** https links from that phase's receipts. */
+  urls: string[];
+}
+
+export interface PullRequestRequest {
+  project: ProjectConfig;
+  workflow: WorkflowState;
+  ticket: Ticket;
+  /** The commit checks, review and QA validated; exactly this SHA is pushed. */
+  headSha: string;
+  evidence: PullRequestEvidence[];
+}
+
+/**
+ * Host-side publication of a validated run: pushes the run branch and opens (or reuses) a DRAFT
+ * pull request. Never merges, never pushes the base branch, never force-pushes. Returns undefined
+ * for projects it does not publish (e.g. greenfield projects merged locally).
+ */
+export interface PullRequestPort {
+  /** Cheap pre-check: false for projects this port never publishes (skips all work). */
+  handles?(project: ProjectConfig): boolean;
+  publish(request: PullRequestRequest): Promise<{ url: string; branch: string } | undefined>;
 }
 
 export interface DeployPort {

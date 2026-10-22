@@ -37,6 +37,110 @@
           },
           "createdAt": {
             "type": "string"
+          },
+          "repo": {
+            "type": "object",
+            "properties": {
+              "external": {
+                "type": "boolean",
+                "enum": [true]
+              },
+              "baseBranch": {
+                "type": "string"
+              },
+              "remote": {
+                "type": "string"
+              },
+              "github": {
+                "type": "string"
+              }
+            },
+            "required": ["external", "baseBranch", "remote", "github"],
+            "description": "Set for an existing repo registered on the host"
+          },
+          "models": {
+            "type": "object",
+            "properties": {
+              "spike": {
+                "type": "object",
+                "properties": {
+                  "runner": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": ["runner", "model"]
+              },
+              "design": {
+                "type": "object",
+                "properties": {
+                  "runner": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": ["runner", "model"]
+              },
+              "implement": {
+                "type": "object",
+                "properties": {
+                  "runner": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": ["runner", "model"]
+              },
+              "review": {
+                "type": "object",
+                "properties": {
+                  "runner": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": ["runner", "model"]
+              },
+              "qa": {
+                "type": "object",
+                "properties": {
+                  "runner": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  }
+                },
+                "required": ["runner", "model"]
+              }
+            },
+            "description": "Effective model per model-driven phase"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string"
+                },
+                "cmd": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": ["kind", "cmd"]
+            }
           }
         },
         "required": ["id", "name", "description", "workspace", "autonomy", "createdAt"]
@@ -125,6 +229,12 @@
             },
             "maxItems": 20,
             "description": "Check commands run in the sandbox (argv, no shell)"
+          },
+          "repo": {
+            "$ref": "#/components/schemas/ExistingRepo"
+          },
+          "models": {
+            "$ref": "#/components/schemas/ModelPlan"
           }
         },
         "required": ["name"]
@@ -155,6 +265,128 @@
           }
         },
         "required": ["teamKey", "projectLabel"],
+        "additionalProperties": false
+      },
+      "ExistingRepo": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 500,
+            "pattern": "^\\/[^\\u0000-\\u001f\\u007f]*$",
+            "description": "Absolute host path under MATRIX_REPO_ROOTS"
+          },
+          "baseBranch": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "default": "main"
+          },
+          "remote": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+            "default": "origin",
+            "description": "GitHub remote draft PRs are opened on"
+          }
+        },
+        "required": ["path"],
+        "additionalProperties": false,
+        "description": "Register an existing host repo instead of creating an empty one"
+      },
+      "ModelPlan": {
+        "type": "object",
+        "properties": {
+          "spike": {
+            "$ref": "#/components/schemas/PhaseModel"
+          },
+          "design": {
+            "$ref": "#/components/schemas/PhaseModel"
+          },
+          "implement": {
+            "$ref": "#/components/schemas/PhaseModel"
+          },
+          "review": {
+            "$ref": "#/components/schemas/PhaseModel"
+          },
+          "qa": {
+            "$ref": "#/components/schemas/PhaseModel"
+          },
+          "reviewerFallbacks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhaseModel"
+            },
+            "maxItems": 5
+          }
+        },
+        "additionalProperties": false
+      },
+      "PhaseModel": {
+        "type": "object",
+        "properties": {
+          "runner": {
+            "type": "string",
+            "enum": ["claude-code", "codex", "opencode"]
+          },
+          "model": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$"
+          }
+        },
+        "required": ["runner", "model"],
+        "additionalProperties": false
+      },
+      "UpdateProject": {
+        "type": "object",
+        "properties": {
+          "tickets": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["beads", "markdown", "github", "linear"]
+              },
+              "repo": {
+                "type": "string",
+                "pattern": "^[\\w.-]+\\/[\\w.-]+$"
+              },
+              "linear": {
+                "$ref": "#/components/schemas/LinearTickets"
+              }
+            },
+            "required": ["kind"],
+            "additionalProperties": false
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": ["typecheck", "lint", "test", "adr-check"]
+                },
+                "cmd": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "minItems": 1,
+                  "maxItems": 20
+                }
+              },
+              "required": ["kind", "cmd"]
+            },
+            "maxItems": 20,
+            "description": "Check commands run in the sandbox (argv, no shell)"
+          },
+          "models": {
+            "$ref": "#/components/schemas/ModelPlan"
+          }
+        },
         "additionalProperties": false
       },
       "TrackerFailure": {
@@ -1771,10 +2003,112 @@
         }
       }
     },
-    "/v1/projects/{projectId}/tracker/failures": {
+    "/v1/projects/{projectId}": {
+      "patch": {
+        "tags": ["projects"],
+        "summary": "Update a project's tracker, checks or per-phase model plan (host-side config)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProject"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
       "get": {
         "tags": ["projects"],
-        "summary": "Recent ticket-tracker write failures (newest first); workflows never fail on them",
+        "summary": "Get a project",
         "security": [
           {
             "bearer": []
@@ -1797,10 +2131,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/TrackerFailure"
-                  }
+                  "$ref": "#/components/schemas/Project"
                 }
               }
             }
@@ -1868,10 +2199,10 @@
         }
       }
     },
-    "/v1/projects/{projectId}": {
+    "/v1/projects/{projectId}/tracker/failures": {
       "get": {
         "tags": ["projects"],
-        "summary": "Get a project",
+        "summary": "Recent ticket-tracker write failures (newest first); workflows never fail on them",
         "security": [
           {
             "bearer": []
@@ -1894,7 +2225,10 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Project"
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrackerFailure"
+                  }
                 }
               }
             }

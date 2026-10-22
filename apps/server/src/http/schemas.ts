@@ -22,8 +22,71 @@ export const Project = z
     workspace: z.enum(["orca", "native"]),
     autonomy: z.record(z.string(), Autonomy),
     createdAt: z.string(),
+    repo: z
+      .object({
+        external: z.literal(true),
+        baseBranch: z.string(),
+        remote: z.string(),
+        github: z.string(),
+      })
+      .optional()
+      .openapi({ description: "Set for an existing repo registered on the host" }),
+    models: z
+      .object(
+        Object.fromEntries(
+          (["spike", "design", "implement", "review", "qa"] as const).map((phase) => [
+            phase,
+            z.object({ runner: z.string(), model: z.string() }).optional(),
+          ]),
+        ) as Record<
+          "spike" | "design" | "implement" | "review" | "qa",
+          z.ZodOptional<z.ZodObject<{ runner: z.ZodString; model: z.ZodString }>>
+        >,
+      )
+      .optional()
+      .openapi({ description: "Effective model per model-driven phase" }),
+    checks: z.array(z.object({ kind: z.string(), cmd: z.array(z.string()) })).optional(),
   })
   .openapi("Project");
+
+export const PhaseModel = z
+  .object({
+    runner: z.enum(["claude-code", "codex", "opencode"]),
+    model: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,99}$/, "invalid model id"),
+  })
+  .strict()
+  .openapi("PhaseModel");
+
+/** Per-phase model plan; review must differ from implement (independent review). */
+export const ModelPlan = z
+  .object({
+    spike: PhaseModel.optional(),
+    design: PhaseModel.optional(),
+    implement: PhaseModel.optional(),
+    review: PhaseModel.optional(),
+    qa: PhaseModel.optional(),
+    reviewerFallbacks: z.array(PhaseModel).max(5).optional(),
+  })
+  .strict()
+  .openapi("ModelPlan");
+
+export const ExistingRepo = z
+  .object({
+    path: z
+      .string()
+      .min(2)
+      .max(500)
+      .regex(/^\/[^\u0000-\u001f\u007f]*$/, "must be an absolute path")
+      .openapi({ description: "Absolute host path under MATRIX_REPO_ROOTS" }),
+    baseBranch: z.string().min(1).max(200).default("main"),
+    remote: z
+      .string()
+      .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)
+      .default("origin")
+      .openapi({ description: "GitHub remote draft PRs are opened on" }),
+  })
+  .strict()
+  .openapi("ExistingRepo");
 
 /** Linear settings. The API key itself is never accepted: only the host env var NAME holding it. */
 export const LinearTickets = z
@@ -71,6 +134,41 @@ export const QuotaStatus = z
   })
   .openapi("QuotaStatus");
 
+const TicketsSettings = z
+  .object({
+    kind: z.enum(["beads", "markdown", "github", "linear"]),
+    repo: z
+      .string()
+      .regex(/^[\w.-]+\/[\w.-]+$/)
+      .optional(),
+    linear: LinearTickets.optional(),
+  })
+  .strict()
+  .refine((t) => (t.kind === "linear") === (t.linear !== undefined), {
+    message: "`linear` is required for, and only allowed with, kind linear",
+    path: ["linear"],
+  });
+
+const ChecksSettings = z
+  .array(
+    z.object({
+      kind: z.enum(["typecheck", "lint", "test", "adr-check"]),
+      cmd: z.array(z.string().min(1).max(200)).min(1).max(20),
+    }),
+  )
+  .max(20);
+
+export const UpdateProject = z
+  .object({
+    tickets: TicketsSettings.optional(),
+    checks: ChecksSettings.optional().openapi({
+      description: "Check commands run in the sandbox (argv, no shell)",
+    }),
+    models: ModelPlan.optional(),
+  })
+  .strict()
+  .openapi("UpdateProject");
+
 export const CreateProject = z
   .object({
     name: z.string().min(1).max(100),
@@ -102,6 +200,10 @@ export const CreateProject = z
       .max(20)
       .optional()
       .openapi({ description: "Check commands run in the sandbox (argv, no shell)" }),
+    repo: ExistingRepo.optional().openapi({
+      description: "Register an existing host repo instead of creating an empty one",
+    }),
+    models: ModelPlan.optional(),
   })
   .openapi("CreateProject");
 

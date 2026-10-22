@@ -109,3 +109,12 @@ MATRIX_LINEAR_LIVE=1 LINEAR_API_KEY=... bunx vitest run packages/tickets/src/ada
 Webhooks (changes still arrive by polling) and retrying a failed status comment before the next
 workflow change are follow-ups. Quota cooldowns live in memory (a restart forgets them; the
 rolling limits still hold).
+
+## Existing repos
+
+A repo registered with `repo` on `POST /v1/projects` (see
+[self-hosting](self-hosting.md#existing-repos-draft-prs-human-merge)) uses the same Linear
+settings. Its runs stop at **Awaiting merge** with a draft GitHub PR linked in the live status
+comment (`- Draft PR: ...`). The ticket moves to Done once a human merged that PR on GitHub and
+approved the merge in Matrix. `PATCH /v1/projects/{id}` with `tickets` changes the team, label
+or key env var name without recreating the project.

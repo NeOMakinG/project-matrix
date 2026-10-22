@@ -174,6 +174,8 @@ export function advance(
         effects: [{ type: "request_approval", phase: "design" }],
       };
     }
+    if (config.lastPhase === state.phase)
+      return { state: { ...withModel, status: "done" }, effects: [{ type: "done" }] };
     const next =
       state.phase === "spike"
         ? config.agents?.designFirst && outcome.targetsUi

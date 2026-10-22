@@ -34,7 +34,13 @@ import {
 } from "./machine.js";
 import { resolveModel, selectModel } from "./models.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, RunnerId, Workspace } from "./ports.js";
-import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
+import type {
+  Authorization,
+  GitPort,
+  PhaseContext,
+  PullRequestEvidence,
+  PullRequestPort,
+} from "./ports-internal.js";
 import { publicQaReceipt } from "./qa-evidence.js";
 import {
   isQuotaError,
@@ -80,6 +86,11 @@ export interface ReconcilerOptions {
   quota?: QuotaPolicy;
   /** How often a human may re-queue one blocked ticket per UTC day (state flapping guard). */
   maxRequeuesPerDay?: number;
+  /**
+   * Host-side draft pull requests: once review and QA passed, the validated head is pushed and a
+   * draft PR opened right before the merge approval is requested (retried on later ticks).
+   */
+  pullRequests?: PullRequestPort;
   clock?: () => Date;
   ids?: () => string;
 }
@@ -189,6 +200,8 @@ function validApprover(a: ApprovalRecord, runOwner: string | undefined): boolean
 }
 
 export class Reconciler {
+  /** Heads whose draft PR is published (skips repeat work on later ticks). */
+  private readonly published = new Set<string>();
   readonly ownerId: string;
   private readonly active = new Map<string, ActiveRun>();
   private readonly clock: () => Date;
@@ -283,7 +296,74 @@ export class Reconciler {
       else if (result === "replayed") report.replayed.push(w.ticketId);
       else if (result === "approval") report.awaitingApproval.push(w.ticketId);
     }
+    if (this.o.pullRequests) {
+      for (const w of await this.o.store.listWorkflows({ status: ["waiting_approval"] })) {
+        const project = byId.get(w.projectId);
+        if (project && w.phase === "merge" && !this.isActive(w))
+          await this.publishPullRequest(project, w);
+      }
+    }
     return report;
+  }
+
+  /**
+   * Pushes the validated head and opens (or reuses) the draft PR. Failures never fail the
+   * workflow: they surface as tracker failures and the next tick retries (the port dedupes).
+   */
+  private async publishPullRequest(project: ProjectConfig, w: WorkflowState): Promise<void> {
+    const port = this.o.pullRequests;
+    if (!port || !w.workdir || port.handles?.(project) === false) return;
+    try {
+      const headSha = await this.o.git.headSha(w.workdir);
+      const key = `${project.id}\u0000${w.ticketId}\u0000${headSha}`;
+      if (this.published.has(key)) return;
+      // Only the exact commit QA validated, with every earlier gate still holding, is published.
+      const qa = await this.candidateRun(w, "merge");
+      if (!qa?.headSha || qa.headSha !== headSha)
+        throw new Error("worktree head differs from the QA-validated head; not publishing");
+      const problems = await this.gateProblems(project, w, "merge");
+      if (problems) throw new Error(`gates no longer hold: ${problems}`);
+      const ticket = await this.o.tickets(project.id).get(w.ticketId);
+      if (!ticket) throw new Error(`ticket ${w.ticketId} not found`);
+      const published = await port.publish({
+        project,
+        workflow: w,
+        ticket,
+        headSha,
+        evidence: await this.pullRequestEvidence(w),
+      });
+      if (published) {
+        if (this.published.size > 5_000) this.published.clear();
+        this.published.add(key);
+      }
+      if (published)
+        this.o.bus.publish({
+          type: "pull_request.opened",
+          projectId: project.id,
+          ticketId: w.ticketId,
+          url: published.url,
+          branch: published.branch,
+        });
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "pull-request", error);
+    }
+  }
+
+  private async pullRequestEvidence(w: WorkflowState): Promise<PullRequestEvidence[]> {
+    const runs = await this.o.store.listRuns({ projectId: w.projectId, ticketId: w.ticketId });
+    const out: PullRequestEvidence[] = [];
+    for (const phase of ["checks", "review", "qa"] as const) {
+      const run = runs
+        .filter((r) => r.phase === phase && r.status === "ok")
+        .sort((a, b) => a.startedAt.getTime() - b.startedAt.getTime())
+        .at(-1);
+      if (!run) continue;
+      const urls = (await this.o.store.listReceipts(run.id))
+        .map((receipt) => receipt.url)
+        .filter((url): url is string => typeof url === "string" && url.startsWith("https://"));
+      out.push({ phase, summary: run.summary ?? "", urls: [...new Set(urls)].slice(0, 10) });
+    }
+    return out;
   }
 
   private isActive(w: WorkflowState): boolean {
@@ -702,6 +782,7 @@ export class Reconciler {
     if (phase === "design" && run.headSha !== headSha)
       throw new Error("design commit changed before approval request");
     const existing = await this.approvalFor(w, phase, run.id, headSha);
+    if (phase === "merge") await this.publishPullRequest(project, w);
     if (existing.pending?.runId === run.id && existing.pending.headSha === headSha) return;
     const approvalId = this.ids();
     await this.o.store.createApproval({
@@ -1412,7 +1493,13 @@ export class Reconciler {
     });
     await this.o.store.addReceipts(runId, outcome.receipts);
     // Crashed or fenced runs are not recorded as completed steps, so they are retried, never replayed.
-    if (!fenced && (!outcome.runStatus || outcome.runStatus === "ok")) {
+    // Neither are "ask again" outcomes (merge not authorized or not merged yet): after the next
+    // approval the action must run again, not replay its earlier refusal.
+    if (
+      !fenced &&
+      (!outcome.runStatus || outcome.runStatus === "ok") &&
+      !outcome.requiresApproval
+    ) {
       await this.o.store.completeStep(key, {
         output: outcome,
         ok: outcome.ok,

@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import { type CredentialSource, resolveCredential } from "@matrix/sandbox";
 import { hashToken, KeyStore } from "./auth/keys.js";
 import { createServer } from "./http/app.js";
+import { parseRepoRoots } from "./integration/existing-repo.js";
 import { createFactory } from "./integration/factory.js";
 import { parseQuotaEnv } from "./integration/quota-config.js";
 import { parseRuntimeKind } from "./integration/runtime.js";
@@ -72,6 +73,7 @@ const factory = await createFactory({
     ...(env.MATRIX_GH ? { gh: env.MATRIX_GH } : {}),
   },
   ...(env.MATRIX_DATABASE_URL ? { databaseUrl: env.MATRIX_DATABASE_URL } : {}),
+  repoRoots: parseRepoRoots(env.MATRIX_REPO_ROOTS),
   dataDir,
   host: env.MATRIX_NODE_NAME ?? "localhost",
   ...(env.MATRIX_QUOTA ? { quota: parseQuotaEnv(env.MATRIX_QUOTA) } : {}),

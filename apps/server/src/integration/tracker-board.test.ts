@@ -104,6 +104,28 @@ describe("TrackerSync", () => {
     expect(body).toContain("`done`");
   });
 
+  test("a draft PR lands in the live comment while the issue sits in Awaiting merge", async () => {
+    const { fake, linear, bus, sync } = setup();
+    const t = await linear.create({ title: "T", body: "" });
+    bus.publish({
+      type: "workflow.changed",
+      workflow: wf(t.id, { phase: "merge", status: "waiting_approval" }),
+    });
+    for (const url of ["https://github.com/acme/app/pull/9", "javascript:alert(1)"])
+      bus.publish({
+        type: "pull_request.opened",
+        projectId: "p1",
+        ticketId: t.id,
+        url,
+        branch: "matrix-NEO-1-x",
+      });
+    await sync.flush();
+    expect(fake.issues.get(t.id)?.state.name).toBe("Awaiting merge");
+    const body = [...fake.comments.values()][0]?.body ?? "";
+    expect(body).toContain("Draft PR: [matrix-NEO-1-x](https://github.com/acme/app/pull/9)");
+    expect(body).not.toContain("javascript:");
+  });
+
   test("the live comment names the ticket's Orca Run; malformed refs are dropped", async () => {
     const { fake, linear, bus, sync } = setup();
     const t = await linear.create({ title: "T", body: "" });

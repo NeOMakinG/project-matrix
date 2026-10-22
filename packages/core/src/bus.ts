@@ -29,6 +29,13 @@ export type BusEvent =
     }
   | { type: "approval.decided"; approvalId: string; status: "approved" | "rejected" }
   | { type: "workflow.blocked"; projectId: string; ticketId: string; reason: string }
+  | {
+      type: "pull_request.opened";
+      projectId: string;
+      ticketId: string;
+      url: string;
+      branch: string;
+    }
   | { type: "autonomy.changed"; projectId: string; phase: Phase | "default"; mode: string }
   | TrackerFailedEvent
   | QuotaCooldownEvent;
