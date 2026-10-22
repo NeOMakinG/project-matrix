@@ -36,6 +36,15 @@ describe("model output parsing", () => {
     expect(() => parseScenarios(JSON.stringify([scenario, scenario]))).toThrow();
   });
 
+  test("positive I/O requirements are not treated as absence claims", () => {
+    const scenario = {
+      given: "a temp directory",
+      when: "save(5) is called",
+      then: "writes the result to a file via I/O and the file contains 5",
+    };
+    expect(parseScenarios(JSON.stringify([scenario]))).toHaveLength(1);
+  });
+
   test("retry is bounded and cancellation never retries", async () => {
     let calls = 0;
     await expect(

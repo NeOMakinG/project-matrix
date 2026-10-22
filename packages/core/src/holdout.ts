@@ -21,7 +21,7 @@ export const QA_JUDGE_CRITERIA =
   "Every assertion in the full then clause must be demonstrated by host-executed evidence. Inspect probe source and actual output; exit zero, printed claims, simulations, or checking only part of the clause are insufficient. Absence claims require instrumentation installed before importing/exercising the software, covering the named surfaces (e.g. fs, net, console), and assertions of zero intercepted calls. A nonzero host exit cannot satisfy a scenario.";
 
 export function hasAbsenceClaim(text: string): boolean {
-  return /\b(?:no|without|never|absence|unchanged|unmodified)\b|\bzero\s+(?:[\w./:-]+\s+){0,4}(?:calls|writes|requests|effects)\b|\b(?:side[- ]effects?|I\/O|pure|purity)\b|\b(?:not|doesn't|cannot)\s+(?:produce|perform|write|log|mutate|modify|access|emit)\b/i.test(
+  return /\b(?:no|without|never|absence|unchanged|unmodified)\b|\bzero\s+(?:[\w./:-]+\s+){0,4}(?:calls|writes|requests|effects)\b|\b(?:pure|purity)\b|\b(?:not|doesn't|cannot)\s+(?:produce|perform|write|log|mutate|modify|access|emit)\b/i.test(
     text,
   );
 }

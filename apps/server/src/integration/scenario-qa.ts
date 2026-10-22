@@ -240,7 +240,7 @@ export function scenarioQaDriver(options: {
               (!/\b(?:spyOn|mock|stub|patch|defineProperty|Proxy)\b|\b(?:console|fs|net)\s*\.\s*\w+\s*=/i.test(
                 probe.source,
               ) ||
-                !/\b(?:assert|expect|throw)\b/.test(probe.source))
+                !/\b(?:assert\w*|expect|throw|raise|exit)\b/i.test(probe.source))
             )
               throw new Error("absence claim lacks probe instrumentation");
             if (
