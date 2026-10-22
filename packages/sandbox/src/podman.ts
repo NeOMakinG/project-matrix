@@ -43,6 +43,11 @@ export interface RunPolicy {
   ticketId?: string;
   network: NetworkPolicy;
   allowHosts?: string[];
+  /**
+   * Runs the `podman run` itself (e.g. inside an Orca terminal so a human can watch it). Only the
+   * launch goes through it; cleanup and the container's isolation stay with this sandbox.
+   */
+  launcher?: LineExecutor;
 }
 
 export function containerName(runId: string): string {
@@ -143,7 +148,7 @@ export class PodmanSandbox implements Sandbox {
         if (policy.ticketId) labels.ticket = policy.ticketId;
         const argv = this.argv(spec, grant, envFile, policy.runId, labels);
         await this.#o.broker.assertNoSecrets(argv);
-        return await exec(
+        return await (policy.launcher ?? exec)(
           {
             cmd: argv,
             cwd: spec.cwd,

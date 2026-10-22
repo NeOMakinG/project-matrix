@@ -104,6 +104,38 @@ describe("TrackerSync", () => {
     expect(body).toContain("`done`");
   });
 
+  test("the live comment names the ticket's Orca Run; malformed refs are dropped", async () => {
+    const { fake, linear, bus, sync } = setup();
+    const t = await linear.create({ title: "T", body: "" });
+    bus.publish({
+      type: "run.started",
+      runId: "r2",
+      projectId: "p1",
+      ticketId: t.id,
+      phase: "review",
+    });
+    bus.publish({ type: "workflow.changed", workflow: wf(t.id, { phase: "review" }) });
+    bus.publish({
+      type: "run.finished",
+      runId: "r2",
+      status: "ok",
+      summary: "",
+      receipts: [
+        { kind: "log", ok: true, summary: "bad", data: { orca: { run: "run_x](https://evil)" } } },
+        {
+          kind: "log",
+          ok: true,
+          summary: "orca",
+          data: { orca: { run: "run_abc", dispatch: "ctx_1" } },
+        },
+      ],
+    });
+    await sync.flush();
+    const body = [...fake.comments.values()][0]?.body ?? "";
+    expect(body).toContain("- Orca: Run `run_abc` · dispatch `ctx_1`");
+    expect(body).not.toContain("evil");
+  });
+
   test("tracker failures become events and never throw; adapters without capabilities get no writes", async () => {
     const { fake, linear, bus, events, sync } = setup();
     const t = await linear.create({ title: "T", body: "" });

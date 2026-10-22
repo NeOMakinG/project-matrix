@@ -1,48 +1,75 @@
 # Orca integration
 
-Orca is optional. Integration PR #27 is merged and the native factory loop is
-proven. The CLI provides **hook file planning and project-scoped MCP registration**
+Orca is optional. The native factory loop is proven; the Orca runtime (below) is the
+preferred way to watch agents. The CLI provides **hook file planning and project-scoped MCP registration**
 for Claude Code, Codex and OpenCode on each of your machines. Orca-managed
 workspaces remain an optional runtime choice; native-loop validation does not
 certify every Orca installation. These steps require operator review and are not
 performed by `matrix doctor`.
 
-## Host runtime and local pairing
+## Orca runtime (`MATRIX_RUNTIME=orca`)
 
-**Linux host operator:** inspect the cached `ops/bosgame/orca-serve.service` and
-`orca-serve.md` for the reviewed CLI shape; do not copy their machine-specific
-account/host values. Check your installed Orca help/version before applying.
-Create a dedicated unprivileged runtime account, private project root and a
-protected service environment. Use a generic environment name such as
-`matrix-host`, not a real account/host identity in public instructions.
+With `MATRIX_RUNTIME=orca` every agent session Matrix starts runs in an Orca terminal, so you
+can watch (and stop) it from Orca desktop or mobile. Linear stays the place for tasks, context
+and outputs; Matrix keeps the gates (independent review model, holdout QA, human merge).
+`native` stays the default and the fallback.
 
-The committed unit's invocation is `orca serve --port <port> --pairing-address
-<operator-selected-address> --project-root <absolute-project-root>`. There is no
-documented bind-address flag in that reviewed setup: it listens on all interfaces.
-**Before starting on the host**, have the administrator restrict the runtime port
-to the intended tailnet interface and trusted peers. Pairing address is advertised
-routing, not an access-control rule. systemd IP filtering is defense in depth only
-where the user manager actually enforces it; validate the listening socket and
-firewall from an untrusted network. Do not expose pairing on the public Internet.
+Per ticket: one Orca worktree (`worktree create --no-parent --setup skip --linear-issue NEO-n`),
+one parked bash coordinator terminal titled `matrix:NEO-n · <project>`, bound to one
+orchestration Run with the same name. Per runner call (spike, implement, review, QA judge):
+one orchestration task and one bash terminal titled `<phase> · <model>`, dispatched without
+`--inject`. Matrix sends `bash '<script>'; exit` to that terminal.
 
-Review an adapted user unit with private paths and environment, then install/start
-it using host `systemctl --user`; do not run these host changes from a runner
-container. Read the one-time pairing code privately from the host service journal.
-Never paste the code into this repo, issue tracker, logs shared for QA, or shell
-history. On your **local Orca client machine**, the reviewed CLI shape is:
+The script lives in `$MATRIX_DATA_DIR/orca-scripts/` (0700 dir, 0600 file, deleted on exit).
+It runs the **same rootless Podman command** as the native runtime: same image, read-only
+mounts for review/QA, per-run broker token. The gateway key never reaches Orca, the script,
+terminal history or argv. The prompt (untrusted ticket text) is fed from a 0600 stdin file and
+is never interpolated into shell text; every other value is single-quoted. The script writes its
+exit code to a file, sends `worker_done` itself and deletes itself.
 
-```text
-orca environment add --name matrix-host --pairing-code <one-time-code>
-orca environment list
+Matrix drains the coordinator mailbox with `orchestration check --wait`, acks every Delivery
+(unacked ones replay), answers worker `question`s with a fixed "unattended" reply, and treats the
+exit file as completion when a message is lost. A phase that outlives its timeout is
+interrupted and its container removed. Before a worktree is archived or a new one prepared,
+Matrix stops any container still labelled with that ticket. `orchestration worker-read --source terminal` is stored
+as a 0600 evidence file and a `log` receipt with `data.orca = {run, dispatch, task, terminal}`.
+The Linear status comment shows `Orca: Run <id> · dispatch <id>`.
+
+Cleanup: `orca worktree rm --force` deletes the branch, so Matrix first pins the worktree head
+at `refs/matrix/archive/<branch>-<sha12>` in the canonical repo; without that ref it refuses to
+remove. Orca sanitizes `/` in names, so the branch is `matrix-NEO-n`, not `matrix/NEO-n`; Matrix
+records what Orca returns. Matrix never calls `orchestration reset` (it is global).
+
+Configuration (server environment):
+
+| Variable | Meaning |
+| --- | --- |
+| `MATRIX_RUNTIME=orca` | Use Orca worktrees/terminals; needs the same gateway/image settings as `native`. |
+| `MATRIX_ORCA_BINARY` | Absolute Orca IDE CLI. Default `/opt/Orca/resources/bin/orca-ide`. Never rely on `orca` from `PATH`: on Linux `/usr/bin/orca` is often the GNOME screen reader. |
+| `MATRIX_ORCA_ENVIRONMENT` | Not supported with `MATRIX_RUNTIME=orca` (startup fails): runner scripts and the sandbox env-file are host-local, so Matrix must run on the Orca host. |
+
+Each repository must be registered once (`orca repo add --path <repo>`). Matrix must run as the
+same user as the Orca runtime: the CLI authenticates with `~/.config/orca/orca-runtime.json`
+(0600) and the local unix socket.
+
+## Host runtime and pairing
+
+The live runtime on a Linux host is the full Electron app in serve mode, started by the Orca
+CLI (`orca-ide --serve --serve-port <port> --serve-pairing-address <tailnet-ip>
+--serve-mobile-pairing`) under Xvfb, not the older `ops/bosgame/orca-serve.service` /
+port 7420 setup (kept only as history). The websocket listens on **all interfaces**: restrict
+its port to `tailscale0` before relying on it, for example:
+
+```sh
+sudo ufw allow in on tailscale0 to any port <port> proto tcp
+sudo ufw deny <port>/tcp
+ss -ltnp | grep <port>
 ```
 
-The first line is a **syntax reference, not a paste-ready command**: it places the
-code in process arguments and history if entered literally. Use Orca's secure
-pairing UI/prompt if available in the installed version. The cached material does
-not establish an env-file/stdin pairing-code flag; do not invent one. If CLI-only
-pairing is necessary, coordinate a private, history-disabled operator session and
-review process-argument exposure before proceeding. Verify the paired environment
-and peer identity before granting any project access.
+Pairing address is advertised routing, not access control. Pair clients with Orca's pairing
+UI; never paste a pairing code into this repo, issue trackers or shell history. Anyone holding
+the runtime token can act as any terminal handle, so the trust boundary is the runtime's Unix
+user.
 
 ## Hooks: dry run before apply
 

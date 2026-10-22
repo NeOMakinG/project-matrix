@@ -1,41 +1,99 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import type { PreparedWorkspace, Workspace, WorkspaceTarget } from "@matrix/core";
-import { hostExecutor, type LineExecutor, runToCompletion } from "@matrix/sandbox";
+import {
+  gitLocation,
+  hostExecutor,
+  type LineExecutor,
+  runToCompletion,
+  safeGitEnv,
+  verifyWorktreeLink,
+} from "@matrix/sandbox";
 import { safeSegment } from "./native.js";
-import { gitdirFromCommonDir, type TrustedWorktrees } from "./trusted.js";
+import { OrcaCli, record, str } from "./orca-cli.js";
+import { gitdirFromCommonDir, TrustedWorktrees } from "./trusted.js";
 
-/** The parts of Orca's CLI contract this adapter relies on. */
+/** The parts of Orca's CLI contract Matrix relies on (workspace + orchestration runtime). */
 export const ORCA_REQUIRED_COMMANDS: Record<string, string[]> = {
-  "worktree create": ["repo", "name", "base-branch", "json", "agent", "prompt", "issue"],
+  "worktree create": [
+    "repo",
+    "name",
+    "base-branch",
+    "json",
+    "linear-issue",
+    "no-parent",
+    "setup",
+    "comment",
+  ],
   "worktree rm": ["worktree", "force", "json"],
   "repo list": ["json"],
+  "terminal create": ["worktree", "command", "title", "json"],
+  "terminal send": ["terminal", "text", "enter", "interrupt", "json"],
+  "terminal close": ["terminal", "json"],
+  "orchestration run-create": ["objective", "from", "json"],
+  "orchestration task-create": ["task-title", "run", "from", "json"],
+  "orchestration dispatch": ["task", "to", "from", "run", "json"],
+  "orchestration check": ["terminal", "run", "ack", "types", "wait", "timeout-ms", "json"],
+  "orchestration reply": ["id", "body", "run", "from", "json"],
+  "orchestration send": ["type", "task-id", "dispatch-id", "outcome", "body", "subject", "json"],
+  "orchestration worker-read": ["dispatch", "source", "json"],
 };
 export const ORCA_SCHEMA_VERSION = 1;
 
+/** Linear identifiers (e.g. NEO-12); anything else is not passed to `--linear-issue`. */
+const LINEAR_ID = /^[A-Z][A-Z0-9]{0,9}-[0-9]{1,9}$/;
+
 export interface OrcaWorkspaceOptions {
+  /** Shared Orca CLI client; built from `orcaBinary`/`executor`/`environment` when omitted. */
+  cli?: OrcaCli;
   orcaBinary?: string;
   executor?: LineExecutor;
-  /** Agent Orca starts in the worktree (e.g. claude, codex). Omit to let Matrix run agents itself. */
-  agent?: string;
-  prompt?: (target: WorkspaceTarget) => string | undefined;
-  issue?: (target: WorkspaceTarget) => number | undefined;
-  /** Orca runtime environment to target, e.g. the bosgame `orca serve` pairing. */
   environment?: string;
+  /** Host git executor (tests). */
+  gitExecutor?: LineExecutor;
+  gitBinary?: string;
+  /** Linear issue to link; defaults to the ticket id when it looks like a Linear identifier. */
+  linearIssue?: (target: WorkspaceTarget) => string | undefined;
   /** Records each worktree's gitdir host-side (from the canonical repo) for WorktreeGitPort. */
   trusted?: TrustedWorktrees;
+  /** Called before a worktree is removed (e.g. to close its Orca terminals). */
+  beforeRemove?: (workdir: string) => Promise<void>;
+  /**
+   * Stops any runner container still attached to a ticket (e.g. `PodmanSandbox.stop`) before its
+   * head is archived or a fresh worktree is prepared, so nothing commits after the pin.
+   */
+  stopRunners?: (target: { projectId: string; ticketId: string }) => Promise<unknown>;
 }
 
-interface OrcaEnvelope {
-  ok?: boolean;
-  result?: unknown;
-  error?: { message?: string } | string;
+/** What `prepared.ref` carries for an Orca worktree. */
+export interface OrcaWorkspaceRef {
+  orca: string;
+  commonDir: string;
+  branch: string;
+  projectId?: string;
+  ticketId?: string;
 }
 
-function record(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+export function parseOrcaRef(ref: string): OrcaWorkspaceRef {
+  let value: Record<string, unknown> = {};
+  try {
+    value = record(JSON.parse(ref));
+  } catch {}
+  const orca = str(value.orca);
+  const commonDir = str(value.commonDir);
+  const branch = str(value.branch);
+  if (!orca || !commonDir || !branch)
+    throw new Error(
+      "legacy or malformed Orca workspace ref; refusing to remove without an archive",
+    );
+  const projectId = str(value.projectId);
+  const ticketId = str(value.ticketId);
+  return {
+    orca,
+    commonDir,
+    branch,
+    ...(projectId && ticketId ? { projectId, ticketId } : {}),
+  };
 }
 
 /** Validates an `orca agent-context --json` document against the contract above. Returns problems found. */
@@ -58,58 +116,48 @@ export function checkOrcaContract(context: unknown): string[] {
   return problems;
 }
 
-/** Ticket runs as Orca worktrees, so a human can watch or take over from Orca. */
+/** Ticket runs as Orca worktrees, so a human can watch or take over from Orca desktop/mobile. */
 export class OrcaWorkspace implements Workspace {
   readonly kind = "orca" as const;
+  readonly cli: OrcaCli;
   readonly #o: OrcaWorkspaceOptions;
+  readonly #trusted: TrustedWorktrees;
   #validated = false;
 
   constructor(options: OrcaWorkspaceOptions = {}) {
     this.#o = options;
+    this.#trusted = options.trusted ?? new TrustedWorktrees();
+    this.cli =
+      options.cli ??
+      new OrcaCli({
+        ...(options.orcaBinary ? { binary: options.orcaBinary } : {}),
+        ...(options.executor ? { executor: options.executor } : {}),
+        ...(options.environment ? { environment: options.environment } : {}),
+      });
   }
 
-  async #orca(args: string[]): Promise<unknown> {
-    const env: Record<string, string> = {
-      PATH: process.env.PATH ?? "/usr/bin:/bin",
-      HOME: process.env.HOME ?? "/tmp",
-    };
-    const full = [...args];
-    if (this.#o.environment) full.push("--environment", this.#o.environment);
-    const result = await runToCompletion(this.#o.executor ?? hostExecutor, {
-      cmd: [this.#o.orcaBinary ?? "orca", ...full],
-      cwd: process.cwd(),
-      env,
+  async #git(gitdir: string, args: string[]): Promise<string> {
+    const result = await runToCompletion(this.#o.gitExecutor ?? hostExecutor, {
+      cmd: [this.#o.gitBinary ?? "git", ...gitLocation(gitdir), ...args],
+      cwd: gitdir,
+      env: safeGitEnv(),
       timeoutMs: 120_000,
     });
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      throw new Error(
-        `orca ${args.slice(0, 2).join(" ")} returned non-JSON (exit ${result.exitCode}): ${result.stderrTail.trim().slice(-300)}`,
-      );
-    }
-    const envelope = record(parsed) as OrcaEnvelope;
-    if (result.exitCode !== 0 || envelope.ok === false) {
-      const message = typeof envelope.error === "string" ? envelope.error : envelope.error?.message;
-      throw new Error(
-        `orca ${args.slice(0, 2).join(" ")} failed: ${message ?? result.stderrTail.trim().slice(-300)}`,
-      );
-    }
-    return "result" in envelope ? envelope.result : parsed;
+    if (result.exitCode !== 0)
+      throw new Error(`git ${args[0]} failed (${result.exitCode}): ${result.stderrTail.trim()}`);
+    return result.stdout.trim();
   }
 
   async validate(): Promise<void> {
     if (this.#validated) return;
-    const context = await this.#orca(["agent-context", "--json"]);
-    const problems = checkOrcaContract(context);
+    const problems = checkOrcaContract(await this.cli.call(["agent-context", "--json"]));
     if (problems.length > 0) throw new Error(`Orca CLI contract mismatch: ${problems.join("; ")}`);
     this.#validated = true;
   }
 
   async repoId(repoPath: string): Promise<string> {
     const wanted = await realpath(repoPath);
-    const result = record(await this.#orca(["repo", "list", "--json"]));
+    const result = record(await this.cli.call(["repo", "list", "--json"]));
     const repos = Array.isArray(result.repos) ? result.repos.map(record) : [];
     for (const repo of repos) {
       const path = typeof repo.path === "string" ? repo.path : "";
@@ -123,41 +171,85 @@ export class OrcaWorkspace implements Workspace {
 
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {
     await this.validate();
+    // Never share a ticket with a previous owner's still-running runner (lease takeover).
+    await this.#o.stopRunners?.({ projectId: target.projectId, ticketId: target.ticketId });
+    const dotGit = join(target.repoPath, ".git");
+    const stat = await lstat(dotGit);
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      throw new Error(`${target.repoPath} is not a canonical git repository`);
+    const commonDir = await realpath(dotGit);
     const repo = await this.repoId(target.repoPath);
+    // Orca sanitizes `/` out of names; the branch it returns is the one this run records.
+    const name = safeSegment(target.branch.replace(/\//g, "-"));
     const args = [
       "worktree",
       "create",
       "--repo",
       `id:${repo}`,
       "--name",
-      safeSegment(target.branch.replace(/\//g, "-")),
+      name,
       "--base-branch",
       target.baseBranch,
+      "--no-parent",
+      "--setup",
+      "skip",
+      "--comment",
+      `Matrix ticket ${safeSegment(target.ticketId)}`,
       "--json",
     ];
-    if (this.#o.agent) {
-      args.push("--agent", this.#o.agent);
-      const prompt = this.#o.prompt?.(target);
-      if (prompt) args.push("--prompt", prompt);
-    }
-    const issue = this.#o.issue?.(target);
-    if (issue !== undefined) args.push("--issue", String(issue));
-    const result = record(await this.#orca(args));
+    const linear = this.#o.linearIssue
+      ? this.#o.linearIssue(target)
+      : LINEAR_ID.test(target.ticketId)
+        ? target.ticketId
+        : undefined;
+    if (linear && LINEAR_ID.test(linear)) args.push("--linear-issue", linear);
+    const result = record(await this.cli.call(args));
     const worktree = record(result.worktree ?? result);
-    const id = typeof worktree.id === "string" ? worktree.id : undefined;
-    const path = typeof worktree.path === "string" ? worktree.path : undefined;
-    if (!id || !path) throw new Error("orca worktree create returned no id/path");
-    if (this.#o.trusted) {
-      const commonDir = await realpath(join(target.repoPath, ".git"));
-      await this.#o.trusted.record(path, {
-        gitdir: await gitdirFromCommonDir(commonDir, path),
-        commonDir,
-      });
-    }
-    return { workdir: path, ref: id };
+    const id = str(worktree.id);
+    const path = str(worktree.path);
+    const branch = str(worktree.branch)?.replace(/^refs\/heads\//, "");
+    if (!id || !path || !branch) throw new Error("orca worktree create returned no id/path/branch");
+    const workdir = await realpath(path);
+    const gitdir = await gitdirFromCommonDir(commonDir, workdir);
+    await verifyWorktreeLink(workdir, gitdir);
+    const head = await this.#git(gitdir, ["symbolic-ref", "--short", "HEAD"]);
+    if (head !== branch)
+      throw new Error(`Orca worktree ${workdir} is on ${head}, expected ${branch}`);
+    const baseSha = await this.#git(gitdir, ["rev-parse", "--verify", "HEAD^{commit}"]);
+    await this.#trusted.record(workdir, {
+      gitdir,
+      commonDir,
+      baseSha,
+    });
+    const ref: OrcaWorkspaceRef = {
+      orca: id,
+      commonDir,
+      branch,
+      projectId: target.projectId,
+      ticketId: target.ticketId,
+    };
+    return { workdir, ref: JSON.stringify(ref) };
   }
 
+  /**
+   * `orca worktree rm --force` deletes the branch too, so the head is first pinned under
+   * `refs/matrix/archive/<branch>-<sha12>` in the canonical repo. No archive, no removal.
+   */
   async cleanup(prepared: PreparedWorkspace): Promise<void> {
-    await this.#orca(["worktree", "rm", "--worktree", `id:${prepared.ref}`, "--force", "--json"]);
+    const ref = parseOrcaRef(prepared.ref);
+    if (ref.projectId && ref.ticketId)
+      await this.#o.stopRunners?.({ projectId: ref.projectId, ticketId: ref.ticketId });
+    const gitdir = await gitdirFromCommonDir(ref.commonDir, prepared.workdir);
+    await verifyWorktreeLink(prepared.workdir, gitdir);
+    const head = await this.#git(gitdir, ["rev-parse", "--verify", "HEAD^{commit}"]);
+    if (!/^[0-9a-f]{40,64}$/.test(head)) throw new Error("unexpected HEAD while archiving");
+    await this.#git(ref.commonDir, [
+      "update-ref",
+      `refs/matrix/archive/${safeSegment(ref.branch)}-${head.slice(0, 12)}`,
+      head,
+    ]);
+    await this.#o.beforeRemove?.(prepared.workdir).catch(() => undefined);
+    await this.cli.call(["worktree", "rm", "--worktree", `id:${ref.orca}`, "--force", "--json"]);
+    await this.#trusted.forget(prepared.workdir);
   }
 }

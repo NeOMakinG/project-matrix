@@ -1,6 +1,13 @@
 import type { BusEvent, EventBus, WorkflowState } from "@matrix/core";
 import type { TicketStore } from "@matrix/tickets";
-import { renderStatus, type StatusLink, safeLink, withTimestamp } from "./tracker-status.js";
+import {
+  type OrcaStatusRef,
+  orcaRef,
+  renderStatus,
+  type StatusLink,
+  safeLink,
+  withTimestamp,
+} from "./tracker-status.js";
 
 export interface TrackerSyncOptions {
   bus: EventBus;
@@ -17,6 +24,7 @@ interface Entry {
   ticketId: string;
   latest?: WorkflowState;
   links: StatusLink[];
+  orca?: OrcaStatusRef | undefined;
   timer?: ReturnType<typeof setTimeout> | undefined;
   running?: Promise<void> | undefined;
   dirty: boolean;
@@ -118,6 +126,11 @@ export class TrackerSync {
       if (!entry) return;
       let changed = false;
       for (const r of event.receipts) {
+        const orca = orcaRef(r.data);
+        if (orca && (orca.run !== entry.orca?.run || orca.dispatch !== entry.orca?.dispatch)) {
+          entry.orca = orca;
+          changed = true;
+        }
         const link = safeLink(`${r.kind}${r.ok ? "" : " (failed)"}`, r.url);
         if (!link || entry.links.some((l) => l.url === link.url)) continue;
         entry.links = [...entry.links, link].slice(-MAX_LINKS);
@@ -185,7 +198,7 @@ export class TrackerSync {
         this.#failed(entry, "setPhase", error);
       }
     }
-    const body = renderStatus(w, entry.links);
+    const body = renderStatus(w, entry.links, entry.orca);
     if (store.upsertComment && entry.sentBody !== body) {
       try {
         await store.upsertComment(

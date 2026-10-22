@@ -80,6 +80,32 @@ describe("podman argv", () => {
     expect(calls[0]?.[1]).toBe("run");
     expect(calls[1]).toEqual(expect.arrayContaining(["rm", "-f", "--ignore"]));
   });
+
+  test("a launcher runs only the podman run; cleanup stays on the host executor", async () => {
+    const host: string[][] = [];
+    const launched: string[][] = [];
+    const executor: LineExecutor = async (s) => {
+      host.push(s.cmd);
+      return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
+    };
+    const launcher: LineExecutor = async (s, onLine) => {
+      launched.push(s.cmd);
+      onLine("via orca");
+      return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
+    };
+    const local = new PodmanSandbox({ broker, image: "img", executor });
+    const lines: string[] = [];
+    await local.lineExecutor({ runId: "r-orca", network: "none", launcher })(
+      { cmd: ["true"], cwd: "/host/wt", env: {}, timeoutMs: 1000, readOnly: true },
+      (line) => lines.push(line),
+      new AbortController().signal,
+    );
+    expect(lines).toEqual(["via orca"]);
+    expect(launched[0]?.[1]).toBe("run");
+    expect(launched[0]).toContain("--volume=/host/wt:/work:ro");
+    expect(host).toHaveLength(1);
+    expect(host[0]).toEqual(expect.arrayContaining(["rm", "-f", "--ignore"]));
+  });
 });
 
 describe("bwrap argv", () => {

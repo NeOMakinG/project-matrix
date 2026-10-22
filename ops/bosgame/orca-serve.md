@@ -1,5 +1,9 @@
 # Orca runtime on bosgame
 
+> **Stale (2026-10-22):** the live runtime is the Orca Electron app in serve mode (port 6768,
+> started by the Orca CLI), not this unit on port 7420. See [docs/orca.md](../../docs/orca.md)
+> for the current runtime, firewalling and `MATRIX_RUNTIME=orca`.
+
 Matrix's preferred workspace layer (ADR 0006) runs ticket worktrees on a headless Orca runtime on bosgame. You watch or take over runs from Orca on your Mac. Nothing here runs automatically; these are steps you take once.
 
 ## 1. Configure

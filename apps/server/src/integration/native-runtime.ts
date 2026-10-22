@@ -33,6 +33,7 @@ import {
 import type { PrivateStateOwner } from "../state-owner.js";
 import { derivedGraphHandover } from "./derived-graph.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
+import { type OrcaRuntimeBridge, orcaBridge } from "./orca-runtime.js";
 import { committedQaSnapshot } from "./qa-snapshot.js";
 import type { Runtime } from "./runtime.js";
 import { scenarioQaDriver } from "./scenario-qa.js";
@@ -56,8 +57,10 @@ export interface NativeRuntimeOptions {
   image: string;
   podmanBinary?: string;
   gitleaksBinary?: string;
-  /** Orca runtime environment (e.g. the bosgame `orca serve` pairing). */
+  /** Orca runtime environment (paired remote). Omit to drive the local Orca runtime. */
   orcaEnvironment?: string;
+  /** Absolute Orca IDE CLI path (default /opt/Orca/resources/bin/orca-ide; never PATH `orca`). */
+  orcaBinary?: string;
   stateOwner?: PrivateStateOwner;
 }
 
@@ -99,6 +102,7 @@ function sandboxedRunner(
   git: WorktreeGitPort,
   opts: NativeRuntimeOptions,
   gatewayKey: () => Promise<string>,
+  orca?: OrcaRuntimeBridge,
 ): Runner {
   const local = `http://127.0.0.1:${LLM_PORT}`;
   return {
@@ -117,7 +121,8 @@ function sandboxedRunner(
         signal,
       );
       const expectedHead = req.phase === "implement" ? await git.headSha(req.workdir) : undefined;
-      const result = await createRunner(id, {
+      const viaOrca = orca?.phase(req);
+      const ran = await createRunner(id, {
         gateway: {
           anthropicBaseUrl: local,
           openaiBaseUrl: `${local}/v1`,
@@ -128,6 +133,7 @@ function sandboxedRunner(
           projectId: req.projectId,
           ticketId: req.ticketId,
           network: "gateway",
+          ...(viaOrca ? { launcher: viaOrca.launcher } : {}),
         }),
         skipPermissions: true,
         baseEnv: { CODEX_HOME: "/home/agent" },
@@ -144,6 +150,9 @@ function sandboxedRunner(
         onEvent,
         signal,
       );
+      const result = viaOrca
+        ? { ...ran, receipts: [...ran.receipts, ...(await viaOrca.receipts())] }
+        : ran;
       if (req.phase !== "implement" || result.status !== "ok") return result;
       if (req.readOnly || signal.aborted) {
         const summary = `implementation handover refused: ${req.readOnly ? "read-only request" : "ownership or caller cancellation"}`;
@@ -279,21 +288,30 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       })();
     },
   };
-  const workspace =
+  const orca =
     opts.workspace === "orca"
-      ? new OrcaWorkspace({
-          trusted,
+      ? orcaBridge({
+          dataDir: opts.dataDir,
+          ...(opts.orcaBinary ? { binary: opts.orcaBinary } : {}),
           ...(opts.orcaEnvironment ? { environment: opts.orcaEnvironment } : {}),
         })
-      : new NativeWorkspace({
-          root: join(opts.dataDir, "worktrees"),
-          trusted,
-          stopRunners: (target) => sandbox.stop(target),
-        });
+      : undefined;
+  const workspace = orca
+    ? new OrcaWorkspace({
+        cli: orca.cli,
+        trusted,
+        beforeRemove: (w) => orca.release(w),
+        stopRunners: (target) => sandbox.stop(target),
+      })
+    : new NativeWorkspace({
+        root: join(opts.dataDir, "worktrees"),
+        trusted,
+        stopRunners: (target) => sandbox.stop(target),
+      });
   let key: string | undefined;
   const gatewayKey = async () => (key ??= await resolveCredential(opts.gatewayKey));
   const git = new WorktreeGitPort({ trusted });
-  const runners = { codex: sandboxedRunner("codex", sandbox, git, opts, gatewayKey) };
+  const runners = { codex: sandboxedRunner("codex", sandbox, git, opts, gatewayKey, orca) };
   return {
     kind: opts.workspace,
     broker,
