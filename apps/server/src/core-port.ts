@@ -205,7 +205,11 @@ export interface CorePort {
     name: string;
     description: string;
     workspace: Project["workspace"];
-    tickets?: { kind: "beads" | "markdown" | "github"; repo?: string };
+    tickets?: {
+      kind: "beads" | "markdown" | "github" | "linear";
+      repo?: string;
+      linear?: { teamKey: string; projectLabel: string; readyState?: string; apiKeyEnv?: string };
+    };
     /** Check commands run by the checks and QA phases (the init interview sets these later). */
     checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
   }): Promise<Project>;
@@ -263,6 +267,10 @@ export interface CorePort {
 
   listAdrs(projectId: string): Promise<Adr[]>;
   getChecks(projectId: string): Promise<CheckResult | null>;
+  /** Recent tracker write failures, newest first (absent: the core has no tracker sync). */
+  getTrackerFailures?(
+    projectId: string,
+  ): Promise<{ ticketId?: string; operation: string; message: string; at: string }[]>;
   getGraph(projectId: string): Promise<ProductGraph>;
 
   startInit(projectId: string): Promise<InitSession>;

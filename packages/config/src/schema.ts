@@ -193,7 +193,7 @@ export type LinearTicketsConfig = z.infer<typeof linearTickets>;
 export const processConfig = z.object({
   disposableArtifacts: z.array(z.string().min(1)).optional(),
   tickets: z.enum(["beads", "github", "linear", "markdown"]),
-  /** Required by the server when `tickets` is "linear"; the init interview does not ask yet. */
+  /** Required when `tickets` is "linear" (asked by the init interview). */
   linear: linearTickets.optional(),
   adrDir: z.string().default("docs/adr"),
   branching: z.enum(["trunk-with-prs", "gitflow"]),

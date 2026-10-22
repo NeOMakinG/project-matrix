@@ -22,7 +22,12 @@ process: {
 ```
 
 Server-side, the stored project's `matrix.tickets` carries the same fields:
-`{ kind: "linear", linear: { teamKey, projectLabel, readyState?, apiKeyEnv? } }`.
+`{ kind: "linear", linear: { teamKey, projectLabel, readyState?, apiKeyEnv? } }`. Create such a
+project over HTTP/SDK with `POST /v1/projects` and
+`tickets: { kind: "linear", linear: { teamKey: "NEO", projectLabel: "project:demo" } }`. The API
+rejects unknown fields (there is no field for the key) and `apiKeyEnv` must be an env var name
+containing `LINEAR` (for example `LINEAR_API_KEY`, `TJ_LINEAR_KEY`). The init interview asks the
+same four fields when Linear is the tracker; on the server the project's settings win.
 
 Put the personal API key in the **host** environment of the Matrix server (for example the
 protected env file from [self-hosting](self-hosting.md)): `LINEAR_API_KEY=lin_api_...`.
@@ -38,11 +43,26 @@ runner environments, logs or error messages.
 - **Pickup:** `ready()` returns only issues in the `readyState` column, with the project label,
   without the Matrix `blocked` flag and with no unresolved blocking relation (blocker not
   Done/Canceled). No other open issue is picked up.
-- **Status mapping (coarse):** `open`→Todo, `ready`→Ready, `in_progress`→Implement,
+- **Status mapping (coarse, used without a phase):** `open`→Todo, `ready`→Ready, `in_progress`→Implement,
   `review`→Review, `qa`→QA, `done`→Done, `closed`→Canceled. `blocked` keeps the current column
   and sets a flag in Matrix's hidden body block. Reading maps completed/canceled state types to
   `done`/`closed`, Spike/Implement and other started columns to `in_progress`, Awaiting merge to
   `review`, Backlog/Todo to `open`.
+- **Board columns per phase:** while a workflow runs (or waits for approval) the issue follows it:
+  spike→Spike, design/implement/checks→Implement, review→Review, qa→QA, merge (running or awaiting
+  approval)→Awaiting merge, done→Done. Pending (queued/backing off) and blocked keep the current
+  column; an issue a human moved to Done/Canceled is never pulled back. Override with
+  `phaseColumns` on `LinearTicketStore`.
+- **Live status comment:** one comment per issue (key `matrix-status`), created once and then
+  edited in place with phase, status, attempt/review loops, the last error (redacted, one line),
+  https links from run receipts (PR, evidence) and a timestamp. Its comment id rides in the hidden
+  Matrix body block; a deleted comment is recreated. Updates are debounced (1.5 s) and coalesced
+  per issue, and nothing is written when the rendered status did not change.
+- **Project label:** created on the team (if missing) on the project's first ticket sync.
+- **Tracker outages never fail a workflow.** Every failed tracker write (status update, comment,
+  column move, status comment, label) is logged as a structured warning
+  (`{"level":"warn","event":"tracker.failed",...}`), published on the event bus as
+  `tracker.failed`, and listed newest first by `GET /v1/projects/{id}/tracker/failures`.
 - **Links:** `blocks` and `related` become Linear issue relations; `parent` sets the issue parent.
 - **Priority:** Matrix 0..4 maps to Linear 1 (urgent)..4 (low); Linear "no priority" reads as unset.
 - **Untrusted text:** titles, bodies, labels and assignee names are stripped of zero-width,
@@ -63,5 +83,5 @@ MATRIX_LINEAR_LIVE=1 LINEAR_API_KEY=... bunx vitest run packages/tickets/src/ada
 
 ## Not yet
 
-Per-phase column mapping, a live status comment, the `needs-human` label, webhooks, and choosing
-Linear from the HTTP/SDK create-project endpoint are follow-ups.
+The `needs-human` label, webhooks (changes still arrive by polling), and retrying a failed status
+comment before the next workflow change are follow-ups.

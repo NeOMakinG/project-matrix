@@ -51,6 +51,7 @@ export function projectRoutes(app: App, ops: Operations) {
                 tickets: {
                   kind: body.tickets.kind,
                   ...(body.tickets.repo ? { repo: body.tickets.repo } : {}),
+                  ...(body.tickets.linear ? { linear: linearSettings(body.tickets.linear) } : {}),
                 },
               }
             : {}),
@@ -58,6 +59,19 @@ export function projectRoutes(app: App, ops: Operations) {
         }),
       );
     },
+  );
+
+  app.openapi(
+    route({
+      method: "get",
+      path: "/v1/projects/{projectId}/tracker/failures",
+      tag: "projects",
+      summary: "Recent ticket-tracker write failures (newest first); workflows never fail on them",
+      params: ProjectParam,
+      response: z.array(S.TrackerFailure),
+    }),
+    async (c) =>
+      c.json(await ops.getTrackerFailures(c.var.principal, c.req.valid("param").projectId)),
   );
 
   app.openapi(
@@ -287,4 +301,13 @@ export function projectRoutes(app: App, ops: Operations) {
         await ops.answerInit(c.var.principal, c.req.valid("param").id, c.req.valid("json").answers),
       ),
   );
+}
+
+function linearSettings(l: z.infer<typeof S.LinearTickets>) {
+  return {
+    teamKey: l.teamKey,
+    projectLabel: l.projectLabel,
+    ...(l.readyState ? { readyState: l.readyState } : {}),
+    ...(l.apiKeyEnv ? { apiKeyEnv: l.apiKeyEnv } : {}),
+  };
 }

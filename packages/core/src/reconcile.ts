@@ -38,6 +38,7 @@ import {
   type Store,
   VersionConflictError,
 } from "./store.js";
+import { bestEffortComments } from "./tracker-writes.js";
 import type { BackoffPolicy, Limits, PhaseOutcome, ProjectConfig, WorkflowState } from "./types.js";
 
 export interface ReconcilerOptions {
@@ -878,7 +879,9 @@ export class Reconciler {
       const workdir = w.workdir as string;
       const status = TICKET_STATUS[w.phase];
       if (status)
-        await tickets.update(w.ticketId, { status, phase: w.phase }).catch(() => undefined);
+        await this.trackerWrite(project.id, w.ticketId, "update", () =>
+          tickets.update(w.ticketId, { status, phase: w.phase }),
+        );
       const idempotencyKey = IRREVERSIBLE.has(w.phase)
         ? actionKey(w, await this.o.git.headSha(workdir))
         : key;
@@ -906,7 +909,9 @@ export class Reconciler {
         project,
         workflow: current,
         ticket,
-        tickets,
+        tickets: bestEffortComments(tickets, (ticketId, operation, error) =>
+          this.trackerFailed(project.id, ticketId, operation, error),
+        ),
         runId,
         workdir,
         branch,
@@ -1100,6 +1105,34 @@ export class Reconciler {
     await this.applyEffects(project, saved, { ...t, state: saved });
   }
 
+  /**
+   * Tracker writes are best effort: a down tracker must never fail the workflow, but the failure
+   * is published (`tracker.failed`) instead of being swallowed.
+   */
+  private async trackerWrite(
+    projectId: string,
+    ticketId: string,
+    operation: string,
+    write: () => Promise<unknown>,
+  ): Promise<void> {
+    try {
+      await write();
+    } catch (error) {
+      this.trackerFailed(projectId, ticketId, operation, error);
+    }
+  }
+
+  private trackerFailed(projectId: string, ticketId: string, operation: string, error: unknown) {
+    this.o.bus.publish({
+      type: "tracker.failed",
+      projectId,
+      ticketId,
+      operation,
+      message: error instanceof Error ? error.message : String(error),
+      at: this.clock().toISOString(),
+    });
+  }
+
   private async applyEffects(
     project: ProjectConfig,
     saved: WorkflowState,
@@ -1111,10 +1144,12 @@ export class Reconciler {
       if (effect.type === "request_approval") {
         await this.requestApproval(project, saved, effect.phase);
       } else if (effect.type === "blocked") {
-        await tickets.update(saved.ticketId, { status: "blocked" }).catch(() => undefined);
-        await tickets
-          .comment(saved.ticketId, `Matrix blocked this ticket: ${effect.reason}`)
-          .catch(() => undefined);
+        await this.trackerWrite(project.id, saved.ticketId, "update", () =>
+          tickets.update(saved.ticketId, { status: "blocked" }),
+        );
+        await this.trackerWrite(project.id, saved.ticketId, "comment", () =>
+          tickets.comment(saved.ticketId, `Matrix blocked this ticket: ${effect.reason}`),
+        );
         this.o.bus.publish({
           type: "workflow.blocked",
           projectId: project.id,
@@ -1122,7 +1157,9 @@ export class Reconciler {
           reason: effect.reason,
         });
       } else if (effect.type === "done") {
-        await tickets.update(saved.ticketId, { status: "done" }).catch(() => undefined);
+        await this.trackerWrite(project.id, saved.ticketId, "update", () =>
+          tickets.update(saved.ticketId, { status: "done" }),
+        );
         if (saved.workspaceRef && saved.workdir) {
           await this.o.workspace
             .cleanup({ workdir: saved.workdir, ref: saved.workspaceRef })

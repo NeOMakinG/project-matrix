@@ -56,7 +56,12 @@ mutation MatrixIssueUpdate($id: String!, $input: IssueUpdateInput!) {
 
 export const CREATE_COMMENT = `
 mutation MatrixComment($input: CommentCreateInput!) {
-  commentCreate(input: $input) { success }
+  commentCreate(input: $input) { success comment { id } }
+}`;
+
+export const UPDATE_COMMENT = `
+mutation MatrixCommentUpdate($id: String!, $input: CommentUpdateInput!) {
+  commentUpdate(id: $id, input: $input) { success }
 }`;
 
 export const CREATE_RELATION = `

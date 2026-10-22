@@ -10,6 +10,8 @@ export interface FakeLinear {
   /** Responses to serve before normal handling (e.g. 429s). */
   queue: Array<{ status: number; body: unknown; headers?: Record<string, string> }>;
   pageSize: number;
+  /** Comments by id (body + owning issue uuid). */
+  comments: Map<string, { issueId: string; body: string }>;
 }
 
 const STATES: Array<[string, string]> = [
@@ -42,6 +44,7 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
     calls: [],
     queue: [],
     pageSize: 2,
+    comments: new Map(),
   };
 
   const view = (issue: LinearIssue): LinearIssue => ({
@@ -144,8 +147,17 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
         apply(issue, v.input);
         return { issueUpdate: { success: true, issue: view(issue) } };
       }
-      case "MatrixComment":
-        return { commentCreate: { success: true } };
+      case "MatrixComment": {
+        const id = `comment-${++seq}`;
+        fake.comments.set(id, { issueId: v.input.issueId, body: v.input.body });
+        return { commentCreate: { success: true, comment: { id } } };
+      }
+      case "MatrixCommentUpdate": {
+        const comment = fake.comments.get(v.id);
+        if (!comment) throw new Error("Entity not found: Comment");
+        comment.body = v.input.body;
+        return { commentUpdate: { success: true } };
+      }
       case "MatrixRelation":
         relations.push({
           id: `rel-${++seq}`,

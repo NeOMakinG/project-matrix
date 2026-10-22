@@ -87,14 +87,18 @@
             "properties": {
               "kind": {
                 "type": "string",
-                "enum": ["beads", "markdown", "github"]
+                "enum": ["beads", "markdown", "github", "linear"]
               },
               "repo": {
                 "type": "string",
                 "pattern": "^[\\w.-]+\\/[\\w.-]+$"
+              },
+              "linear": {
+                "$ref": "#/components/schemas/LinearTickets"
               }
             },
             "required": ["kind"],
+            "additionalProperties": false,
             "description": "Ticket tracker; beads by default"
           },
           "checks": {
@@ -124,6 +128,52 @@
           }
         },
         "required": ["name"]
+      },
+      "LinearTickets": {
+        "type": "object",
+        "properties": {
+          "teamKey": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9]{0,9}$"
+          },
+          "projectLabel": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+          },
+          "readyState": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "apiKeyEnv": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$",
+            "description": "Host env var NAME holding the key; default LINEAR_API_KEY"
+          }
+        },
+        "required": ["teamKey", "projectLabel"],
+        "additionalProperties": false
+      },
+      "TrackerFailure": {
+        "type": "object",
+        "properties": {
+          "ticketId": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          }
+        },
+        "required": ["operation", "message", "at"]
       },
       "SetAutonomy": {
         "type": "object",
@@ -1659,6 +1709,103 @@
           },
           "503": {
             "description": "Service unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{projectId}/tracker/failures": {
+      "get": {
+        "tags": ["projects"],
+        "summary": "Recent ticket-tracker write failures (newest first); workflows never fail on them",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TrackerFailure"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
             "content": {
               "application/json": {
                 "schema": {
