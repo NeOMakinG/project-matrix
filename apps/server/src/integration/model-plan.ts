@@ -48,22 +48,51 @@ export function assertIndependentReview(config: ProjectConfig): void {
     );
 }
 
-/** Rejects model ids the gateway does not serve; skipped when the gateway is unreachable. */
-export async function assertKnownModels(plan: ModelPlan, list?: ModelLister): Promise<void> {
-  if (!list) return;
-  const wanted = [
+/** Model ids a plan names (before aliases). */
+export function planModelIds(plan: ModelPlan): string[] {
+  return [
     ...PLAN_PHASES.map((phase) => plan[phase]?.model),
     ...(plan.reviewerFallbacks ?? []).map((m) => m.model),
   ].filter((m): m is string => Boolean(m));
+}
+
+/** Every model id a project config would call on the gateway (aliases resolved). */
+export function configModelIds(config: ProjectConfig): string[] {
+  const m = config.models;
+  const phases = Object.entries(m)
+    .filter(([key]) => key !== "aliases" && key !== "tiers" && key !== "smallEstimateThreshold")
+    .map(([, value]) => (value as PhaseModel | undefined)?.model);
+  return [
+    ...phases,
+    m.tiers?.large.model,
+    m.tiers?.small.model,
+    ...(config.reviewerFallbacks ?? []).map((f) => f.model),
+  ]
+    .filter((id): id is string => Boolean(id))
+    .map((id) => resolveModel(config, id));
+}
+
+/**
+ * Rejects model ids the gateway does not serve (`GET /v1/models`). With a gateway configured, an
+ * unreachable or malformed model list is an error too: an unverified id fails later as a blocked
+ * ticket, which is far more expensive than a clear 400 at registration.
+ */
+export async function assertKnownModels(ids: string[], list?: ModelLister): Promise<void> {
+  if (!list) return;
+  const wanted = [...new Set(ids)];
   if (wanted.length === 0) return;
   const known = await list().catch(() => undefined);
-  if (!known) return;
+  if (!known)
+    throw new CoreError(
+      "invalid_request",
+      `cannot verify model ids (${wanted.join(", ")}): the gateway model list (GET /v1/models) did not answer`,
+    );
   const available = new Set(known);
-  const missing = [...new Set(wanted)].filter((m) => !available.has(m));
+  const missing = wanted.filter((m) => !available.has(m));
   if (missing.length)
     throw new CoreError(
       "invalid_request",
-      `unknown model(s) on the gateway: ${missing.join(", ")}`,
+      `model(s) not served by the gateway: ${missing.join(", ")}. Pick ids from GET /v1/models or set models.aliases.`,
     );
 }
 

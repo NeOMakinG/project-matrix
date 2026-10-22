@@ -121,7 +121,8 @@ export const claudeCodeDefinition: CliRunnerDefinition = {
       stdin: req.prompt,
       env: {
         ANTHROPIC_BASE_URL: opts.gateway.anthropicBaseUrl,
-        ANTHROPIC_API_KEY: opts.gateway.apiKey,
+        // Bearer auth to the gateway (the broker swaps the run token for the real key).
+        ANTHROPIC_AUTH_TOKEN: opts.gateway.apiKey,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         DISABLE_AUTOUPDATER: "1",
       },

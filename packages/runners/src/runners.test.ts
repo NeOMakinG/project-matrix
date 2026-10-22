@@ -163,8 +163,9 @@ describe("claude-code runner", () => {
     expect(call?.env).toMatchObject({
       PATH: "/usr/bin",
       ANTHROPIC_BASE_URL: "http://127.0.0.1:18080",
-      ANTHROPIC_API_KEY: "mxr_test123",
+      ANTHROPIC_AUTH_TOKEN: "mxr_test123",
     });
+    expect(call?.env).not.toHaveProperty("ANTHROPIC_API_KEY");
     expect(Object.keys(call?.env ?? {})).not.toContain("HOME");
   });
 

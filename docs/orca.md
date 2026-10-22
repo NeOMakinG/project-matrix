@@ -37,8 +37,13 @@ The Linear status comment shows `Orca: Run <id> · dispatch <id>`.
 
 Cleanup: `orca worktree rm --force` deletes the branch, so Matrix first pins the worktree head
 at `refs/matrix/archive/<branch>-<sha12>` in the canonical repo; without that ref it refuses to
-remove. Orca sanitizes `/` in names, so the branch is `matrix-NEO-n`, not `matrix/NEO-n`; Matrix
-records what Orca returns. Matrix never calls `orchestration reset` (it is global).
+remove. Orca sanitizes `/` in names, so the branch is `matrix-NEO-n`, not `matrix/NEO-n`; with
+Orca's `branchPrefix: git-username` setting it becomes `<git-user>/matrix-NEO-n`. Matrix
+records the branch Orca returns (host-side, per worktree) and its commit gate accepts exactly
+that recorded name; the pushed PR branch stays `matrix-NEO-n-<slug>`. Each ticket keeps one
+Orca Run: its id is kept in `<dataDir>/orca-runs.json`, and a retry or a server restart binds a
+new coordinator to it with `orchestration run-use` (a new Run only when Orca no longer knows it).
+Tasks are created with `--spec` (required since Orca 1.4); the spec carries only the phase label. Matrix never calls `orchestration reset` (it is global).
 
 Configuration (server environment):
 

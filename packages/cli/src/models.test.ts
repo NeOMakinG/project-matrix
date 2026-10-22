@@ -2,7 +2,7 @@ import { modelsConfig, recommendedModels } from "@matrix/config";
 import { describe, expect, test } from "vitest";
 import { configuredModels, modelsCommand } from "./models";
 
-const plan = { ...recommendedModels, aliases: { "claude-opus-5-5": "claude-opus-4-7" } };
+const plan = { ...recommendedModels, aliases: { "claude-opus-4-7": "opus-gateway" } };
 
 describe("gateway model check", () => {
   test("reads generated config without executing code and resolves aliases", () => {
@@ -11,7 +11,7 @@ describe("gateway model check", () => {
         `const config = ${JSON.stringify({ models: plan })} as const;\nexport default config;`,
       ),
     ).toEqual([
-      { logical: "claude-opus-5-5", resolved: "claude-opus-4-7" },
+      { logical: "claude-opus-4-7", resolved: "opus-gateway" },
       { logical: "claude-sonnet-5-5", resolved: "claude-sonnet-5-5" },
       { logical: "gpt-6-sol", resolved: "gpt-6-sol" },
     ]);
@@ -39,8 +39,8 @@ describe("gateway model check", () => {
           return new Response(
             JSON.stringify({
               data: (present
-                ? ["claude-opus-4-7", "claude-sonnet-5-5", "gpt-6-sol"]
-                : ["claude-opus-5-5"]
+                ? ["opus-gateway", "claude-sonnet-5-5", "gpt-6-sol"]
+                : ["claude-opus-4-7"]
               ).map((id) => ({ id })),
             }),
           );
@@ -50,7 +50,7 @@ describe("gateway model check", () => {
     expect(requests).toEqual(["http://127.0.0.1:9000/v1/models"]);
     expect(status).toBe(present ? 0 : 2);
     expect(lines[0]).toBe(
-      `claude-opus-5-5 -> claude-opus-4-7: ${present ? "available" : "MISSING"}`,
+      `claude-opus-4-7 -> opus-gateway: ${present ? "available" : "MISSING"}`,
     );
   });
 

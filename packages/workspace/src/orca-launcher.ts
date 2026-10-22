@@ -232,6 +232,9 @@ export function orcaLauncher(o: OrcaLauncherOptions): LineExecutor {
         call([
           "orchestration",
           "task-create",
+          // Required by Orca (1.4.x). Ids/labels only: the ticket text never goes into Orca.
+          "--spec",
+          `Matrix phase ${title}: runs the host-provided runner script in its terminal.`,
           "--run",
           run.runId,
           "--from",
