@@ -335,6 +335,20 @@
               "$ref": "#/components/schemas/PhaseModel"
             },
             "maxItems": 5
+          },
+          "tiers": {
+            "type": "object",
+            "properties": {
+              "large": {
+                "$ref": "#/components/schemas/PhaseModel"
+              },
+              "small": {
+                "$ref": "#/components/schemas/PhaseModel"
+              }
+            },
+            "required": ["large", "small"],
+            "additionalProperties": false,
+            "description": "Size tiers overriding spike/implement by ticket estimate"
           }
         },
         "additionalProperties": false

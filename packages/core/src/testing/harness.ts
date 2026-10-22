@@ -31,6 +31,8 @@ export interface HarnessOptions {
   store?: Store;
   findings?: (req: RunRequest, call: number) => string;
   verdicts?: (req: RunRequest) => string;
+  /** Private scenario-writer answer (default: two valid scenarios); may throw like a runner. */
+  scenarios?: (req: RunRequest) => Partial<RunResult> | Promise<Partial<RunResult>>;
   implement?: (
     req: RunRequest,
     call: number,
@@ -80,7 +82,8 @@ export function createHarness(opts: HarnessOptions = {}) {
   });
   const reviewer = new FakeRunner("codex", (req) => {
     if (req.phase === "design") return opts.design?.(req, designCalls++) ?? { summary: "" };
-    if (req.prompt.includes("acceptance scenarios")) return { summary: SCENARIOS };
+    if (req.prompt.includes("acceptance scenarios"))
+      return opts.scenarios?.(req) ?? { summary: SCENARIOS };
     if (req.phase === "review") {
       return { summary: opts.findings?.(req, reviewCalls++) ?? '{"findings":[]}' };
     }

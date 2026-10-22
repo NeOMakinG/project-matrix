@@ -10,6 +10,7 @@ import {
   OrcaTicketSession,
   orcaLauncher,
   safeSegment,
+  type TrustedWorktrees,
 } from "@matrix/workspace";
 
 export interface OrcaBridgeOptions {
@@ -20,6 +21,11 @@ export interface OrcaBridgeOptions {
   pollMs?: number;
   /** Test seam: Orca CLI executor. */
   cli?: OrcaCli;
+  /**
+   * True only for a ticket worktree this host prepared through Orca (the trusted registry).
+   * Every other workdir (private QA scratch dirs, snapshots) is not an Orca workspace.
+   */
+  isTicketWorktree: (workdir: string) => Promise<boolean>;
 }
 
 /** Shape of `receipt.data.orca` on phase evidence; read by the tracker status comment. */
@@ -39,9 +45,24 @@ export interface OrcaPhase {
 
 export interface OrcaRuntimeBridge {
   cli: OrcaCli;
-  phase(req: RunRequest): OrcaPhase;
+  /**
+   * Orca launch for a ticket-worktree call, or undefined for any other workdir: those run on
+   * the native sandbox runner. Private QA (holdout scenario writer, probe planner, judge) runs
+   * in host scratch dirs that Orca cannot target, and keeping it out of the ticket's Orca Run
+   * also keeps holdout prompts out of Orca's tasks, terminals and the implementer's worktree.
+   */
+  phase(req: RunRequest): Promise<OrcaPhase | undefined>;
   /** Closes the ticket's coordinator terminal before its worktree is removed. */
   release(workdir: string): Promise<void>;
+}
+
+/** `isTicketWorktree` from the host's trusted registry (OrcaWorkspace.prepare records realpaths). */
+export function trustedTicketWorktree(trusted: Pick<TrustedWorktrees, "lookup">) {
+  return (workdir: string): Promise<boolean> =>
+    trusted.lookup(workdir).then(
+      () => true,
+      () => false,
+    );
 }
 
 /**
@@ -125,7 +146,8 @@ export function orcaBridge(o: OrcaBridgeOptions): OrcaRuntimeBridge {
   };
   return {
     cli,
-    phase(req) {
+    async phase(req) {
+      if (!(await o.isTicketWorktree(req.workdir))) return undefined;
       let evidence: OrcaPhaseEvidence | undefined;
       const launcher = orcaLauncher({
         cli,

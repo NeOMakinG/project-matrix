@@ -8,6 +8,8 @@ export type PlanPhase = (typeof PLAN_PHASES)[number];
 export type ModelPlan = Partial<Record<PlanPhase, PhaseModel>> & {
   /** Tried in order when the review model equals the implementer's. */
   reviewerFallbacks?: PhaseModel[];
+  /** Size tiers: override spike and implement by ticket estimate (both must be gateway ids). */
+  tiers?: { large: PhaseModel; small: PhaseModel };
 };
 
 /** Lists the model ids the gateway serves; undefined when it cannot be reached. */
@@ -15,7 +17,8 @@ export type ModelLister = () => Promise<string[] | undefined>;
 
 /**
  * Applies a per-phase model plan to a project config (in place). Choosing `implement` or `spike`
- * explicitly drops the size tiers, which would otherwise override both phases.
+ * explicitly drops the size tiers, which would otherwise override both phases, unless the plan
+ * sets `tiers` too.
  */
 export function applyModelPlan(config: ProjectConfig, plan: ModelPlan): void {
   const models = { ...config.models };
@@ -24,6 +27,11 @@ export function applyModelPlan(config: ProjectConfig, plan: ModelPlan): void {
     if (choice) models[phase] = { runner: choice.runner, model: choice.model };
   }
   if (plan.implement || plan.spike) delete models.tiers;
+  if (plan.tiers)
+    models.tiers = {
+      large: { runner: plan.tiers.large.runner, model: plan.tiers.large.model },
+      small: { runner: plan.tiers.small.runner, model: plan.tiers.small.model },
+    };
   config.models = models;
   if (plan.reviewerFallbacks)
     config.reviewerFallbacks = plan.reviewerFallbacks.map((m) => ({ ...m }));
@@ -53,6 +61,8 @@ export function planModelIds(plan: ModelPlan): string[] {
   return [
     ...PLAN_PHASES.map((phase) => plan[phase]?.model),
     ...(plan.reviewerFallbacks ?? []).map((m) => m.model),
+    plan.tiers?.large.model,
+    plan.tiers?.small.model,
   ].filter((m): m is string => Boolean(m));
 }
 

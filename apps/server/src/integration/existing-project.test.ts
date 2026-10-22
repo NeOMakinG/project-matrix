@@ -200,3 +200,35 @@ test("blocked-ticket labels reach Linear: the project ticket store forwards addL
   expect((await store.get(ticket.id))?.labels).not.toContain("needs-human");
   await factory.stop();
 });
+
+test("PATCH accepts size tiers: gateway-served, strict and independent from review", async () => {
+  const { repo, factory, call } = await boot(["claude-opus-4-7", "claude-sonnet-5-5", "gpt-6-sol"]);
+  const created = await call("POST", "/v1/projects", {
+    name: "Tiers",
+    repo: { path: repo, baseBranch: "main" },
+    tickets: { kind: "linear", linear },
+  });
+  expect(created.status).toBe(200);
+  const id = String(created.body.id);
+  const tier = (model: string) => ({ runner: "claude-code", model });
+  const tiers = { large: tier("claude-opus-4-7"), small: tier("claude-sonnet-5-5") };
+  const ok = await call("PATCH", `/v1/projects/${id}`, { models: { tiers } });
+  expect(ok.status).toBe(200);
+  expect(((await factory.store.getProject(id)) as StoredProject).models.tiers).toEqual(tiers);
+  const patch = (models: unknown) => call("PATCH", `/v1/projects/${id}`, { models });
+  const unserved = await patch({ tiers: { ...tiers, small: tier("claude-nope-1") } });
+  expect(unserved.status).toBe(400);
+  expect(JSON.stringify(unserved.body)).toContain("claude-nope-1");
+  expect((await patch({ tiers: { large: tiers.large } })).status).toBe(400);
+  expect((await patch({ tiers: { ...tiers, medium: tiers.large } })).status).toBe(400);
+  // A tier is an implementer: it can never equal the review model.
+  const review = ((await factory.store.getProject(id)) as StoredProject).models.review;
+  const clash = await patch({ tiers: { ...tiers, small: review } });
+  expect(clash.status).toBe(400);
+  expect(JSON.stringify(clash.body)).toContain("independent review");
+  // Setting implement and tiers together keeps the posted tiers.
+  const both = await patch({ implement: tier("claude-opus-4-7"), tiers });
+  expect(both.status).toBe(200);
+  expect(((await factory.store.getProject(id)) as StoredProject).models.tiers).toEqual(tiers);
+  await factory.stop();
+});

@@ -154,4 +154,26 @@ describe("reconcile loop", () => {
     const report = await h.reconciler.tick();
     expect(report.skipped[0]?.reason).toBe("daily budget reached");
   });
+
+  test("a failing private scenario writer surfaces its redacted cause, not a bare summary", async () => {
+    const h = createHarness({
+      scenarios: () => {
+        throw new Error(
+          'selector_not_found: No Orca workspace matched "path:/scratch/x" Bearer sk-abcdefghijklmnop1234',
+        );
+      },
+    });
+    await h.setup();
+    const t = h.tickets.add("Sign-up flow");
+    await h.drain();
+    const spikes = (await h.store.listRuns({ ticketId: t.id })).filter((r) => r.phase === "spike");
+    expect(spikes.length).toBeGreaterThan(0);
+    const events = (await Promise.all(spikes.map((r) => h.store.listEvents(r.id)))).flat();
+    const cause = events.find((e) =>
+      e.message.startsWith("Private QA scenario preparation failed"),
+    );
+    expect(cause?.message).toContain("selector_not_found");
+    expect(cause?.message).not.toContain("sk-abcdefghijklmnop1234");
+    expect(JSON.stringify(spikes)).not.toContain("sk-abcdefghijklmnop1234");
+  });
 });

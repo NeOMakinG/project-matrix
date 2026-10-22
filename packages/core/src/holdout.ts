@@ -56,6 +56,34 @@ export function validateScenario(scenario: HoldoutScenario): void {
     throw new Error("I/O absence must name instrumented surfaces");
 }
 
+const SECRET_SHAPES: RegExp[] = [
+  /\b(authorization|cookie|x-api-key)(\s*[:=]\s*)[^\n]*/gi,
+  /\b[Bb]earer\s+[^\s"',;]+/g,
+  /\b(?:sk|mxr|ghp|gho|github_pat|xox[abprs])[-_][A-Za-z0-9_-]{6,}/g,
+  /\b(api[_-]?key|token|secret|password|authorization|cookie)(["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi,
+  /[A-Za-z0-9+_-]{32,}={0,2}/g,
+];
+
+/**
+ * Operator-facing cause of a private QA failure: single line, secret-shaped values masked,
+ * bounded. Parse errors are never echoed (they can quote model output, i.e. holdout text).
+ */
+export function privateQaCause(error: unknown, max = 300): string {
+  if (error instanceof SyntaxError) return "model output was not valid JSON";
+  const raw = error instanceof Error ? error.message : "non-Error failure";
+  let text = raw
+    .slice(0, max * 4)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+    .trim();
+  for (const shape of SECRET_SHAPES)
+    text = text.replace(shape, (match, name?: string, sep?: string) =>
+      typeof name === "string" && typeof sep === "string"
+        ? `${name}${sep}[REDACTED]`
+        : "[REDACTED]",
+    );
+  return text.length > max ? `${text.slice(0, max)}…` : text || "unknown failure";
+}
+
 export async function retryPrivateQa<T>(
   signal: AbortSignal,
   operation: (attempt: number) => Promise<T>,

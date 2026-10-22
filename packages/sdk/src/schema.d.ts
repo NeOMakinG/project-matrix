@@ -4134,6 +4134,11 @@ export interface components {
       review?: components["schemas"]["PhaseModel"];
       qa?: components["schemas"]["PhaseModel"];
       reviewerFallbacks?: components["schemas"]["PhaseModel"][];
+      /** @description Size tiers overriding spike/implement by ticket estimate */
+      tiers?: {
+        large: components["schemas"]["PhaseModel"];
+        small: components["schemas"]["PhaseModel"];
+      };
     };
     PhaseModel: {
       /** @enum {string} */
