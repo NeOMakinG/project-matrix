@@ -19,6 +19,7 @@ import {
   holdoutReceipt,
   parseScenarios,
   parseVerdicts,
+  privateQaCause,
   QA_JUDGE_CRITERIA,
   retryPrivateQa,
 } from "./holdout.js";
@@ -109,7 +110,9 @@ export async function callModel(
     )
     .catch((error: unknown) => {
       if (options.privateHoldout)
-        throw new Error("Private QA model unavailable; retry QA or contact the operator");
+        throw new Error(
+          `Private QA model unavailable (${privateQaCause(error)}); retry QA or contact the operator`,
+        );
       throw error;
     });
 }
@@ -201,17 +204,20 @@ const spike =
         );
         scenarioCost += scen.costUsd ?? 0;
         scenarioRun.status = scen.status;
-        if (scen.status !== "ok") throw new Error("scenario preparation failed");
+        // The run summary can quote model output (holdout text): report the status only.
+        if (scen.status !== "ok") throw new Error(`scenario model run ${scen.status}`);
         scenarioRun.status = "failed";
         return parseScenarios(scen.summary);
       });
       await deps.holdout.save(ctx.project.id, ctx.ticket.id, scenarios);
       ctx.emit(`stored ${scenarios.length} holdout scenarios`, "log");
-    } catch {
+    } catch (error) {
       const costUsd = (plan.costUsd ?? 0) + scenarioCost;
+      const summary = `Private QA scenario preparation failed: ${privateQaCause(error)}`;
+      ctx.emit(summary, "error");
       return {
         ok: false,
-        summary: "Private QA scenario preparation failed",
+        summary,
         receipts: [],
         // Cancellation and timeouts keep their status so they are not mistaken for model failures.
         runStatus: ctx.signal.aborted

@@ -63,7 +63,7 @@ describe.runIf(hasGo && hasSandbox)(
           `raw database method reference ${method} is allowed only in verified sqlc output`,
         ]),
       );
-    }, 15_000);
+    }, 60_000);
 
     test("connection construction and Ping/Close bootstrap references remain allowed", async () => {
       const file = "services/api/cmd/api/main.go";

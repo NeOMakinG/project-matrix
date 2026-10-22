@@ -7,6 +7,7 @@ import {
   holdoutReceipt,
   parseScenarios,
   parseVerdicts,
+  privateQaCause,
   retryPrivateQa,
 } from "./holdout.js";
 import { parseFindings, pickReviewer, reviewReceipt } from "./review.js";
@@ -134,5 +135,30 @@ describe("holdout store", () => {
     await expect(store.save("../x", "T-1", [])).rejects.toThrow("unsafe");
     await expect(store.load("pilot", "../../etc/passwd")).rejects.toThrow("unsafe");
     expect(await store.load("pilot", "missing")).toEqual([]);
+  });
+});
+
+describe("privateQaCause", () => {
+  test("keeps the cause, masks secrets, single line, bounded", () => {
+    const out = privateQaCause(
+      new Error(
+        "orca failed\nBearer abc.def api_key: s3cr3tvalue sk-0123456789abcdef mxr_abcdefgh",
+      ),
+    );
+    expect(out).toContain("orca failed");
+    for (const leak of ["abc.def", "s3cr3tvalue", "sk-0123456789abcdef", "mxr_abcdefgh", "\n"])
+      expect(out).not.toContain(leak);
+    expect(privateQaCause(new Error("x".repeat(1000))).length).toBeLessThanOrEqual(301);
+    const auth = privateQaCause(new Error("Authorization: Basic dXNlcjpwYXNz\u2028next"));
+    expect(auth).not.toContain("dXNlcjpwYXNz");
+    const path = "/home/neo/.matrix/scratch/run-0123456789abcdef0123456789abcdef-x1";
+    expect(privateQaCause(new Error(`selector_not_found path:${path}`))).toContain("/scratch/");
+  });
+
+  test("never echoes parse errors (they can quote holdout text)", () => {
+    expect(privateQaCause(new SyntaxError('Unexpected token, "given a secret scenario"'))).toBe(
+      "model output was not valid JSON",
+    );
+    expect(privateQaCause("thrown string")).toBe("non-Error failure");
   });
 });

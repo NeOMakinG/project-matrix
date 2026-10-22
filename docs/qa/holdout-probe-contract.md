@@ -26,3 +26,12 @@ Planner/judge failures now report the resolved reviewer model, successful holdou
 receipts record the resolved judge model, and private host-probe metadata records
 the planner model. Regressions cover routing and persisted failed-run labeling.
 This finding is from local code and tests, not a new bosgame execution.
+
+Runtime routing (MATRIX_RUNTIME=orca): only calls whose workdir is a ticket worktree the host
+prepared through Orca (the trusted worktree registry) run as Orca tasks in the ticket's Run.
+The scenario writer, probe planner and judge run in host scratch dirs, which Orca cannot
+target (`selector_not_found`), so they run on the native sandbox runner instead. That is also
+the secrecy-preserving choice: holdout prompts never become Orca tasks, terminals or scripts
+in the ticket's Run, and never touch the implementer's worktree. A scenario-preparation
+failure reports a redacted, bounded cause (runner errors only; parse errors and failed-run
+summaries are never echoed because they can quote holdout text).

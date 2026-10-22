@@ -67,6 +67,11 @@ export const ModelPlan = z
     review: PhaseModel.optional(),
     qa: PhaseModel.optional(),
     reviewerFallbacks: z.array(PhaseModel).max(5).optional(),
+    tiers: z
+      .object({ large: PhaseModel, small: PhaseModel })
+      .strict()
+      .optional()
+      .openapi({ description: "Size tiers overriding spike/implement by ticket estimate" }),
   })
   .strict()
   .openapi("ModelPlan");

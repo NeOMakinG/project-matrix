@@ -38,7 +38,7 @@ import { derivedGraphHandover } from "./derived-graph.js";
 import type { StoredProject } from "./mapping.js";
 import { gatewayModels, type ModelLister } from "./model-plan.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
-import { type OrcaRuntimeBridge, orcaBridge } from "./orca-runtime.js";
+import { type OrcaRuntimeBridge, orcaBridge, trustedTicketWorktree } from "./orca-runtime.js";
 import { committedQaSnapshot } from "./qa-snapshot.js";
 import type { Runtime } from "./runtime.js";
 import { scenarioQaDriver } from "./scenario-qa.js";
@@ -182,7 +182,7 @@ function sandboxedRunner(
       const approvedPaths = policy.editablePaths?.length
         ? policy.editablePaths
         : NATIVE_SOURCE_PATHS;
-      const viaOrca = orca?.phase(req);
+      const viaOrca = await orca?.phase(req);
       const ran = await createRunner(id, {
         gateway: {
           anthropicBaseUrl: local,
@@ -356,6 +356,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
     opts.workspace === "orca"
       ? orcaBridge({
           dataDir: opts.dataDir,
+          isTicketWorktree: trustedTicketWorktree(trusted),
           ...(opts.orcaBinary ? { binary: opts.orcaBinary } : {}),
           ...(opts.orcaEnvironment ? { environment: opts.orcaEnvironment } : {}),
         })

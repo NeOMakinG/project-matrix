@@ -2,10 +2,10 @@ import { mkdtemp, realpath, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunRequest } from "@matrix/core";
-import { OrcaCli } from "@matrix/workspace";
+import { OrcaCli, TrustedWorktrees } from "@matrix/workspace";
 import { FakeOrca } from "@matrix/workspace/testing";
 import { expect, test } from "vitest";
-import { orcaBridge } from "./orca-runtime.js";
+import { orcaBridge, trustedTicketWorktree } from "./orca-runtime.js";
 
 test("one Orca Run per ticket worktree; phases yield receipts with Orca refs", async () => {
   const fake = new FakeOrca();
@@ -15,6 +15,7 @@ test("one Orca Run per ticket worktree; phases yield receipts with Orca refs", a
     dataDir,
     pollMs: 20,
     cli: new OrcaCli({ binary: "/usr/bin/true", executor: fake.executor() }),
+    isTicketWorktree: async (path) => path === workdir,
   });
   const req = (phase: RunRequest["phase"]): RunRequest => ({
     runId: `run-${phase}`,
@@ -28,7 +29,8 @@ test("one Orca Run per ticket worktree; phases yield receipts with Orca refs", a
     timeoutMs: 10_000,
   });
   for (const phase of ["spike", "review"] as const) {
-    const p = bridge.phase(req(phase));
+    const p = await bridge.phase(req(phase));
+    if (!p) throw new Error("expected an Orca phase");
     const outcome = await p.launcher(
       { cmd: ["true"], cwd: workdir, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 10_000 },
       () => {},
@@ -55,7 +57,38 @@ test("one Orca Run per ticket worktree; phases yield receipts with Orca refs", a
 });
 
 test("a paired remote Orca environment is refused (host-local scripts)", () => {
-  expect(() => orcaBridge({ dataDir: "/tmp", environment: "Bosgame" })).toThrow(/local Orca/);
+  expect(() =>
+    orcaBridge({ dataDir: "/tmp", environment: "Bosgame", isTicketWorktree: async () => true }),
+  ).toThrow(/local Orca/);
+});
+
+test("private QA scratch workdirs never reach Orca (native runner, holdout stays private)", async () => {
+  const fake = new FakeOrca();
+  const dataDir = await mkdtemp(join(tmpdir(), "matrix-orca-scratch-"));
+  const worktree = await realpath(await mkdtemp(join(tmpdir(), "matrix-orca-scratch-wt-")));
+  const scratch = join(dataDir, "scratch", "run-1-abc");
+  const bridge = orcaBridge({
+    dataDir,
+    pollMs: 20,
+    cli: new OrcaCli({ binary: "/usr/bin/true", executor: fake.executor() }),
+    isTicketWorktree: async (path) => path === worktree,
+  });
+  const base: RunRequest = {
+    runId: "run-1",
+    projectId: "demo",
+    ticketId: "NEO-7",
+    phase: "spike",
+    runner: "claude-code",
+    model: "claude-sonnet-5-5",
+    prompt: "holdout",
+    workdir: scratch,
+    readOnly: true,
+    timeoutMs: 10_000,
+  };
+  expect(await bridge.phase(base)).toBeUndefined();
+  expect(await bridge.phase({ ...base, phase: "qa" })).toBeUndefined();
+  expect(fake.calls).toEqual([]);
+  expect(await bridge.phase({ ...base, workdir: worktree })).toBeDefined();
 });
 
 test("retries and server restarts reuse the ticket's Orca Run (run-use), never a new one", async () => {
@@ -63,6 +96,7 @@ test("retries and server restarts reuse the ticket's Orca Run (run-use), never a
   const dataDir = await mkdtemp(join(tmpdir(), "matrix-orca-reuse-"));
   const workdir = await realpath(await mkdtemp(join(tmpdir(), "matrix-orca-reuse-wt-")));
   const cli = new OrcaCli({ binary: "/usr/bin/true", executor: fake.executor() });
+  const isTicketWorktree = async () => true;
   const req: RunRequest = {
     runId: "run-spike",
     projectId: "demo",
@@ -76,13 +110,14 @@ test("retries and server restarts reuse the ticket's Orca Run (run-use), never a
   };
   const spec = { cmd: ["true"], cwd: workdir, env: { PATH: "/usr/bin:/bin" }, timeoutMs: 10_000 };
   const attempt = async (bridge: ReturnType<typeof orcaBridge>) => {
-    const p = bridge.phase(req);
+    const p = await bridge.phase(req);
+    if (!p) throw new Error("expected an Orca phase");
     await p.launcher(spec, () => {}, new AbortController().signal);
     return (await p.receipts())[0]?.data as { orca: { run: string } };
   };
-  const first = await attempt(orcaBridge({ dataDir, pollMs: 20, cli }));
+  const first = await attempt(orcaBridge({ dataDir, pollMs: 20, cli, isTicketWorktree }));
   // A server restart: a fresh bridge, same data dir.
-  const second = await attempt(orcaBridge({ dataDir, pollMs: 20, cli }));
+  const second = await attempt(orcaBridge({ dataDir, pollMs: 20, cli, isTicketWorktree }));
   expect(second.orca.run).toBe(first.orca.run);
   expect(fake.calls.filter((c) => c[1] === "run-create")).toHaveLength(1);
   expect(fake.calls.filter((c) => c[1] === "run-use")).toHaveLength(1);
@@ -91,6 +126,22 @@ test("retries and server restarts reuse the ticket's Orca Run (run-use), never a
     expect(call[call.indexOf("--spec") + 1]).toMatch(/^Matrix phase spike/);
   // A Run the runtime no longer knows falls back to a new one.
   fake.runs.clear();
-  const third = await attempt(orcaBridge({ dataDir, pollMs: 20, cli }));
+  const third = await attempt(orcaBridge({ dataDir, pollMs: 20, cli, isTicketWorktree }));
   expect(third.orca.run).not.toBe(first.orca.run);
 }, 30_000);
+
+test("only worktrees in the persisted trusted registry count as Orca ticket worktrees", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "matrix-orca-trusted-"));
+  const worktree = await realpath(await mkdtemp(join(tmpdir(), "matrix-orca-trusted-wt-")));
+  const registry = join(dataDir, "worktrees.json");
+  await new TrustedWorktrees(registry).record(worktree, {
+    gitdir: "/g",
+    commonDir: "/c",
+    baseSha: "a".repeat(40),
+    branch: "matrix/NEO-7",
+  });
+  // A restarted server reads the same registry.
+  const isTicketWorktree = trustedTicketWorktree(new TrustedWorktrees(registry));
+  expect(await isTicketWorktree(worktree)).toBe(true);
+  expect(await isTicketWorktree(join(dataDir, "scratch", "run-1-abc"))).toBe(false);
+});
