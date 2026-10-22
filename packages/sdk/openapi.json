@@ -1154,6 +1154,57 @@
         "type": "object",
         "additionalProperties": {}
       },
+      "QuotaStatus": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "limits": {
+            "type": "object",
+            "properties": {
+              "maxConcurrent": {
+                "type": "number"
+              },
+              "maxRunsPerHour": {
+                "type": "number"
+              },
+              "maxRunnerMinutesPer5h": {
+                "type": "number"
+              }
+            },
+            "required": ["maxConcurrent", "maxRunsPerHour", "maxRunnerMinutesPer5h"]
+          },
+          "active": {
+            "type": "number"
+          },
+          "runsLastHour": {
+            "type": "number"
+          },
+          "runnerMinutes5h": {
+            "type": "number"
+          },
+          "cooldown": {
+            "type": "object",
+            "properties": {
+              "until": {
+                "type": "string"
+              },
+              "failures": {
+                "type": "number"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              }
+            },
+            "required": ["until", "failures", "reason", "at"]
+          }
+        },
+        "required": ["provider", "limits", "active", "runsLastHour", "runnerMinutes5h"]
+      },
       "ApiKey": {
         "type": "object",
         "properties": {
@@ -4190,6 +4241,92 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Settings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/quota": {
+      "get": {
+        "tags": ["admin"],
+        "summary": "Subscription quota per provider: limits, rolling usage and rate-limit cooldown (tickets wait, never fail)",
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/QuotaStatus"
+                  }
                 }
               }
             }

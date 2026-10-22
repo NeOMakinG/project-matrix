@@ -7,6 +7,7 @@ import {
   type EventBus,
   PHASES,
   type Phase,
+  type QuotaStatus,
   type Receipt,
   type Reconciler,
   type RunEvent,
@@ -403,6 +404,10 @@ export class RealCore implements CorePort {
   async getTrackerFailures(projectId: string): Promise<TrackerFailure[]> {
     await this.config(projectId);
     return this.o.trackerHealth?.failures(projectId) ?? [];
+  }
+
+  async getQuota(): Promise<QuotaStatus[]> {
+    return this.o.reconciler.quotaStatus();
   }
 
   async createTicket(projectId: string, input: NewTicket): Promise<Ticket> {

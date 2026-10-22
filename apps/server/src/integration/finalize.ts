@@ -296,6 +296,7 @@ export async function finalizeProject(input: {
     },
     reviewLanes: config.process.reviewLanes,
     dailyBudgetUsd: config.process.budgets.dailyUsd,
+    perTicketBudgetUsd: config.process.budgets.perTicketUsd,
   };
 
   const git = async (...args: string[]) => {

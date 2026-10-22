@@ -7,6 +7,7 @@ import { createDefaultHandlers, type HandlerDeps } from "../handlers.js";
 import { HoldoutStore } from "../holdout.js";
 import type { Receipt, RunRequest, RunResult } from "../ports.js";
 import type { ActionRequest } from "../ports-internal.js";
+import type { QuotaPolicy } from "../quota.js";
 import { Reconciler } from "../reconcile.js";
 import { type Actor, MemoryStore, type Store } from "../store.js";
 import type { Limits, ProjectConfig } from "../types.js";
@@ -37,6 +38,8 @@ export interface HarnessOptions {
   ) => Partial<RunResult> | Promise<Partial<RunResult>>;
   qaReceipts?: () => Receipt[];
   leaseMs?: number;
+  quota?: QuotaPolicy;
+  maxRequeuesPerDay?: number;
 }
 
 const SCENARIOS = JSON.stringify({
@@ -130,6 +133,10 @@ export function createHarness(opts: HarnessOptions = {}) {
         ...opts.limits,
       },
       backoff: { baseMs: 1000, maxMs: 60_000 },
+      ...(opts.quota ? { quota: opts.quota } : {}),
+      ...(opts.maxRequeuesPerDay !== undefined
+        ? { maxRequeuesPerDay: opts.maxRequeuesPerDay }
+        : {}),
       leaseMs: opts.leaseMs ?? 600_000,
       heartbeatMs: 3_600_000,
       host: "bosgame",

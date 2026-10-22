@@ -2490,6 +2490,96 @@ export interface paths {
     };
     trace?: never;
   };
+  "/v1/quota": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Subscription quota per provider: limits, rolling usage and rate-limit cooldown (tickets wait, never fail) */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["QuotaStatus"][];
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/keys": {
     parameters: {
       query?: never;
@@ -4194,6 +4284,23 @@ export interface components {
     };
     Settings: {
       [key: string]: unknown;
+    };
+    QuotaStatus: {
+      provider: string;
+      limits: {
+        maxConcurrent: number;
+        maxRunsPerHour: number;
+        maxRunnerMinutesPer5h: number;
+      };
+      active: number;
+      runsLastHour: number;
+      runnerMinutes5h: number;
+      cooldown?: {
+        until: string;
+        failures: number;
+        reason: string;
+        at: string;
+      };
     };
     ApiKey: {
       id: string;

@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createCompoundHandler } from "@matrix/compound";
+import type { QuotaConfig } from "@matrix/config";
 import {
   createDefaultHandlers,
   EventBus,
@@ -23,6 +24,7 @@ import type { NativeRuntimeOptions } from "./native-runtime.js";
 import { publishOwnedFile } from "./owned-files.js";
 import { OwnedHoldoutStore } from "./owned-holdout.js";
 import { ownedExternalTickets } from "./owned-tickets.js";
+import { resolveQuota } from "./quota-config.js";
 import { RealCore } from "./real-core.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
 import {
@@ -47,6 +49,8 @@ export interface FactoryOptions {
   /** OpenAI-compatible gateway for triage; required unless the runtime is fake. */
   gateway?: { baseUrl: string; apiKey: string };
   triageModel?: string;
+  /** Subscription quota guard (`MATRIX_QUOTA`); defaults apply to native/orca runtimes. */
+  quota?: QuotaConfig;
   tickMs?: number;
   monitorMs?: number;
   /** Weekly tech watch over every project (network access). */
@@ -132,6 +136,10 @@ function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
     comment: call("comment"),
     link: call("link"),
     ready: call("ready"),
+    // Optional capabilities: forwarded when the resolved store has them, otherwise no-ops.
+    addLabel: async (id: string, label: string) => (await resolve()).addLabel?.(id, label),
+    removeLabel: async (id: string, label: string) => (await resolve()).removeLabel?.(id, label),
+    listComments: async (id: string) => (await (await resolve()).listComments?.(id)) ?? [],
   } as TicketStore;
 }
 
@@ -197,6 +205,8 @@ async function createOwnedFactory(
       defaultPerHost: options.runtime === "fake" ? 8 : 1,
     },
     backoff: { baseMs: 5_000, maxMs: 10 * 60_000 },
+    // The fake runtime has no subscription to protect; real runtimes always get the guard.
+    ...(options.runtime === "fake" && !options.quota ? {} : resolveQuota(options.quota)),
     host: options.host,
     scratchRoot: join(options.dataDir, "scratch"),
   });
@@ -236,6 +246,11 @@ async function createOwnedFactory(
     projectIds: async () => (await store.listProjects()).map((p) => p.id),
   });
 
+  // Quota cooldowns are operational signals: tickets wait, so make the reason visible in logs.
+  bus.subscribe((event) => {
+    if (event.type === "quota.cooldown")
+      log(JSON.stringify({ level: "warn", ...event, reason: event.reason.slice(0, 200) }));
+  });
   const trackerHealth = new TrackerHealth(bus, log);
   trackerHealth.start();
   const trackerSync = new TrackerSync({

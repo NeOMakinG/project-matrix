@@ -66,12 +66,24 @@ query MatrixCommentLookup($id: String!) {
 
 export const ISSUE_COMMENTS = `
 query MatrixIssueComments($id: String!) {
-  issue(id: $id) { comments(first: 100) { nodes { id body user { isMe } } } }
+  issue(id: $id) {
+    comments(first: 100) { nodes { id body createdAt user { isMe displayName name } } }
+  }
 }`;
 
 export const UPDATE_COMMENT = `
 mutation MatrixCommentUpdate($id: String!, $input: CommentUpdateInput!) {
   commentUpdate(id: $id, input: $input) { success }
+}`;
+
+export const ADD_LABEL = `
+mutation MatrixIssueAddLabel($id: String!, $labelId: String!) {
+  issueAddLabel(id: $id, labelId: $labelId) { success }
+}`;
+
+export const REMOVE_LABEL = `
+mutation MatrixIssueRemoveLabel($id: String!, $labelId: String!) {
+  issueRemoveLabel(id: $id, labelId: $labelId) { success }
 }`;
 
 export const CREATE_RELATION = `

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { fakeLinear } from "../testing/linear-fake";
+import { MATRIX_COMMENT_MARKER } from "../types";
 import { LinearTicketStore } from "./linear";
 import { LinearClient, sanitizeUntrusted } from "./linear-client";
 
@@ -116,7 +117,7 @@ describe("LinearTicketStore", () => {
     await store.link(epic.id, other.id, "related");
     await expect(store.comment(child.id, "note")).resolves.toBeUndefined();
     expect(fake.calls.find((c) => c.op === "MatrixComment")?.variables).toMatchObject({
-      input: { body: "note" },
+      input: { body: `note\n\n${MATRIX_COMMENT_MARKER}` },
     });
     await expect(store.comment("NEO-999", "x")).rejects.toThrow(/not found/);
   });

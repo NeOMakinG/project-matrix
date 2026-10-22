@@ -1,12 +1,16 @@
-import type {
-  LinkType,
-  NewTicket,
-  Ticket,
-  TicketPatch,
-  TicketQuery,
-  TicketStatus,
-  TicketStore,
-  TrackerPhase,
+import { sanitizeUntrusted } from "../sanitize.js";
+import {
+  type LinkType,
+  MATRIX_COMMENT_MARKER,
+  NEEDS_HUMAN_LABEL,
+  type NewTicket,
+  type Ticket,
+  type TicketComment,
+  type TicketPatch,
+  type TicketQuery,
+  type TicketStatus,
+  type TicketStore,
+  type TrackerPhase,
 } from "../types.js";
 import { matches } from "./beads.js";
 import { LinearApiError, LinearClient, type LinearClientOptions } from "./linear-client.js";
@@ -172,10 +176,22 @@ export class LinearTicketStore implements TicketStore {
     const issues = await this.#issues({ state: { name: { eqIgnoreCase: this.#names.ready } } });
     return issues
       .filter((i) => i.state.name.trim().toLowerCase() === this.#names.ready.trim().toLowerCase())
-      .filter((i) => !readBody(i.description).meta.blocked)
+      .filter((i) => this.#requeueable(i))
       .filter((i) => openBlockers(i).length === 0)
       .map((i) => ({ ...toTicket(i, this.#names), status: "ready" as const }));
   }
+  /**
+   * A Matrix-blocked issue is eligible again once a human acts on it: moved to Ready from the
+   * column it was blocked in, or (when blocked while in Ready) the needs-human label was removed.
+   */
+  #requeueable(issue: Q.LinearIssue): boolean {
+    const { blocked, blockedIn } = readBody(issue.description).meta;
+    if (!blocked) return true;
+    // Unknown origin (blocked before `blockedIn` existed) counts as blocked in Ready.
+    if (blockedIn !== undefined && norm(blockedIn) !== norm(issue.state.name)) return true;
+    return !issue.labels.nodes.some((l) => l.name === NEEDS_HUMAN_LABEL);
+  }
+
   /** Resolves label names to ids (team or workspace labels), creating missing ones on the team. */
   async #labelIds(names: string[]): Promise<string[]> {
     const wanted = [...new Set(names)];
@@ -249,7 +265,11 @@ export class LinearTicketStore implements TicketStore {
     const issue = await this.#must(id);
     const { text, meta } = readBody(issue.description);
     if (patch.phase !== undefined) meta.phase = patch.phase;
-    if (patch.status !== undefined) meta.blocked = patch.status === "blocked";
+    if (patch.status !== undefined) {
+      meta.blocked = patch.status === "blocked";
+      if (meta.blocked) meta.blockedIn = issue.state.name;
+      else delete meta.blockedIn;
+    }
     const input: Record<string, unknown> = {
       description: writeBody(patch.body ?? text, meta),
     };
@@ -298,7 +318,9 @@ export class LinearTicketStore implements TicketStore {
   async #createComment(issue: Q.LinearIssue, body: string): Promise<string> {
     const data = await this.#client.request<{
       commentCreate: { success: boolean; comment: { id: string } | null };
-    }>(Q.CREATE_COMMENT, { input: { issueId: issue.id, body } });
+    }>(Q.CREATE_COMMENT, {
+      input: { issueId: issue.id, body: `${body}\n\n${MATRIX_COMMENT_MARKER}` },
+    });
     if (!data.commentCreate.success || !data.commentCreate.comment)
       throw new LinearApiError(`Linear comment on ${issue.identifier} failed`);
     return data.commentCreate.comment.id;
@@ -381,6 +403,66 @@ export class LinearTicketStore implements TicketStore {
   /** Makes sure the project label exists on the team (created when missing). */
   async ensureScope(): Promise<void> {
     await this.#labelIds([this.#label]);
+  }
+
+  async addLabel(id: string, label: string): Promise<void> {
+    const issue = await this.#must(id);
+    if (issue.labels.nodes.some((l) => l.name === label)) return;
+    const [labelId] = await this.#labelIds([label]);
+    const data = await this.#client.request<{ issueAddLabel: { success: boolean } }>(Q.ADD_LABEL, {
+      id: issue.id,
+      labelId,
+    });
+    if (!data.issueAddLabel.success) throw new LinearApiError(`Linear add label on ${id} failed`);
+  }
+
+  async removeLabel(id: string, label: string): Promise<void> {
+    // The project label scopes the issue to this store: never drop it.
+    if (label === this.#label) return;
+    const issue = await this.#must(id);
+    const found = issue.labels.nodes.find((l) => l.name === label);
+    if (!found) return;
+    const data = await this.#client.request<{ issueRemoveLabel: { success: boolean } }>(
+      Q.REMOVE_LABEL,
+      { id: issue.id, labelId: found.id },
+    );
+    if (!data.issueRemoveLabel.success)
+      throw new LinearApiError(`Linear remove label on ${id} failed`);
+  }
+
+  /**
+   * Comments oldest first, sanitized. A comment counts as Matrix's own only when the API key's
+   * user wrote it AND it carries a Matrix marker: a personal API key shares its identity with the
+   * human, and a human pasting the marker does not make their comment Matrix's.
+   */
+  async listComments(id: string): Promise<TicketComment[]> {
+    const issue = await this.#must(id);
+    const data = await this.#client.request<{
+      issue: {
+        comments: {
+          nodes: Array<{
+            id: string;
+            body: string;
+            createdAt?: string;
+            user: { isMe: boolean; displayName?: string; name?: string } | null;
+          }>;
+        };
+      } | null;
+    }>(Q.ISSUE_COMMENTS, { id: issue.id });
+    return (data.issue?.comments.nodes ?? [])
+      .map((c) => {
+        const marked =
+          c.body.includes(MATRIX_COMMENT_MARKER) || c.body.includes("<!-- matrix-comment:");
+        const author = c.user?.displayName || c.user?.name;
+        return {
+          id: c.id,
+          body: sanitizeUntrusted(c.body),
+          byMatrix: c.user?.isMe === true && marked,
+          ...(author ? { author: sanitizeUntrusted(author) } : {}),
+          ...(c.createdAt ? { createdAt: c.createdAt } : {}),
+        };
+      })
+      .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
   }
 
   /** `from blocks to`, `from is parent of to`, or `from related to` (same as other adapters). */

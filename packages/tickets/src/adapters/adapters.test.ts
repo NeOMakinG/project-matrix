@@ -129,3 +129,15 @@ describe("github body metadata", () => {
     expect(() => new GitHubStore({ repo: "o/r; rm -rf" })).toThrow();
   });
 });
+
+describe("github labels", () => {
+  test("addLabel / removeLabel toggle one label", async () => {
+    const store = new GitHubStore({ repo: "o/r", executor: fakeGh() });
+    const t = await store.create({ title: "T", body: "b", labels: ["bug"] });
+    await store.addLabel(t.id, "needs-human");
+    expect((await store.get(t.id))?.labels).toEqual(["bug", "needs-human"]);
+    await store.removeLabel(t.id, "needs-human");
+    await store.removeLabel(t.id, "needs-human");
+    expect((await store.get(t.id))?.labels).toEqual(["bug"]);
+  });
+});

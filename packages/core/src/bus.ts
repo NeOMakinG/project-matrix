@@ -30,7 +30,20 @@ export type BusEvent =
   | { type: "approval.decided"; approvalId: string; status: "approved" | "rejected" }
   | { type: "workflow.blocked"; projectId: string; ticketId: string; reason: string }
   | { type: "autonomy.changed"; projectId: string; phase: Phase | "default"; mode: string }
-  | TrackerFailedEvent;
+  | TrackerFailedEvent
+  | QuotaCooldownEvent;
+
+/** A provider hit a rate/usage limit: no new runs on it until `until`; tickets stay queued. */
+export interface QuotaCooldownEvent {
+  type: "quota.cooldown";
+  provider: string;
+  until: string;
+  failures: number;
+  reason: string;
+  at: string;
+  projectId: string;
+  ticketId: string;
+}
 
 /** A best-effort write to the project's ticket tracker failed; the workflow carries on. */
 export interface TrackerFailedEvent {

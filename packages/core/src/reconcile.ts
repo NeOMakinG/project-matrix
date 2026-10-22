@@ -2,7 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { TicketStatus, TicketStore } from "@matrix/tickets";
+import {
+  NEEDS_HUMAN_LABEL,
+  type TicketComment,
+  type TicketStatus,
+  type TicketStore,
+} from "@matrix/tickets";
 import type { EventBus } from "./bus.js";
 import {
   canonicalFigmaFile,
@@ -28,9 +33,17 @@ import {
   type Transition,
 } from "./machine.js";
 import { resolveModel, selectModel } from "./models.js";
-import type { AutonomyMode, Phase, RunEvent, RunEventKind, Workspace } from "./ports.js";
+import type { AutonomyMode, Phase, RunEvent, RunEventKind, RunnerId, Workspace } from "./ports.js";
 import type { Authorization, GitPort, PhaseContext } from "./ports-internal.js";
 import { publicQaReceipt } from "./qa-evidence.js";
+import {
+  isQuotaError,
+  type ProviderCooldown,
+  providerOf,
+  QuotaCooldowns,
+  type QuotaPolicy,
+  quotaFor,
+} from "./quota.js";
 import {
   type Actor,
   type ApprovalRecord,
@@ -60,6 +73,13 @@ export interface ReconcilerOptions {
   leaseMs?: number;
   heartbeatMs?: number;
   scratchRoot?: string;
+  /**
+   * Subscription quota guard (per-provider concurrency, hourly runs, 5h runner minutes, cooldown
+   * on rate-limit errors, per-ticket runner minutes). Absent: only the classic limits apply.
+   */
+  quota?: QuotaPolicy;
+  /** How often a human may re-queue one blocked ticket per UTC day (state flapping guard). */
+  maxRequeuesPerDay?: number;
   clock?: () => Date;
   ids?: () => string;
 }
@@ -69,6 +89,8 @@ interface ActiveRun {
   projectId: string;
   ticketId: string;
   model: string;
+  /** Subscription the run draws on; undefined for phases that call no model. */
+  provider: string | undefined;
   host: string;
   controller: AbortController;
   promise: Promise<void>;
@@ -97,11 +119,42 @@ const AFTER_REVIEW = new Set<Phase>(["qa", "merge", "deploy"]);
 const CLEAN_TREE = new Set<Phase>(["design", "checks", "review", "qa", "merge", "deploy"]);
 const VALIDATING = new Set<Phase>(["design", "checks", "review", "qa"]);
 
+const HOUR_MS = 60 * 60_000;
+/** Phases that call a model, i.e. draw on a subscription; the others never touch quota. */
+const MODEL_PHASES = new Set<Phase>(["spike", "design", "implement", "review", "qa"]);
+/** Consecutive quota deferrals one workflow may take before failures count as attempts again. */
+const MAX_QUOTA_DEFERRALS = 5;
+const FIVE_HOURS_MS = 5 * HOUR_MS;
+
+interface ProviderUsage {
+  runsLastHour: Map<string, number>;
+  minutes5h: Map<string, number>;
+}
+
+export interface QuotaStatus {
+  provider: string;
+  limits: { maxConcurrent: number; maxRunsPerHour: number; maxRunnerMinutesPer5h: number };
+  active: number;
+  runsLastHour: number;
+  runnerMinutes5h: number;
+  cooldown?: { until: string; failures: number; reason: string; at: string };
+}
+
+const publicCooldown = (c: ProviderCooldown) => ({
+  until: c.until.toISOString(),
+  failures: c.failures,
+  reason: c.reason,
+  at: c.at.toISOString(),
+});
+
 const hash = (...parts: (string | number)[]) =>
   createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 32);
 
 export function stepKey(w: WorkflowState): string {
-  return hash(w.projectId, w.ticketId, w.phase, w.attempt, w.loops);
+  // Generation 0 keeps the historical key so in-flight workflows replay as before.
+  return w.generation
+    ? hash(w.projectId, w.ticketId, w.phase, w.attempt, w.loops, `g${w.generation}`)
+    : hash(w.projectId, w.ticketId, w.phase, w.attempt, w.loops);
 }
 
 /** Merge and deploy keys ignore the attempt so a retried irreversible action dedupes downstream. */
@@ -143,6 +196,10 @@ export class Reconciler {
   private readonly leaseMs: number;
   private readonly heartbeatMs: number;
   private readonly scratchRoot: string;
+  private readonly cooldowns: QuotaCooldowns | undefined;
+  /** Consecutive quota deferrals per workflow; past the cap a failure counts as an attempt. */
+  private readonly quotaDeferrals = new Map<string, number>();
+  private usage: Promise<ProviderUsage> | undefined;
 
   constructor(private readonly o: ReconcilerOptions) {
     this.clock = o.clock ?? (() => new Date());
@@ -153,6 +210,7 @@ export class Reconciler {
     this.leaseMs = o.leaseMs ?? 60_000;
     this.heartbeatMs = o.heartbeatMs ?? Math.max(1_000, Math.floor(this.leaseMs / 3));
     this.scratchRoot = o.scratchRoot ?? join(tmpdir(), "matrix-scratch");
+    this.cooldowns = o.quota ? new QuotaCooldowns(o.quota) : undefined;
   }
 
   /** Waits for every in-flight run; used by tests and graceful shutdown. */
@@ -166,7 +224,12 @@ export class Reconciler {
     for (const run of this.active.values()) run.controller.abort(new Error("reconciler stopped"));
   }
 
+  private get maxRequeues(): number {
+    return this.o.maxRequeuesPerDay ?? 3;
+  }
+
   async tick(): Promise<TickReport> {
+    this.usage = undefined;
     const report: TickReport = {
       dispatched: [],
       replayed: [],
@@ -202,6 +265,12 @@ export class Reconciler {
         continue;
       }
       if (this.isActive(w)) continue;
+      const cap = await this.ticketCapReason(project, w);
+      if (cap) {
+        await this.blockForHuman(project, w, cap);
+        report.skipped.push({ ticketId: w.ticketId, reason: cap });
+        continue;
+      }
       const reason = await this.blockedBy(project, w);
       if (reason) {
         report.skipped.push({ ticketId: w.ticketId, reason });
@@ -209,6 +278,7 @@ export class Reconciler {
       }
       if (this.o.projectDispatchAllowed?.(project.id) === false) continue;
       const result = await this.dispatch(project, w);
+      this.usage = undefined;
       if (result === "dispatched") report.dispatched.push(w.ticketId);
       else if (result === "replayed") report.replayed.push(w.ticketId);
       else if (result === "approval") report.awaitingApproval.push(w.ticketId);
@@ -253,18 +323,113 @@ export class Reconciler {
       if (created) {
         const w = await this.o.store.getWorkflow(project.id, t.id);
         if (w) this.o.bus.publish({ type: "workflow.changed", workflow: w });
+      } else {
+        await this.requeue(project, t.id, t.priority);
       }
     }
   }
 
+  /**
+   * A blocked ticket showing up as ready again means a human re-queued it: restart the workflow
+   * in its phase with fresh attempt/loop budgets (new generation, so no stale step replays) and
+   * drop the needs-human label. Flapping is capped per UTC day; the cap is announced once.
+   */
+  private async requeue(
+    project: ProjectConfig,
+    ticketId: string,
+    priority: number | undefined,
+  ): Promise<void> {
+    const w = await this.o.store.getWorkflow(project.id, ticketId);
+    if (!w || w.status !== "blocked") return;
+    const tickets = this.o.tickets(project.id);
+    const now = this.clock();
+    const today = w.requeuedAt?.toISOString().slice(0, 10) === this.day();
+    const count = today ? (w.requeueCount ?? 0) : 0;
+    try {
+      if (count >= this.maxRequeues) {
+        if (count > this.maxRequeues) return;
+        await this.o.store.saveWorkflow({ ...w, requeueCount: count + 1 });
+        await this.trackerWrite(project.id, ticketId, "comment", () =>
+          tickets.comment(
+            ticketId,
+            `Matrix did not restart this ticket: it was re-queued ${count} times today (limit ${this.maxRequeues}). It stays blocked until tomorrow (UTC).`,
+          ),
+        );
+        return;
+      }
+      const next: WorkflowState = {
+        ...w,
+        status: "pending",
+        attempt: 0,
+        // Irreversible phases keep `loops`: it is part of their action key, so a merge/deploy
+        // whose result was lost dedupes downstream instead of running twice.
+        loops: IRREVERSIBLE.has(w.phase) ? w.loops : 0,
+        priority: priority ?? w.priority,
+        generation: (w.generation ?? 0) + 1,
+        requeuedAt: now,
+        requeueCount: count + 1,
+      };
+      for (const key of ["lastError", "nextAttemptAt", "leaseOwner", "leaseExpiresAt"] as const)
+        delete next[key];
+      delete next.currentRunId;
+      const saved = await this.o.store.saveWorkflow(next);
+      this.quotaDeferrals.delete(`${project.id}\u0000${ticketId}`);
+      this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+    } catch (error) {
+      if (error instanceof VersionConflictError) return;
+      throw error;
+    }
+    if (tickets.removeLabel)
+      await this.trackerWrite(project.id, ticketId, "removeLabel", async () =>
+        tickets.removeLabel?.(ticketId, NEEDS_HUMAN_LABEL),
+      );
+    await this.trackerWrite(project.id, ticketId, "comment", () =>
+      tickets.comment(
+        ticketId,
+        `Matrix restarted this ticket at ${w.phase} (restart ${count + 1} of ${this.maxRequeues} today).`,
+      ),
+    );
+  }
+
+  /** Blocks a not-yet-running workflow for a human (per-ticket caps). */
+  private async blockForHuman(
+    project: ProjectConfig,
+    w: WorkflowState,
+    reason: string,
+  ): Promise<void> {
+    let saved: WorkflowState;
+    try {
+      saved = await this.o.store.saveWorkflow({ ...w, status: "blocked", lastError: reason });
+    } catch (error) {
+      if (error instanceof VersionConflictError) return;
+      throw error;
+    }
+    await this.applyEffects(project, saved, {
+      state: saved,
+      effects: [{ type: "blocked", reason }],
+    });
+  }
+
   private async modelFor(project: ProjectConfig, workflow: WorkflowState): Promise<string> {
+    return (await this.phaseModel(project, workflow)).model;
+  }
+
+  private async phaseModel(
+    project: ProjectConfig,
+    workflow: WorkflowState,
+  ): Promise<{ model: string; provider: string | undefined; runner: RunnerId }> {
     const ticket = await this.o.tickets(project.id).get(workflow.ticketId);
-    return resolveModel(project, selectModel(project, workflow.phase, ticket ?? undefined).model);
+    const selected = selectModel(project, workflow.phase, ticket ?? undefined);
+    const model = resolveModel(project, selected.model);
+    const provider = MODEL_PHASES.has(workflow.phase)
+      ? providerOf(selected.runner, model)
+      : undefined;
+    return { model, provider, runner: selected.runner };
   }
 
   private async blockedBy(project: ProjectConfig, w: WorkflowState): Promise<string | null> {
     const runs = [...this.active.values()];
-    const model = await this.modelFor(project, w);
+    const { model, provider } = await this.phaseModel(project, w);
     const { limits } = this.o;
     if (runs.filter((r) => r.projectId === project.id).length >= limits.perProject)
       return "project limit";
@@ -287,7 +452,103 @@ export class Reconciler {
         return "daily budget reached";
       }
     }
+    return this.quotaBlock(provider);
+  }
+
+  /** Subscription quota: provider cooldown, concurrency, hourly runs and 5h runner minutes. */
+  private async quotaBlock(provider: string | undefined): Promise<string | null> {
+    const policy = this.o.quota;
+    if (!policy || !this.cooldowns || !provider) return null;
+    const now = this.clock();
+    const cooldown = this.cooldowns.active(provider, now);
+    if (cooldown) return `quota cooldown ${provider} until ${cooldown.until.toISOString()}`;
+    const limits = quotaFor(policy, provider);
+    const active = [...this.active.values()].filter((r) => r.provider === provider).length;
+    if (active >= limits.maxConcurrent) return `quota concurrency ${provider}`;
+    const usage = await this.providerUsage();
+    if ((usage.runsLastHour.get(provider) ?? 0) >= limits.maxRunsPerHour)
+      return `quota hourly runs ${provider}`;
+    if ((usage.minutes5h.get(provider) ?? 0) >= limits.maxRunnerMinutesPer5h)
+      return `quota 5h runner minutes ${provider}`;
     return null;
+  }
+
+  /** Rolling usage per provider from the run log; cached until the next dispatch or tick. */
+  private providerUsage(): Promise<ProviderUsage> {
+    this.usage ??= (async () => {
+      const now = this.clock().getTime();
+      const usage: ProviderUsage = { runsLastHour: new Map(), minutes5h: new Map() };
+      for (const run of await this.o.store.listRuns()) {
+        const started = run.startedAt.getTime();
+        const end = run.finishedAt?.getTime() ?? now;
+        if (end < now - FIVE_HOURS_MS || !MODEL_PHASES.has(run.phase)) continue;
+        const provider = providerOf(run.runner, run.model);
+        if (started >= now - HOUR_MS)
+          usage.runsLastHour.set(provider, (usage.runsLastHour.get(provider) ?? 0) + 1);
+        const minutes = (end - Math.max(started, now - FIVE_HOURS_MS)) / 60_000;
+        usage.minutes5h.set(provider, (usage.minutes5h.get(provider) ?? 0) + Math.max(0, minutes));
+      }
+      return usage;
+    })();
+    return this.usage;
+  }
+
+  /**
+   * Per-ticket budget since the last (re)queue: dollars when the runs report spend, otherwise
+   * runner minutes. Exceeding it blocks the ticket for a human instead of burning quota.
+   */
+  private async ticketCapReason(project: ProjectConfig, w: WorkflowState): Promise<string | null> {
+    const minutesCap = this.o.quota?.perTicketRunnerMinutes;
+    if (project.perTicketBudgetUsd === undefined && minutesCap === undefined) return null;
+    // Only gate work that would spend more: finished model work never blocks a merge or deploy.
+    if (!MODEL_PHASES.has(w.phase)) return null;
+    const since = w.requeuedAt?.getTime() ?? 0;
+    const now = this.clock().getTime();
+    const runs = (
+      await this.o.store.listRuns({ projectId: w.projectId, ticketId: w.ticketId })
+    ).filter((run) => run.startedAt.getTime() >= since);
+    const modelRuns = runs.filter((run) => MODEL_PHASES.has(run.phase));
+    const spent = runs.reduce((sum, run) => sum + (run.costUsd ?? 0), 0);
+    if (project.perTicketBudgetUsd !== undefined && spent > 0) {
+      return spent >= project.perTicketBudgetUsd
+        ? `per-ticket budget reached ($${spent.toFixed(2)} of $${project.perTicketBudgetUsd})`
+        : null;
+    }
+    if (minutesCap === undefined) return null;
+    const minutes = modelRuns.reduce(
+      (sum, run) => sum + ((run.finishedAt?.getTime() ?? now) - run.startedAt.getTime()) / 60_000,
+      0,
+    );
+    return minutes >= minutesCap
+      ? `per-ticket runner time reached (${Math.round(minutes)} of ${minutesCap} min)`
+      : null;
+  }
+
+  /** Current quota state per provider (limits, usage, cooldown), for the API and dashboard. */
+  async quotaStatus(): Promise<QuotaStatus[]> {
+    const policy = this.o.quota;
+    if (!policy || !this.cooldowns) return [];
+    this.usage = undefined;
+    const usage = await this.providerUsage();
+    const now = this.clock();
+    const providers = new Set([
+      ...Object.keys(policy.providers),
+      ...usage.runsLastHour.keys(),
+      ...usage.minutes5h.keys(),
+      ...this.cooldowns.list().map((c) => c.provider),
+      ...[...this.active.values()].flatMap((r) => (r.provider ? [r.provider] : [])),
+    ]);
+    return [...providers].sort().map((provider) => {
+      const cooldown = this.cooldowns?.active(provider, now);
+      return {
+        provider,
+        limits: quotaFor(policy, provider),
+        active: [...this.active.values()].filter((r) => r.provider === provider).length,
+        runsLastHour: usage.runsLastHour.get(provider) ?? 0,
+        runnerMinutes5h: Math.round(usage.minutes5h.get(provider) ?? 0),
+        ...(cooldown ? { cooldown: publicCooldown(cooldown) } : {}),
+      };
+    });
   }
 
   private day(): string {
@@ -740,7 +1001,7 @@ export class Reconciler {
       throw error;
     }
 
-    const model = await this.modelFor(project, w);
+    const { model, provider, runner } = await this.phaseModel(project, w);
     // Checks bind to the SHA returned by cleanForChecks; review, QA, merge and deploy must match it.
     const headSha =
       checkedSha ??
@@ -752,6 +1013,7 @@ export class Reconciler {
       phase: w.phase,
       attempt: w.attempt,
       stepKey: key,
+      runner,
       model,
       host: project.host,
       ownerId: this.ownerId,
@@ -788,6 +1050,7 @@ export class Reconciler {
       projectId: project.id,
       ticketId: w.ticketId,
       model,
+      provider,
       host: project.host,
       controller,
       promise,
@@ -861,6 +1124,14 @@ export class Reconciler {
       const tickets = this.o.tickets(project.id);
       const ticket = await tickets.get(w.ticketId);
       if (!ticket) throw new Error(`ticket ${w.ticketId} not found`);
+      let ticketComments: TicketComment[] = [];
+      if (tickets.listComments) {
+        try {
+          ticketComments = (await tickets.listComments(w.ticketId)).filter((c) => !c.byMatrix);
+        } catch (error) {
+          this.trackerFailed(project.id, w.ticketId, "comments", error);
+        }
+      }
       const branch = `matrix/${w.ticketId}`;
       if (!w.workdir) {
         const prepared = await this.o.workspace.prepare({
@@ -909,6 +1180,7 @@ export class Reconciler {
         project,
         workflow: current,
         ticket,
+        ticketComments,
         tickets: bestEffortComments(tickets, (ticketId, operation, error) =>
           this.trackerFailed(project.id, ticketId, operation, error),
         ),
@@ -990,8 +1262,90 @@ export class Reconciler {
         .cleanup({ workdir: w.workdir, ref: w.workspaceRef })
         .catch(() => undefined);
     }
+    const quota = fenced
+      ? undefined
+      : await this.quotaOutcome(project.id, w.ticketId, runId, outcome);
+    // A quota failure is never a completed step (so it re-runs, not replays) nor an attempt.
+    if (quota)
+      outcome = {
+        ...outcome,
+        ok: false,
+        runStatus: "failed",
+        summary: `quota: ${outcome.summary}`,
+      };
     await this.finish(project, runId, key, outcome, reserved, fenced);
-    if (!fenced) await this.transition(project, latest as WorkflowState, outcome);
+    if (fenced) return;
+    if (quota) await this.deferForQuota(project, latest as WorkflowState, quota);
+    else await this.transition(project, latest as WorkflowState, outcome);
+  }
+
+  /**
+   * Classifies a finished run for the quota guard. A runner failure whose output reads like a
+   * rate/usage limit puts the provider into cooldown and defers the ticket (up to a cap per
+   * workflow, so a ticket that merely talks about rate limits cannot loop forever).
+   */
+  private async quotaOutcome(
+    projectId: string,
+    ticketId: string,
+    runId: string,
+    outcome: PhaseOutcome,
+  ): Promise<ProviderCooldown | undefined> {
+    if (!this.cooldowns) return undefined;
+    // The provider the dispatch was gated on, so the cooldown gates the same name.
+    const provider = this.active.get(runId)?.provider;
+    if (!provider) return undefined;
+    const key = `${projectId}\u0000${ticketId}`;
+    if (outcome.ok) {
+      this.cooldowns.clear(provider);
+      this.quotaDeferrals.delete(key);
+      return undefined;
+    }
+    if (outcome.runStatus !== "failed") return undefined;
+    // Runner-level errors and the summary tail (where the CLI's stderr lands) only: failed tool
+    // calls carry arbitrary content (a curl to an API returning 429 is not our quota).
+    const errors = (await this.o.store.listEvents(runId))
+      .filter((event) => event.kind === "error" && !event.message.startsWith("tool error:"))
+      .map((event) => event.message.slice(-500));
+    const text = [...errors, outcome.summary.slice(-500)].join("\n");
+    if (!isQuotaError(text)) return undefined;
+    // Past the cap (until a success or a human re-queue) failures count as attempts again and no
+    // longer touch the shared cooldown: one poisoned ticket cannot stall the provider.
+    const deferrals = (this.quotaDeferrals.get(key) ?? 0) + 1;
+    this.quotaDeferrals.set(key, deferrals);
+    if (deferrals > MAX_QUOTA_DEFERRALS) return undefined;
+    const line = text.split("\n").find((l) => isQuotaError(l)) ?? "rate limited";
+    const cooldown = this.cooldowns.hit(provider, line.trim().slice(0, 200), this.clock());
+    this.o.bus.publish({
+      type: "quota.cooldown",
+      ...publicCooldown(cooldown),
+      provider,
+      projectId,
+      ticketId,
+    });
+    return cooldown;
+  }
+
+  /** Puts the workflow back in the queue until the provider's cooldown ends; attempt unchanged. */
+  private async deferForQuota(
+    project: ProjectConfig,
+    w: WorkflowState,
+    cooldown: ProviderCooldown,
+  ): Promise<void> {
+    const next: WorkflowState = {
+      ...w,
+      status: "pending",
+      nextAttemptAt: cooldown.until,
+      lastError: `waiting for ${cooldown.provider} quota: ${cooldown.reason}`,
+    };
+    delete next.leaseOwner;
+    delete next.leaseExpiresAt;
+    try {
+      const saved = await this.o.store.saveWorkflow(next);
+      this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+    } catch (error) {
+      // Someone else moved the workflow meanwhile (cancel, takeover): their state wins.
+      if (!(error instanceof VersionConflictError)) throw error;
+    }
   }
 
   private async saveOwned(
@@ -1144,11 +1498,22 @@ export class Reconciler {
       if (effect.type === "request_approval") {
         await this.requestApproval(project, saved, effect.phase);
       } else if (effect.type === "blocked") {
+        // Label first: on Linear its absence is a re-queue signal for tickets blocked in Ready.
+        if (tickets.addLabel)
+          await this.trackerWrite(project.id, saved.ticketId, "addLabel", async () =>
+            tickets.addLabel?.(saved.ticketId, NEEDS_HUMAN_LABEL),
+          );
         await this.trackerWrite(project.id, saved.ticketId, "update", () =>
           tickets.update(saved.ticketId, { status: "blocked" }),
         );
         await this.trackerWrite(project.id, saved.ticketId, "comment", () =>
-          tickets.comment(saved.ticketId, `Matrix blocked this ticket: ${effect.reason}`),
+          tickets.comment(
+            saved.ticketId,
+            [
+              `Matrix blocked this ticket: ${effect.reason}`,
+              `It needs a human. Fix the cause (ticket, config or quota), then move the ticket back to Ready to restart it; Matrix then removes the \`${NEEDS_HUMAN_LABEL}\` label. At most ${this.maxRequeues} restarts per day.`,
+            ].join("\n\n"),
+          ),
         );
         this.o.bus.publish({
           type: "workflow.blocked",
@@ -1157,6 +1522,7 @@ export class Reconciler {
           reason: effect.reason,
         });
       } else if (effect.type === "done") {
+        this.quotaDeferrals.delete(`${project.id}\u0000${saved.ticketId}`);
         await this.trackerWrite(project.id, saved.ticketId, "update", () =>
           tickets.update(saved.ticketId, { status: "done" }),
         );
