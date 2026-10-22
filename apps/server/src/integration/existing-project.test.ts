@@ -78,6 +78,15 @@ test("registers an existing repo host-side, with Linear, detected checks and a m
   const stored = (await factory.store.getProject(id)) as StoredProject;
   expect(stored).toMatchObject({ repoPath: repo, baseBranch: "main", lastPhase: "merge" });
   expect(stored.models.tiers).toBeUndefined();
+  expect(stored.matrix?.repo?.editablePaths).toEqual(["package.json", "pnpm-lock.yaml"]);
+  const paths = await call("PATCH", `/v1/projects/${id}`, {
+    repo: { editablePaths: ["app", "docs", "designs"] },
+  });
+  expect(paths.body).toMatchObject({ repo: { editablePaths: ["app", "docs", "designs"] } });
+  expect(
+    (await call("PATCH", `/v1/projects/${id}`, { repo: { editablePaths: [".github/workflows"] } }))
+      .status,
+  ).toBe(400);
 
   expect((await call("POST", `/v1/projects/${id}/init`)).status).toBe(409);
   const again = await call("POST", "/v1/projects", {

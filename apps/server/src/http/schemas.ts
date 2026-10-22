@@ -28,6 +28,7 @@ export const Project = z
         baseBranch: z.string(),
         remote: z.string(),
         github: z.string(),
+        editablePaths: z.array(z.string()),
       })
       .optional()
       .openapi({ description: "Set for an existing repo registered on the host" }),
@@ -70,6 +71,11 @@ export const ModelPlan = z
   .strict()
   .openapi("ModelPlan");
 
+const EditablePaths = z.array(z.string().min(1).max(200)).min(1).max(100).openapi({
+  description:
+    "Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs",
+});
+
 export const ExistingRepo = z
   .object({
     path: z
@@ -84,6 +90,7 @@ export const ExistingRepo = z
       .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/)
       .default("origin")
       .openapi({ description: "GitHub remote draft PRs are opened on" }),
+    editablePaths: EditablePaths.optional(),
   })
   .strict()
   .openapi("ExistingRepo");
@@ -160,6 +167,7 @@ const ChecksSettings = z
 
 export const UpdateProject = z
   .object({
+    repo: z.object({ editablePaths: EditablePaths.optional() }).strict().optional(),
     tickets: TicketsSettings.optional(),
     checks: ChecksSettings.optional().openapi({
       description: "Check commands run in the sandbox (argv, no shell)",

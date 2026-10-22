@@ -4042,6 +4042,7 @@ export interface components {
         baseBranch: string;
         remote: string;
         github: string;
+        editablePaths: string[];
       };
       /** @description Effective model per model-driven phase */
       models?: {
@@ -4123,6 +4124,8 @@ export interface components {
        * @default origin
        */
       remote: string;
+      /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
+      editablePaths?: string[];
     };
     ModelPlan: {
       spike?: components["schemas"]["PhaseModel"];
@@ -4138,6 +4141,10 @@ export interface components {
       model: string;
     };
     UpdateProject: {
+      repo?: {
+        /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
+        editablePaths?: string[];
+      };
       tickets?: {
         /** @enum {string} */
         kind: "beads" | "markdown" | "github" | "linear";

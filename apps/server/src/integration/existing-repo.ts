@@ -169,3 +169,62 @@ export async function detectChecks(
     cmd: [manager, "run", kind],
   }));
 }
+
+/** Top-level files agents may edit by default (manifests and tool configs). */
+const DEFAULT_EDITABLE_FILES = new Set([
+  "package.json",
+  "bun.lock",
+  "bun.lockb",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "package-lock.json",
+  "tsconfig.json",
+  "tsconfig.app.json",
+  "tsconfig.node.json",
+  "vite.config.ts",
+  "vitest.config.ts",
+  "biome.json",
+  "eslint.config.js",
+  "go.mod",
+  "go.sum",
+  "Cargo.toml",
+  "Cargo.lock",
+]);
+const EDITABLE = /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
+
+/**
+ * Paths agents may change in an existing repo. Relative, no `..`, and no segment starting with
+ * `.`: dot paths (`.github/workflows`, `.env`, `.matrix`) stay denied whatever the list says.
+ */
+export function validateEditablePaths(paths: string[]): string[] {
+  if (paths.length === 0 || paths.length > 100) invalid("editablePaths needs 1 to 100 entries");
+  for (const path of paths)
+    if (path.length > 200 || !EDITABLE.test(path) || path.split("/").includes(".."))
+      invalid(`invalid editable path: ${JSON.stringify(path)} (relative, no dot segments)`);
+  return [...new Set(paths)];
+}
+
+/**
+ * Default editable paths of an existing repo: every tracked top-level directory on the base branch
+ * except dot directories (`.git`, `.github`, `.matrix`, ...), plus the usual top-level manifests.
+ */
+export async function defaultEditablePaths(
+  repo: Pick<ResolvedRepo, "path" | "baseBranch">,
+  options: RepoCheckOptions = {},
+): Promise<string[]> {
+  const listed = await repoGit(
+    `${repo.path}${sep}.git`,
+    ["ls-tree", "-z", `refs/heads/${repo.baseBranch}`],
+    options,
+  );
+  if (!listed.ok) invalid("cannot list the base branch");
+  const out: string[] = [];
+  for (const record of listed.stdout.split("\0").filter(Boolean)) {
+    const tab = record.indexOf("\t");
+    const type = record.slice(0, tab).split(" ")[1];
+    const name = record.slice(tab + 1);
+    if (name.startsWith(".") || !EDITABLE.test(name)) continue;
+    if (type === "tree" || (type === "blob" && DEFAULT_EDITABLE_FILES.has(name))) out.push(name);
+  }
+  return out;
+}

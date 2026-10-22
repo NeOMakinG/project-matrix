@@ -62,6 +62,7 @@ export function projectRoutes(app: App, ops: Operations) {
                   path: body.repo.path,
                   baseBranch: body.repo.baseBranch,
                   remote: body.repo.remote,
+                  ...(body.repo.editablePaths ? { editablePaths: body.repo.editablePaths } : {}),
                 },
               }
             : {}),
@@ -85,6 +86,7 @@ export function projectRoutes(app: App, ops: Operations) {
       const body = c.req.valid("json");
       return c.json(
         await ops.updateProject(c.var.principal, c.req.valid("param").projectId, {
+          ...(body.repo?.editablePaths ? { repo: { editablePaths: body.repo.editablePaths } } : {}),
           ...(body.tickets ? { tickets: ticketSettings(body.tickets) } : {}),
           ...(body.checks ? { checks: body.checks } : {}),
           ...(body.models ? { models: modelPlan(body.models) } : {}),

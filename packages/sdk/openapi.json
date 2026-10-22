@@ -53,9 +53,15 @@
               },
               "github": {
                 "type": "string"
+              },
+              "editablePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
-            "required": ["external", "baseBranch", "remote", "github"],
+            "required": ["external", "baseBranch", "remote", "github", "editablePaths"],
             "description": "Set for an existing repo registered on the host"
           },
           "models": {
@@ -288,6 +294,17 @@
             "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
             "default": "origin",
             "description": "GitHub remote draft PRs are opened on"
+          },
+          "editablePaths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "minItems": 1,
+            "maxItems": 100,
+            "description": "Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs"
           }
         },
         "required": ["path"],
@@ -340,6 +357,23 @@
       "UpdateProject": {
         "type": "object",
         "properties": {
+          "repo": {
+            "type": "object",
+            "properties": {
+              "editablePaths": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "minItems": 1,
+                "maxItems": 100,
+                "description": "Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs"
+              }
+            },
+            "additionalProperties": false
+          },
           "tickets": {
             "type": "object",
             "properties": {

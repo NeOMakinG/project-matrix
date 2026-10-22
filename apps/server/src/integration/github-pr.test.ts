@@ -1,6 +1,10 @@
+import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ProjectConfig, PullRequestRequest } from "@matrix/core";
-import type { LineExecutor, ProcessSpec } from "@matrix/sandbox";
+import { hostExecutor, type LineExecutor, type ProcessSpec } from "@matrix/sandbox";
 import { expect, test } from "vitest";
+import { git, makeRepo } from "./existing-repo.test-helpers.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
 
 const SHA = "a".repeat(40);
@@ -130,7 +134,8 @@ test("a failing push errors redacted, backs off, and retries later", async () =>
   const { calls, executor } = fakeExec((spec) => {
     if (spec.cmd.includes("push"))
       return { code: 128, err: "fatal: denied for ghp_abcdefghijklmnopqrstuvwxyz0123456789" };
-    return spec.cmd.includes("list") ? { out: "[]" } : { code: 1 };
+    if (spec.cmd.includes("config")) return { code: 1 };
+    return spec.cmd.includes("list") ? { out: "[]" } : {};
   });
   const pushes = () => calls.filter((c) => c.cmd.includes("push")).length;
   const prs = new GitHubPullRequests({ executor, retryMs: 1000, clock: () => new Date(now) });
@@ -199,4 +204,43 @@ test("existing-repo merge only succeeds once a human merged the PR on GitHub", a
   expect(moved).not.toHaveProperty("pending");
   const greenfield = { ...(ctx as object), project: project(false) } as never;
   expect(await merge.merge(greenfield, req)).toMatchObject({ summary: "local" });
+});
+
+test("the pushed commit of an existing repo never carries .matrix/ paths (real git)", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "matrix-pr-real-")));
+  const repo = makeRepo(root, "wayline");
+  const commitOn = (branch: string, file: string) => {
+    git(repo, "checkout", "-q", "-b", branch, "main");
+    mkdirSync(join(repo, dirname(file)), { recursive: true });
+    writeFileSync(join(repo, file), "x\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", branch);
+    return git(repo, "rev-parse", "HEAD").trim();
+  };
+  const clean = commitOn("clean", "app/src/features/a.ts");
+  const dirty = commitOn("dirty", ".matrix/graph/code.json");
+  const pushed: string[] = [];
+  const executor: LineExecutor = async (spec, onLine, signal) => {
+    if (spec.cmd.includes("push")) {
+      pushed.push(spec.cmd.at(-1) ?? "");
+      return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
+    }
+    if (spec.cmd[0] === "gh") {
+      onLine(spec.cmd.includes("list") ? "[]" : PR);
+      return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
+    }
+    return hostExecutor(spec, onLine, signal);
+  };
+  const prs = new GitHubPullRequests({ executor });
+  const at = (headSha: string, id: string) => {
+    const r = request({ headSha, project: { ...project(), repoPath: repo } as ProjectConfig });
+    r.ticket = { ...r.ticket, id };
+    return r;
+  };
+  await expect(prs.publish(at(dirty, "NEO-8"))).rejects.toThrow(/Matrix\/CI paths/);
+  expect(pushed).toEqual([]);
+  expect((await prs.publish(at(clean, "NEO-9")))?.url).toBe(PR);
+  expect(pushed).toHaveLength(1);
+  const files = git(repo, "diff", "--name-only", `main...${clean}`).trim().split("\n");
+  expect(files).toEqual(["app/src/features/a.ts"]);
 });

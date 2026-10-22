@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
+  defaultEditablePaths,
   detectChecks,
   githubSlug,
   parseRepoRoots,
   resolveExistingRepo,
+  validateEditablePaths,
   validBranch,
 } from "./existing-repo.js";
 import { git, makeRepo } from "./existing-repo.test-helpers.js";
@@ -123,4 +125,27 @@ test("default checks come from the committed package.json and lockfile", async (
   expect(await detectChecks({ path: npm, baseBranch: "main" })).toEqual([
     { kind: "lint", cmd: ["npm", "run", "lint"] },
   ]);
+});
+
+test("editable paths default to tracked top-level dirs, never dot paths", async () => {
+  const { root } = setup();
+  const repo = makeRepo(root, "tj", {
+    "package.json": "{}",
+    Makefile: "x",
+  });
+  for (const dir of ["app/src/features", "docs", "designs", ".github/workflows", ".matrix/graph"]) {
+    mkdirSync(join(repo, dir), { recursive: true });
+    writeFileSync(join(repo, dir, "f.txt"), "x");
+  }
+  git(repo, "add", "-A");
+  git(repo, "commit", "-qm", "tree");
+  expect(await defaultEditablePaths({ path: repo, baseBranch: "main" })).toEqual([
+    "app",
+    "designs",
+    "docs",
+    "package.json",
+  ]);
+  expect(validateEditablePaths(["app", "docs", "app"])).toEqual(["app", "docs"]);
+  for (const bad of [[], [".github/workflows"], ["app/../.."], ["/abs"], ["app/.env"], ["a b"]])
+    expect(() => validateEditablePaths(bad)).toThrow();
 });

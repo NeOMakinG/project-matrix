@@ -140,6 +140,7 @@ export class GitHubPullRequests implements PullRequestPort {
       if (!gate.ok) throw new Error(`secret gate refused the push: ${gate.summary}`);
     }
     await this.#assertNoUrlRewrites(gitDir);
+    await this.#assertNoMatrixArtifacts(gitDir, project.baseBranch, headSha);
     // Push to the URL validated at registration, never to whatever the remote name resolves to now.
     const target = `https://github.com/${repo.github}.git`;
     const stem = knownBranch ?? pullRequestBranch(ticket);
@@ -206,6 +207,26 @@ export class GitHubPullRequests implements PullRequestPort {
     const out = await this.#git(gitDir, ["config", "--name-only", "--get-regexp", "^url\\."], true);
     if (out.trim())
       throw new Error("repo config rewrites URLs (url.*.insteadOf); refusing to push");
+  }
+
+  /** Matrix state (`.matrix/`) and CI workflows never leave the host in a run branch. */
+  async #assertNoMatrixArtifacts(gitDir: string, base: string, headSha: string): Promise<void> {
+    const changed = await this.#git(gitDir, [
+      "diff",
+      "--name-only",
+      "-z",
+      "--no-renames",
+      `refs/heads/${base}...${headSha}`,
+      "--",
+    ]);
+    const bad = changed
+      .split("\0")
+      .filter(Boolean)
+      .filter((path) => path.startsWith(".matrix/") || path.startsWith(".github/workflows/"));
+    if (bad.length)
+      throw new Error(
+        `run branch touches Matrix/CI paths (${bad.slice(0, 5).join(", ")}); refusing to push`,
+      );
   }
 
   /** True when pushed; false when the remote rejected it as non-fast-forward. */

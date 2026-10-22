@@ -22,7 +22,7 @@ export interface MatrixMeta {
    * Set for a repo that already existed on the host (registered, not created by Matrix). Its
    * config lives here, host-side; nothing is written into the repo and runs end with a draft PR.
    */
-  repo?: { external: true; remote: string; github: string };
+  repo?: { external: true; remote: string; github: string; editablePaths?: string[] };
 }
 
 export type StoredProject = ProjectConfig & { matrix?: MatrixMeta };
@@ -47,6 +47,7 @@ export function toProject(config: StoredProject): Project {
             baseBranch: config.baseBranch,
             remote: config.matrix.repo.remote,
             github: config.matrix.repo.github,
+            editablePaths: [...(config.matrix.repo.editablePaths ?? [])],
           },
         }
       : {}),

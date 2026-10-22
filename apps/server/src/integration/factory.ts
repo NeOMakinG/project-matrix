@@ -21,6 +21,7 @@ import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
 import { repoKnowledge } from "./knowledge.js";
+import type { StoredProject } from "./mapping.js";
 import { gatewayModels } from "./model-plan.js";
 import { fakeTriageLlm, ServerMonitor } from "./monitor.js";
 import type { NativeRuntimeOptions } from "./native-runtime.js";
@@ -159,7 +160,24 @@ async function createOwnedFactory(
   const log = options.log ?? ((m: string) => console.log(m));
   const runtime = createRuntime(
     options.runtime,
-    options.native ? { ...options.native, dataDir: options.dataDir, stateOwner } : undefined,
+    options.native
+      ? {
+          ...options.native,
+          dataDir: options.dataDir,
+          stateOwner,
+          // Resolved per run (the store exists by then): existing repos' edit policy.
+          projectPolicy: async (projectId: string) => {
+            const project = (await store.getProject(projectId)) as StoredProject | null;
+            const repo = project?.matrix?.repo;
+            return repo
+              ? {
+                  external: true,
+                  ...(repo.editablePaths ? { editablePaths: repo.editablePaths } : {}),
+                }
+              : { external: false };
+          },
+        }
+      : undefined,
   );
   mkdirSync(join(options.dataDir, "projects"), { recursive: true, mode: 0o700 });
   mkdirSync(join(options.dataDir, "holdout"), { recursive: true, mode: 0o700 });

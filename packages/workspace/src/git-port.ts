@@ -247,7 +247,8 @@ export class WorktreeGitPort implements GitPort {
     if (head !== options.expectedHead)
       throw new Error("implementation HEAD changed before handover");
     const branch = (await this.#git(workdir, ["symbolic-ref", "HEAD"])).trim();
-    if (!branch.startsWith("refs/heads/matrix/"))
+    // Native worktrees use `matrix/<ticket>`; Orca turns the `/` into `-` (`matrix-<ticket>`).
+    if (!branch.startsWith("refs/heads/matrix/") && !branch.startsWith("refs/heads/matrix-"))
       throw new Error("implementation commit requires a Matrix ticket branch");
     const state = await this.treeState(workdir);
     const status = await this.#git(

@@ -38,7 +38,12 @@ import {
 } from "../core-port.js";
 import { PrivateState } from "../private-state.js";
 import type { PrivateStateOwner } from "../state-owner.js";
-import { detectChecks, resolveExistingRepo } from "./existing-repo.js";
+import {
+  defaultEditablePaths,
+  detectChecks,
+  resolveExistingRepo,
+  validateEditablePaths,
+} from "./existing-repo.js";
 import { type FinalizeJournal, finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
 import { applyModelPlan, assertKnownModels, type ModelLister } from "./model-plan.js";
@@ -334,6 +339,10 @@ export class RealCore implements CorePort {
       // Matrix stops at merge: the human merges the draft PR on GitHub.
       config.lastPhase = "merge";
       config.checks = input.checks ?? (await detectChecks(repo, git));
+      const editablePaths = input.repo.editablePaths
+        ? validateEditablePaths(input.repo.editablePaths)
+        : await defaultEditablePaths(repo, git);
+      if (config.matrix?.repo) config.matrix.repo.editablePaths = editablePaths;
       if (this.o.fakeRuntime)
         config.models = {
           implement: { runner: "claude-code", model: "fake-implementer" },
@@ -362,10 +371,16 @@ export class RealCore implements CorePort {
             "a Matrix-created repo cannot switch tracker kind after creation",
           );
       }
+      if (patch.repo?.editablePaths && !external)
+        throw new CoreError("invalid_request", "editablePaths only applies to existing repos");
+      const editable = patch.repo?.editablePaths
+        ? validateEditablePaths(patch.repo.editablePaths)
+        : undefined;
       if (patch.models) await assertKnownModels(patch.models, this.o.listModels);
       const config = structuredClone(await this.config(projectId));
       if (patch.tickets && config.matrix)
         config.matrix = { ...config.matrix, tickets: patch.tickets };
+      if (editable && config.matrix?.repo) config.matrix.repo.editablePaths = editable;
       if (patch.checks)
         config.checks = patch.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] }));
       if (patch.models) applyModelPlan(config, patch.models);

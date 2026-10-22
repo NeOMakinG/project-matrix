@@ -18,7 +18,13 @@ export interface Project {
   autonomy: Record<Phase, AutonomyMode>;
   createdAt: string;
   /** Present for an existing repo registered on the host (draft PRs, human merge on GitHub). */
-  repo?: { external: true; baseBranch: string; remote: string; github: string };
+  repo?: {
+    external: true;
+    baseBranch: string;
+    remote: string;
+    github: string;
+    editablePaths: string[];
+  };
   /** Effective model per model-driven phase. */
   models?: Partial<Record<ModelPhase, { runner: RunnerKind; model: string }>>;
   checks?: CheckSpec[];
@@ -51,10 +57,12 @@ export interface CreateProjectInput {
   /** Check commands run by the checks and QA phases (the init interview sets these later). */
   checks?: CheckSpec[];
   /** Register an existing host repo instead of creating an empty one (MATRIX_REPO_ROOTS). */
-  repo?: { path: string; baseBranch: string; remote?: string };
+  repo?: { path: string; baseBranch: string; remote?: string; editablePaths?: string[] };
   models?: ModelPlanInput;
 }
 export interface UpdateProjectInput {
+  /** Existing repos only: paths agents may change (dot paths always stay denied). */
+  repo?: { editablePaths?: string[] };
   tickets?: TicketsInput;
   checks?: CheckSpec[];
   models?: ModelPlanInput;
