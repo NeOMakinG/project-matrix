@@ -450,6 +450,7 @@ export class MemoryStore implements Store {
       ...current,
       reviewLanes: config.reviewLanes,
       dailyBudgetUsd: config.dailyBudgetUsd,
+      perTicketBudgetUsd: config.perTicketBudgetUsd,
       autonomy: { ...current.autonomy, ...policy },
     } as ProjectConfig;
     const at = new Date();

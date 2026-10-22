@@ -41,6 +41,18 @@ export function adminRoutes(app: App, ops: Operations) {
   app.openapi(
     route({
       method: "get",
+      path: "/v1/quota",
+      tag: "admin",
+      summary:
+        "Subscription quota per provider: limits, rolling usage and rate-limit cooldown (tickets wait, never fail)",
+      response: z.array(S.QuotaStatus),
+    }),
+    async (c) => c.json(await ops.getQuota(c.var.principal)),
+  );
+
+  app.openapi(
+    route({
+      method: "get",
       path: "/v1/keys",
       tag: "admin",
       summary: "List API keys",

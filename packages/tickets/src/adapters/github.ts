@@ -210,6 +210,19 @@ export class GitHubStore implements TicketStore {
     await this.#gh(["issue", "comment", id, "--body-file", "-"], body);
   }
 
+  async addLabel(id: string, label: string): Promise<void> {
+    if (!/^\d+$/.test(id)) throw new Error(`invalid issue id ${JSON.stringify(id)}`);
+    await this.#ensureLabels([label]);
+    await this.#gh(["issue", "edit", id, "--add-label", label]);
+  }
+
+  async removeLabel(id: string, label: string): Promise<void> {
+    if (!/^\d+$/.test(id)) throw new Error(`invalid issue id ${JSON.stringify(id)}`);
+    const issue = await this.#issue(id);
+    if (!issue?.labels.some((l) => l.name === label)) return;
+    await this.#gh(["issue", "edit", id, "--remove-label", label]);
+  }
+
   async link(from: string, to: string, type: LinkType): Promise<void> {
     if (!/^\d+$/.test(from)) throw new Error(`invalid issue id ${JSON.stringify(from)}`);
     const target = await this.#issue(to);

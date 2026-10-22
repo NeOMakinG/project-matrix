@@ -54,6 +54,23 @@ export const TrackerFailure = z
   })
   .openapi("TrackerFailure");
 
+export const QuotaStatus = z
+  .object({
+    provider: z.string(),
+    limits: z.object({
+      maxConcurrent: z.number(),
+      maxRunsPerHour: z.number(),
+      maxRunnerMinutesPer5h: z.number(),
+    }),
+    active: z.number(),
+    runsLastHour: z.number(),
+    runnerMinutes5h: z.number(),
+    cooldown: z
+      .object({ until: z.string(), failures: z.number(), reason: z.string(), at: z.string() })
+      .optional(),
+  })
+  .openapi("QuotaStatus");
+
 export const CreateProject = z
   .object({
     name: z.string().min(1).max(100),

@@ -49,6 +49,9 @@ function toWorkflow(r: typeof s.workflows.$inferSelect): WorkflowState {
     ...opt("leaseOwner", r.leaseOwner),
     ...opt("leaseExpiresAt", r.leaseExpiresAt),
     ...opt("reviewedTree", r.reviewedTree),
+    ...(r.generation ? { generation: r.generation } : {}),
+    ...opt("requeuedAt", r.requeuedAt),
+    ...(r.requeueCount ? { requeueCount: r.requeueCount } : {}),
   };
 }
 
@@ -295,6 +298,9 @@ export class PgStore implements Store {
         leaseOwner: state.leaseOwner ?? null,
         leaseExpiresAt: state.leaseExpiresAt ?? null,
         reviewedTree: state.reviewedTree ?? null,
+        generation: state.generation ?? 0,
+        requeuedAt: state.requeuedAt ?? null,
+        requeueCount: state.requeueCount ?? 0,
         version: state.version + 1,
         updatedAt: new Date(),
       })
@@ -668,6 +674,7 @@ export class PgStore implements Store {
         ...current,
         reviewLanes: config.reviewLanes,
         dailyBudgetUsd: config.dailyBudgetUsd,
+        perTicketBudgetUsd: config.perTicketBudgetUsd,
         autonomy: { ...current.autonomy, ...policy },
       } as ProjectConfig;
       const at = new Date();

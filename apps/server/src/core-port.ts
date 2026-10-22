@@ -2,6 +2,7 @@ import type {
   AutonomyMode,
   Actor as CoreActor,
   Phase,
+  QuotaStatus,
   Receipt,
   RunEvent,
   RunStatus,
@@ -271,6 +272,8 @@ export interface CorePort {
   getTrackerFailures?(
     projectId: string,
   ): Promise<{ ticketId?: string; operation: string; message: string; at: string }[]>;
+  /** Subscription quota state per provider (absent: the core runs without the quota guard). */
+  getQuota?(): Promise<QuotaStatus[]>;
   getGraph(projectId: string): Promise<ProductGraph>;
 
   startInit(projectId: string): Promise<InitSession>;

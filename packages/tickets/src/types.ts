@@ -73,4 +73,28 @@ export interface TicketStore {
   upsertComment?(id: string, key: string, body: string): Promise<void>;
   /** Optional: create tracker-side scoping the store relies on (e.g. a project label). */
   ensureScope?(): Promise<void>;
+  /** Optional: add one label to the ticket (created on the tracker when missing). */
+  addLabel?(id: string, label: string): Promise<void>;
+  /** Optional: remove one label from the ticket; a missing label is a no-op. */
+  removeLabel?(id: string, label: string): Promise<void>;
+  /**
+   * Optional: the ticket's comments, oldest first, already sanitized. `byMatrix` is true only for
+   * comments this Matrix instance authored (tracker identity AND Matrix's hidden marker).
+   */
+  listComments?(id: string): Promise<TicketComment[]>;
 }
+
+export interface TicketComment {
+  id: string;
+  body: string;
+  /** True for comments Matrix itself posted; callers must not feed them back into prompts. */
+  byMatrix: boolean;
+  author?: string;
+  createdAt?: string;
+}
+
+/** Hidden marker appended to every comment Matrix posts, so it can recognize its own comments. */
+export const MATRIX_COMMENT_MARKER = "<!-- matrix:bot -->";
+
+/** Label Matrix adds when it blocks a ticket and removes when the ticket is re-queued. */
+export const NEEDS_HUMAN_LABEL = "needs-human";

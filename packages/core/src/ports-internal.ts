@@ -1,4 +1,4 @@
-import type { Ticket, TicketStore } from "@matrix/tickets";
+import type { Ticket, TicketComment, TicketStore } from "@matrix/tickets";
 import type { DesignEvidence, DesignScope } from "./design.js";
 import type { HoldoutScenario } from "./holdout.js";
 import type { AutonomyMode, Phase, Receipt, RunEventKind } from "./ports.js";
@@ -19,6 +19,8 @@ export interface PhaseContext {
   project: ProjectConfig;
   workflow: WorkflowState;
   ticket: Ticket;
+  /** Human comments on the ticket (Matrix's own excluded), sanitized; empty when unsupported. */
+  ticketComments?: TicketComment[];
   tickets: TicketStore;
   runId: string;
   workdir: string;

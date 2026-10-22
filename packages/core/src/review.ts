@@ -41,16 +41,10 @@ export function pickReviewer(
   return pick;
 }
 
-export function lanePrompt(
-  lane: ReviewLane,
-  ticketTitle: string,
-  ticketBody: string,
-  baseBranch: string,
-): string {
+export function lanePrompt(lane: ReviewLane, ticket: string, baseBranch: string): string {
   return [
     `You are the ${lane} reviewer for this change. Review only; do not edit files.`,
-    `Ticket: ${ticketTitle}`,
-    ticketBody,
+    ticket,
     `Inspect the diff against ${baseBranch} (git diff ${baseBranch}...HEAD).`,
     `Focus: ${LANE_FOCUS[lane]}.`,
     "Severity: P1 = must fix before merge (bug, security issue, ADR violation, broken requirement); P2 = should fix; P3 = nit.",

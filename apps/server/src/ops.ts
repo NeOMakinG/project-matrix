@@ -580,6 +580,11 @@ export class Operations {
     )(async () => (await this.core.getTrackerFailures?.(projectId)) ?? []);
   }
 
+  /** Factory-wide: needs a key covering every project (it reveals cross-project usage). */
+  getQuota(p: Principal) {
+    return this.op(p, "read", "/quota")(async () => (await this.core.getQuota?.()) ?? []);
+  }
+
   getChecks(p: Principal, projectId: string) {
     return this.op(
       p,

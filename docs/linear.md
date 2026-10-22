@@ -83,7 +83,29 @@ MATRIX_LINEAR_LIVE=1 LINEAR_API_KEY=... bunx vitest run packages/tickets/src/ada
 `MATRIX_LINEAR_TEAM` / `MATRIX_LINEAR_LABEL` override the team (`NEO`) and label
 (`project:personal`).
 
+## Guardrails
+
+- **needs-human:** when Matrix blocks a ticket (retries or loops exhausted, tooling failure,
+  per-ticket cap) it adds the `needs-human` label and comments the reason. Move the issue back to
+  **Ready** (or, if it was blocked while in Ready, remove the label) to restart it in the same
+  phase with fresh attempt/loop budgets; Matrix removes the label on restart. At most 3 restarts
+  per ticket per UTC day (`maxRequeuesPerDay`), so a flapping board cannot loop the factory.
+- **Own comments:** every comment Matrix posts carries a hidden `<!-- matrix:bot -->` marker. A
+  comment counts as Matrix's only with that marker AND the API key's own identity, so a personal
+  key does not hide the human's comments, and a pasted marker does not hide a human's either.
+  Matrix never feeds its own comments back into prompts.
+- **Untrusted prompt input:** title, body and human comments reach agents sanitized and fenced in
+  `<<<UNTRUSTED TICKET CONTENT …>>>` markers the content cannot close.
+- **Subscription quota** (`MATRIX_QUOTA`, JSON, server-wide): per provider (`claude`, `codex`)
+  max concurrent runs (default 2), runs per rolling hour (20), runner minutes per rolling 5h
+  (300), plus runner minutes per ticket (240; a `perTicketUsd` budget applies instead once runs
+  report spend). A run failing with a 429 / usage-limit error puts its provider in cooldown
+  (1 min doubling to 1 h), keeps the ticket queued without spending an attempt, emits
+  `quota.cooldown`, and shows in `GET /v1/quota`. Example:
+  `MATRIX_QUOTA='{"providers":{"codex":{"maxConcurrent":1}}}'`.
+
 ## Not yet
 
-The `needs-human` label, webhooks (changes still arrive by polling), and retrying a failed status
-comment before the next workflow change are follow-ups.
+Webhooks (changes still arrive by polling) and retrying a failed status comment before the next
+workflow change are follow-ups. Quota cooldowns live in memory (a restart forgets them; the
+rolling limits still hold).

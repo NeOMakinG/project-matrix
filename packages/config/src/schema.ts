@@ -293,3 +293,39 @@ export type MatrixConfig = z.infer<typeof matrixConfig>;
 export type MatrixConfigInput = z.input<typeof matrixConfig>;
 export type Phase = z.infer<typeof phase>;
 export type AutonomyLevel = z.infer<typeof autonomyLevel>;
+
+const providerQuota = z
+  .object({
+    maxConcurrent: z.number().int().min(1).max(64),
+    maxRunsPerHour: z.number().int().min(1).max(10_000),
+    maxRunnerMinutesPer5h: z.number().positive().max(100_000),
+  })
+  .partial()
+  .strict();
+
+/**
+ * Factory-wide subscription quota guard (server env `MATRIX_QUOTA`, JSON). Providers are the
+ * subscriptions runs draw on (`claude`, `codex`, ...); omitted values keep the safe defaults.
+ */
+export const quotaConfig = z
+  .object({
+    defaults: providerQuota.optional(),
+    providers: z.record(z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/), providerQuota).optional(),
+    cooldown: z
+      .object({
+        baseMs: z.number().int().min(1_000).max(3_600_000),
+        maxMs: z
+          .number()
+          .int()
+          .min(1_000)
+          .max(24 * 3_600_000),
+      })
+      .partial()
+      .strict()
+      .optional(),
+    perTicketRunnerMinutes: z.number().positive().max(100_000).optional(),
+    maxRequeuesPerDay: z.number().int().min(0).max(50).optional(),
+  })
+  .strict();
+
+export type QuotaConfig = z.infer<typeof quotaConfig>;

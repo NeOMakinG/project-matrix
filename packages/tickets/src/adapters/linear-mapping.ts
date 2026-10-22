@@ -85,6 +85,8 @@ export function fromLinearPriority(p: number): Ticket["priority"] | undefined {
 /** Matrix-only fields (phase, blocked flag) ride in the same hidden body block as GitHub. */
 export interface LinearMeta extends MatrixMeta {
   blocked?: boolean;
+  /** Board column the issue was in when Matrix blocked it (a move away from it re-queues). */
+  blockedIn?: string;
   /** Comment ids of Matrix's live comments, by key (see `upsertComment`). */
   comments?: Record<string, string>;
 }
@@ -106,6 +108,9 @@ export function readBody(description: string | null): { text: string; meta: Line
   const safe: LinearMeta = {};
   if (typeof meta.phase === "string") safe.phase = meta.phase;
   if ((meta as LinearMeta).blocked === true) safe.blocked = true;
+  const blockedIn = (meta as LinearMeta).blockedIn;
+  if (safe.blocked && typeof blockedIn === "string" && blockedIn.length <= 80)
+    safe.blockedIn = blockedIn;
   const comments = safeComments((meta as LinearMeta).comments);
   if (comments) safe.comments = comments;
   return { text, meta: safe };
@@ -116,6 +121,7 @@ export function writeBody(text: string, meta: LinearMeta): string {
   const clean: LinearMeta = {
     ...(meta.phase ? { phase: meta.phase } : {}),
     ...(meta.blocked ? { blocked: true } : {}),
+    ...(meta.blocked && meta.blockedIn ? { blockedIn: meta.blockedIn } : {}),
     ...(comments ? { comments } : {}),
   };
   return joinBody(text, clean);

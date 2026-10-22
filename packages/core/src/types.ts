@@ -21,6 +21,12 @@ export interface WorkflowState {
   reviewedTree?: string;
   lastError?: string;
   nextAttemptAt?: Date;
+  /** Bumped each time a human re-queues a blocked ticket; part of the step key. */
+  generation?: number;
+  /** When a human last re-queued this ticket (per-ticket budgets count from here). */
+  requeuedAt?: Date;
+  /** Re-queues during the UTC day of `requeuedAt` (flapping guard). */
+  requeueCount?: number;
   version: number;
 }
 
@@ -68,6 +74,8 @@ export interface ProjectConfig {
   dailyBudgetUsd?: number;
   /** Reserved against the daily budget before dispatch, settled with the actual cost after. */
   estimatedRunUsd?: number;
+  /** Spend cap per ticket (since its last re-queue); only enforced when runs report spend. */
+  perTicketBudgetUsd?: number;
 }
 
 export type Severity = "P1" | "P2" | "P3";

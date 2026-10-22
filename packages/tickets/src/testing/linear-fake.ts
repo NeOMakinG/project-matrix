@@ -163,8 +163,24 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
         const issue = byUuid(v.id) as LinearIssue;
         const nodes = [...fake.comments.entries()]
           .filter(([, c]) => c.issueId === issue.id)
-          .map(([id, c]) => ({ id, body: c.body, user: { isMe: c.isMe !== false } }));
+          .map(([id, c]) => ({
+            id,
+            body: c.body,
+            createdAt: `2026-10-22T00:00:${id.replace(/\D/g, "").padStart(2, "0").slice(-2)}Z`,
+            user: { isMe: c.isMe !== false, displayName: c.isMe === false ? "ada" : "matrix" },
+          }));
         return { issue: { comments: { nodes } } };
+      }
+      case "MatrixIssueAddLabel":
+      case "MatrixIssueRemoveLabel": {
+        const issue = byUuid(v.id) as LinearIssue;
+        const label = [...labels.values()].find((l) => l.id === v.labelId);
+        if (!label) throw new Error("Entity not found: IssueLabel");
+        issue.labels.nodes = issue.labels.nodes.filter((l) => l.id !== label.id);
+        if (op === "MatrixIssueAddLabel")
+          issue.labels.nodes.push({ id: label.id, name: label.name });
+        const key = op === "MatrixIssueAddLabel" ? "issueAddLabel" : "issueRemoveLabel";
+        return { [key]: { success: true } };
       }
       case "MatrixCommentUpdate": {
         const comment = fake.comments.get(v.id);

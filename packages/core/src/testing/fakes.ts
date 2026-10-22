@@ -1,4 +1,11 @@
-import type { NewTicket, Ticket, TicketPatch, TicketQuery, TicketStore } from "@matrix/tickets";
+import type {
+  NewTicket,
+  Ticket,
+  TicketComment,
+  TicketPatch,
+  TicketQuery,
+  TicketStore,
+} from "@matrix/tickets";
 import type {
   PreparedWorkspace,
   Receipt,
@@ -59,6 +66,27 @@ export class FakeTicketStore implements TicketStore {
   async link() {}
   async ready() {
     return [...this.tickets.values()].filter((t) => t.status === "ready");
+  }
+  async addLabel(id: string, label: string) {
+    const t = this.tickets.get(id);
+    if (t && !t.labels.includes(label))
+      this.tickets.set(id, { ...t, labels: [...t.labels, label] });
+  }
+  async removeLabel(id: string, label: string) {
+    const t = this.tickets.get(id);
+    if (t) this.tickets.set(id, { ...t, labels: t.labels.filter((l) => l !== label) });
+  }
+  /** Comments humans wrote on the tracker (Matrix's own posts are `comments`). */
+  readonly humanComments: { id: string; body: string; author: string }[] = [];
+  async listComments(id: string): Promise<TicketComment[]> {
+    return [
+      ...this.comments
+        .filter((c) => c.id === id)
+        .map((c, i) => ({ id: `m${i}`, body: c.body, byMatrix: true })),
+      ...this.humanComments
+        .filter((c) => c.id === id)
+        .map((c, i) => ({ id: `h${i}`, body: c.body, author: c.author, byMatrix: false })),
+    ];
   }
 }
 

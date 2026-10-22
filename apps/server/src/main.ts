@@ -5,6 +5,7 @@ import { type CredentialSource, resolveCredential } from "@matrix/sandbox";
 import { hashToken, KeyStore } from "./auth/keys.js";
 import { createServer } from "./http/app.js";
 import { createFactory } from "./integration/factory.js";
+import { parseQuotaEnv } from "./integration/quota-config.js";
 import { parseRuntimeKind } from "./integration/runtime.js";
 import { PrivateStateOwner } from "./state-owner.js";
 
@@ -72,6 +73,7 @@ const factory = await createFactory({
   ...(env.MATRIX_DATABASE_URL ? { databaseUrl: env.MATRIX_DATABASE_URL } : {}),
   dataDir,
   host: env.MATRIX_NODE_NAME ?? "localhost",
+  ...(env.MATRIX_QUOTA ? { quota: parseQuotaEnv(env.MATRIX_QUOTA) } : {}),
   ...(env.MATRIX_GATEWAY_URL && gatewayKeyValue
     ? {
         gateway: {
