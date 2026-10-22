@@ -126,7 +126,11 @@ export function gatewayModels(
       });
       if (response.status >= 500) return "retry";
       if (!response.ok) return undefined;
-      const body = (await response.json()) as { data?: unknown };
+      const body = (await response.json().catch((error: unknown) => {
+        // A timed-out body read is retried; a malformed body is final.
+        if (error instanceof DOMException) throw error;
+        return {};
+      })) as { data?: unknown };
       if (!Array.isArray(body.data)) return undefined;
       return body.data
         .map((m) => (m && typeof m === "object" ? (m as { id?: unknown }).id : undefined))

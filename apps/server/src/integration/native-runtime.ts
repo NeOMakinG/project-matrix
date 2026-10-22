@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { availableParallelism, freemem, loadavg } from "node:os";
 import { basename, join } from "node:path";
@@ -358,7 +359,10 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
           `${opts.gatewayUrl.replace(/\/+$/, "").replace(/\/v1$/, "")}/v1`,
           await gatewayKey(),
         )()),
-    { cacheFile: join(opts.dataDir, "gateway-models.json") },
+    {
+      cacheFile: join(opts.dataDir, "gateway-models.json"),
+      cacheKey: createHash("sha256").update(opts.gatewayUrl).digest("hex"),
+    },
   );
   const runners = Object.fromEntries(
     NATIVE_RUNNERS.map((id) => [

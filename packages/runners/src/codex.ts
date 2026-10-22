@@ -100,7 +100,7 @@ export function codexParser(): EventParser {
         // events and then usually completes the turn: only an unrecovered error fails the run.
         const message =
           asString(event.message) ?? asString(asRecord(event.error)?.message) ?? "codex error";
-        const retrying = /^\s*Reconnecting\.{3}\s*\d+\/\d+/i.test(message);
+        const retrying = /^\s*Reconnecting(?:\.{3}|\u2026)\s*\d+\/\d+/i.test(message);
         if (!retrying) streamError = message;
         out.push({ kind: retrying ? "log" : "error", message: truncate(message) });
       }

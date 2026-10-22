@@ -39,24 +39,39 @@ describe("servedModels", () => {
 
   test("cold start with the gateway down is unavailable; unserved ids are refused, not deferred", async () => {
     let t = 0;
-    const { list } = lister([undefined, ["m1"]]);
+    const { list, calls } = lister([undefined, ["m1"]]);
     const served = servedModels(list, { now: () => t, retryMs: 1_000 });
-    expect(await served.ready("m1")).toMatch(/^cannot verify model m1: gateway unavailable/);
+    await expect(served.assert("m1")).rejects.toThrow(
+      /^cannot verify model m1: gateway unavailable/,
+    );
     t = 2_000;
-    expect(await served.ready("m1")).toBeNull();
+    await served.assert("m1");
     await expect(served.assert("other")).rejects.toThrow("is not served by the gateway");
     expect(await served.ready("other")).toBeNull();
+    // A fresh list is authoritative: no refetch per call for an unserved id.
+    expect(calls.n).toBe(2);
+  });
+
+  test("the preflight never waits on the gateway; its background fetch serves the next tick", async () => {
+    let release: (ids: string[]) => void = () => {};
+    const list = () => new Promise<string[]>((resolve) => (release = resolve));
+    const served = servedModels(list);
+    expect(await served.ready("m1")).toMatch(/gateway unavailable/);
+    release(["m1"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await served.ready("m1")).toBeNull();
   });
 
   test("a failed fetch opens a backoff window with no new gateway calls", async () => {
     let t = 0;
     const { list, calls } = lister([undefined]);
     const served = servedModels(list, { now: () => t, retryMs: 10_000 });
-    await served.ready("m1");
-    await served.ready("m1");
+    await served.assert("m1").catch(() => undefined);
+    await served.assert("m1").catch(() => undefined);
+    expect(await served.ready("m1")).toMatch(/gateway unavailable/);
     expect(calls.n).toBe(1);
     t = 10_001;
-    await served.ready("m1");
+    await served.assert("m1").catch(() => undefined);
     expect(calls.n).toBe(2);
   });
 
@@ -65,11 +80,25 @@ describe("servedModels", () => {
     dirs.push(dir);
     const cacheFile = join(dir, "gateway-models.json");
     let t = 1_000;
-    await servedModels(lister([["m1", "m2"]]).list, { now: () => t, cacheFile }).assert("m1");
-    expect(JSON.parse(await readFile(cacheFile, "utf8"))).toEqual({ at: 1_000, ids: ["m1", "m2"] });
+    const cacheKey = "gw-a";
+    await servedModels(lister([["m1", "m2"]]).list, { now: () => t, cacheFile, cacheKey }).assert(
+      "m1",
+    );
+    expect(JSON.parse(await readFile(cacheFile, "utf8"))).toEqual({
+      at: 1_000,
+      ids: ["m1", "m2"],
+      key: "gw-a",
+    });
     t = 3 * HOUR;
-    const restarted = servedModels(lister([undefined]).list, { now: () => t, cacheFile });
+    const restarted = servedModels(lister([undefined]).list, { now: () => t, cacheFile, cacheKey });
     expect(await restarted.ready("m2")).toBeNull();
+    // Another gateway never trusts this list.
+    const other = servedModels(lister([undefined]).list, {
+      now: () => t,
+      cacheFile,
+      cacheKey: "gw-b",
+    });
+    expect(await other.ready("m2")).toMatch(/gateway unavailable/);
   });
 });
 
@@ -103,5 +132,12 @@ describe("gatewayModels", () => {
     }) as unknown as typeof fetch;
     expect(await gatewayModels("http://gw/v1", "k", down)()).toBeUndefined();
     expect(n).toBe(2);
+    n = 0;
+    const malformed = (async () => {
+      n++;
+      return new Response("not json", { status: 200 });
+    }) as unknown as typeof fetch;
+    expect(await gatewayModels("http://gw/v1", "k", malformed)()).toBeUndefined();
+    expect(n).toBe(1);
   });
 });

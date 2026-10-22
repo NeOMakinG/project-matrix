@@ -15,6 +15,8 @@ export interface ServedModelsOptions {
   maxRetryMs?: number;
   /** Persists the last good list so a restart during a gateway outage keeps working. */
   cacheFile?: string;
+  /** Identifies the gateway (e.g. a URL hash, never a key): another gateway's cache is ignored. */
+  cacheKey?: string;
   now?: () => number;
 }
 
@@ -42,7 +44,9 @@ export function servedModels(list: ModelLister, o: ServedModelsOptions = {}) {
         const raw = JSON.parse(await readFile(o.cacheFile, "utf8")) as {
           at?: unknown;
           ids?: unknown;
+          key?: unknown;
         };
+        if ((raw.key ?? undefined) !== o.cacheKey) return;
         if (typeof raw.at !== "number" || raw.at > now() || !Array.isArray(raw.ids)) return;
         const ids = raw.ids.filter((id): id is string => typeof id === "string");
         if (!good || raw.at > good.at) good = { at: raw.at, ids: new Set(ids) };
@@ -54,7 +58,7 @@ export function servedModels(list: ModelLister, o: ServedModelsOptions = {}) {
   const persist = async (file: string, at: number, ids: Set<string>) => {
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    await writeFile(tmp, JSON.stringify({ at, ids: [...ids] }), { mode: 0o600 });
+    await writeFile(tmp, JSON.stringify({ at, ids: [...ids], key: o.cacheKey }), { mode: 0o600 });
     await rename(tmp, file);
   };
 
@@ -86,31 +90,39 @@ export function servedModels(list: ModelLister, o: ServedModelsOptions = {}) {
       `cannot verify model ${model}: gateway unavailable (GET /v1/models did not answer and no model list from the last ${Math.round(stale / HOUR_MS)} h is cached)`,
     );
 
-  async function check(model: string): Promise<void> {
+  /** Verdict on `model`; `blocking` lets the caller await a needed gateway fetch. */
+  async function verdict(model: string, blocking: boolean): Promise<void> {
     await load();
     const cached = usable(true);
+    const fresh = usable(false);
     if (cached?.has(model)) {
       // Stale but usable: answer now, revalidate in the background (unless backing off).
-      if (!usable(false) && !inflight && now() >= retryAt) void refresh();
+      if (!fresh && !inflight && now() >= retryAt) void refresh();
       return;
     }
-    // Unknown id or no usable list: ask the gateway (a failure window short-circuits).
-    if (inflight) await inflight;
-    else if (now() >= retryAt) await refresh();
+    // A fresh list is authoritative until its TTL: no refetch per call for an unserved id.
+    if (fresh) throw new Error(`model ${model} is not served by the gateway (GET /v1/models)`);
+    // Unknown id on an old list, or no usable list: ask the gateway (backoff short-circuits).
+    const pending = inflight ?? (now() >= retryAt ? refresh() : undefined);
+    if (!blocking || !pending) throw unavailable(model);
+    await pending;
     const ids = usable(true);
-    if (!ids) throw unavailable(model);
-    if (ids.has(model)) return;
+    if (ids?.has(model)) return;
     // Missing from an old list may just be a newly added model: unverifiable, not refused.
-    if (!usable(false)) throw unavailable(model);
+    if (!ids || !usable(false)) throw unavailable(model);
     throw new Error(`model ${model} is not served by the gateway (GET /v1/models)`);
   }
 
   return {
-    assert: check,
-    /** Dispatch preflight: the reason a model phase should wait, or null to go ahead. */
+    /** Phase start: may wait for one gateway fetch when nothing usable is cached. */
+    assert: (model: string) => verdict(model, true),
+    /**
+     * Dispatch preflight, never waits on the gateway (the tick loop is serial): the reason a model
+     * phase should wait, or null to go ahead. A needed fetch runs in the background.
+     */
     async ready(model: string): Promise<string | null> {
       try {
-        await check(model);
+        await verdict(model, false);
         return null;
       } catch (error) {
         // An unserved id is a configuration error the phase reports; only outages wait.
