@@ -177,9 +177,24 @@ export const modelsConfig = z.object({
   aliases: z.record(z.string().min(1), z.string().min(1)).default({}),
 });
 
+/** Linear tracker settings. Holds the NAME of the host env var with the API key, never the key. */
+export const linearTickets = z.object({
+  teamKey: z.string().regex(/^[A-Z][A-Z0-9]{0,9}$/),
+  projectLabel: z.string().min(1).max(80),
+  readyState: z.string().min(1).max(80).default("Ready"),
+  apiKeyEnv: z
+    .string()
+    .regex(/^[A-Z_][A-Z0-9_]*$/, "must be an env var name, not a key")
+    .default("LINEAR_API_KEY"),
+});
+
+export type LinearTicketsConfig = z.infer<typeof linearTickets>;
+
 export const processConfig = z.object({
   disposableArtifacts: z.array(z.string().min(1)).optional(),
   tickets: z.enum(["beads", "github", "linear", "markdown"]),
+  /** Required by the server when `tickets` is "linear"; the init interview does not ask yet. */
+  linear: linearTickets.optional(),
   adrDir: z.string().default("docs/adr"),
   branching: z.enum(["trunk-with-prs", "gitflow"]),
   autonomy: z.object({
