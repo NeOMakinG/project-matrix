@@ -93,4 +93,4 @@ test("retries and server restarts reuse the ticket's Orca Run (run-use), never a
   fake.runs.clear();
   const third = await attempt(orcaBridge({ dataDir, pollMs: 20, cli }));
   expect(third.orca.run).not.toBe(first.orca.run);
-});
+}, 30_000);

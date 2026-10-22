@@ -165,6 +165,7 @@ describe("orca workspace", () => {
     expect(isTicketBranch("refs/heads/main", "main")).toBe(false);
     expect(isTicketBranch("refs/heads/a/b/matrix-NEO-7", "a/b/matrix-NEO-7")).toBe(false);
     expect(isTicketBranch("refs/heads/matrix-NEO-7")).toBe(true);
+    expect(isTicketBranch("refs/heads/matrix-NEO-8", "NeOMakinG/matrix-NEO-7")).toBe(false);
     expect(isTicketBranch("refs/heads/matrix/NEO-7")).toBe(true);
   });
 
@@ -264,6 +265,19 @@ describe("orca launcher", () => {
       expect.arrayContaining(["--id", first.runId, "--from", second.coordinator]),
     );
     await session.close();
+  });
+
+  test("close() during open() neither resurrects the session nor leaks the coordinator", async () => {
+    const fake = new FakeOrca();
+    const cli = new OrcaCli({ binary: BIN, executor: fake.executor() });
+    const session = new OrcaTicketSession(cli, "/tmp/matrix-NEO-9", "NEO-9 · p", 20);
+    const opening = session.open();
+    await session.close();
+    await expect(opening).rejects.toThrow(/closed while opening/);
+    expect(session.ref).toBeUndefined();
+    const coordinator = fake.calls.find((c) => c[0] === "terminal" && c[1] === "create");
+    expect(coordinator).toBeDefined();
+    expect(fake.closed.size).toBe(1);
   });
 
   test("worker questions get the fixed unattended answer", async () => {

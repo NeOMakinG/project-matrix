@@ -126,10 +126,17 @@ export const NATIVE_RUNNERS = ["codex", "claude-code"] as const satisfies readon
 /** Gateway model list, cached briefly, used to refuse ids the gateway does not serve. */
 export function servedModels(list: ModelLister, ttlMs = 60_000, now = () => Date.now()) {
   let cache: { at: number; ids: Set<string> } | undefined;
+  let inflight: Promise<string[] | undefined> | undefined;
   return {
     async assert(model: string): Promise<void> {
       if (!cache || now() - cache.at > ttlMs || !cache.ids.has(model)) {
-        const ids = await list().catch(() => undefined);
+        // Parallel misses share one fetch.
+        inflight ??= list()
+          .catch(() => undefined)
+          .finally(() => {
+            inflight = undefined;
+          });
+        const ids = await inflight;
         if (!ids)
           throw new FactoryToolingError(
             `cannot verify model ${model}: the gateway model list (GET /v1/models) did not answer`,

@@ -123,6 +123,9 @@ export const claudeCodeDefinition: CliRunnerDefinition = {
         ANTHROPIC_BASE_URL: opts.gateway.anthropicBaseUrl,
         // Bearer auth to the gateway (the broker swaps the run token for the real key).
         ANTHROPIC_AUTH_TOKEN: opts.gateway.apiKey,
+        // Background/subagent calls use the same served model, never an id the gateway lacks.
+        ANTHROPIC_SMALL_FAST_MODEL: req.model,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: req.model,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         DISABLE_AUTOUPDATER: "1",
       },

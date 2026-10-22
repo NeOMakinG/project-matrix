@@ -49,9 +49,7 @@ describe("gateway model check", () => {
     );
     expect(requests).toEqual(["http://127.0.0.1:9000/v1/models"]);
     expect(status).toBe(present ? 0 : 2);
-    expect(lines[0]).toBe(
-      `claude-opus-4-7 -> opus-gateway: ${present ? "available" : "MISSING"}`,
-    );
+    expect(lines[0]).toBe(`claude-opus-4-7 -> opus-gateway: ${present ? "available" : "MISSING"}`);
   });
 
   test("schema preserves phase defaults, tiers, threshold and aliases; rejects bad runners", () => {

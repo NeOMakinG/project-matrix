@@ -121,6 +121,14 @@ export class OrcaTicketSession {
       const coordinator = str(record(created.terminal).handle);
       if (!coordinator) throw new OrcaCliError("orca terminal create returned no handle");
       const runId = (await this.#reuseRun(coordinator)) ?? (await this.#createRun(coordinator));
+      if (this.#closed) {
+        // close() ran meanwhile: do not resurrect the session or leak the coordinator.
+        await this.#cli
+          .call(["terminal", "close", "--terminal", coordinator, "--json"])
+          .catch(() => undefined);
+        await this.#memory?.delete(this.worktree).catch(() => undefined);
+        throw new OrcaCliError("Orca ticket session closed while opening");
+      }
       this.#runId = runId;
       this.#ref = { runId, coordinator, worktree: this.worktree };
       return this.#ref;
@@ -272,6 +280,7 @@ export class OrcaTicketSession {
   async close(): Promise<void> {
     this.#closed = true;
     this.#waiters.clear();
+    await this.#opening?.catch(() => undefined);
     await this.#pumping;
     const ref = this.#ref;
     this.#ref = undefined;

@@ -166,6 +166,10 @@ describe("claude-code runner", () => {
       ANTHROPIC_AUTH_TOKEN: "mxr_test123",
     });
     expect(call?.env).not.toHaveProperty("ANTHROPIC_API_KEY");
+    expect(call?.env).toMatchObject({
+      ANTHROPIC_SMALL_FAST_MODEL: "claude-fable-5-1",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-fable-5-1",
+    });
     expect(Object.keys(call?.env ?? {})).not.toContain("HOME");
   });
 

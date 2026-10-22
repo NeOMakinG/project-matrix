@@ -66,18 +66,20 @@ async function readSource(root: string, path: string): Promise<Buffer> {
 /** GitPort for agent-touched worktrees: host-owned gitdir only, hardened git, no symlink following. */
 /**
  * Branches the implementation commit gate accepts: `matrix/<ticket>` (native worktrees),
- * `matrix-<ticket>` (Orca), or Orca's `branchPrefix: git-username` form `<user>/matrix-<ticket>`
- * when it is exactly the branch the host recorded at prepare time. Worktrees recorded before the
+ * `matrix-<ticket>` (Orca) or Orca's `branchPrefix: git-username` form `<user>/matrix-<ticket>`,
+ * and, when the host recorded the branch at prepare time, only exactly that one. Worktrees recorded before the
  * branch was (no `recorded`) accept the prefixed form only when the host-owned worktree path ends
  * in that same `matrix-<ticket>` (Orca names the checkout directory after `--name`).
  */
 export function isTicketBranch(ref: string, recorded?: string, workdir?: string): boolean {
   if (!ref.startsWith("refs/heads/")) return false;
   const name = ref.slice("refs/heads/".length);
-  if (name.startsWith("matrix/") || name.startsWith("matrix-")) return true;
   const prefixed = /^[^/]+\/(matrix-[^/]+)$/.exec(name);
-  if (!prefixed) return false;
+  const ticket = name.startsWith("matrix/") || name.startsWith("matrix-") || prefixed !== null;
+  if (!ticket) return false;
+  // A recorded branch pins the gate to exactly that name.
   if (recorded !== undefined) return name === recorded;
+  if (!prefixed) return true;
   return workdir !== undefined && basename(workdir) === prefixed[1];
 }
 
