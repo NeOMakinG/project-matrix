@@ -25,6 +25,7 @@ interface Entry {
   latest?: WorkflowState;
   links: StatusLink[];
   orca?: OrcaStatusRef | undefined;
+  pullRequest?: StatusLink | undefined;
   timer?: ReturnType<typeof setTimeout> | undefined;
   running?: Promise<void> | undefined;
   dirty: boolean;
@@ -116,6 +117,12 @@ export class TrackerSync {
       entry.latest = w;
       entry.retries = 0;
       this.#schedule(entry);
+    } else if (event.type === "pull_request.opened") {
+      const entry = this.#entry(event.projectId, event.ticketId);
+      const link = safeLink(event.branch, event.url);
+      if (!link || entry.pullRequest?.url === link.url) return;
+      entry.pullRequest = link;
+      this.#schedule(entry);
     } else if (event.type === "run.started") {
       this.#runs.set(event.runId, `${event.projectId}\u0000${event.ticketId}`);
       if (this.#runs.size > 1_000) this.#runs.delete(this.#runs.keys().next().value as string);
@@ -198,7 +205,7 @@ export class TrackerSync {
         this.#failed(entry, "setPhase", error);
       }
     }
-    const body = renderStatus(w, entry.links, entry.orca);
+    const body = renderStatus(w, entry.links, entry.orca, entry.pullRequest);
     if (store.upsertComment && entry.sentBody !== body) {
       try {
         await store.upsertComment(

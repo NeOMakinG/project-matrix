@@ -181,3 +181,84 @@ deploy a reviewed checkout/dependencies and restart. Schema migrations belong to
 the eventual durable integration; do not invent a `matrix migrate` command. Keep
 rollback checkout and restore evidence. Re-run doctor and operator runtime QA;
 passing unit tests does not mark PR #27/#26/#24 ready.
+
+## Existing repos (draft PRs, human merge)
+
+Matrix can work on a repo that already exists on the host (for example `~/Projects/wayline`)
+instead of creating an empty one. The feature is off until the operator allowlists where such
+repos may live:
+
+```sh
+MATRIX_REPO_ROOTS=/home/neo/Projects   # colon-separated absolute dirs; empty = off
+MATRIX_GH=/usr/bin/gh                  # optional; gh must be authenticated on the host
+```
+
+Register with an admin key (`POST /v1/projects`; the API key is never sent, only the env var NAME):
+
+```json
+{
+  "name": "Travel Journal",
+  "workspace": "orca",
+  "repo": {
+    "path": "/home/neo/Projects/wayline",
+    "baseBranch": "main",
+    "remote": "origin",
+    "editablePaths": ["app", "docs", "designs"]
+  },
+  "tickets": {
+    "kind": "linear",
+    "linear": { "teamKey": "NEO", "projectLabel": "project:travel-journal", "apiKeyEnv": "LINEAR_API_KEY" }
+  },
+  "models": {
+    "implement": { "runner": "claude-code", "model": "claude-opus-4-7" },
+    "review": { "runner": "codex", "model": "gpt-6-sol" },
+    "qa": { "runner": "codex", "model": "gpt-6-sol" }
+  }
+}
+```
+
+The server checks that the real path (symlinks resolved) sits under `MATRIX_REPO_ROOTS`, is a
+canonical git repo (a `.git` directory, not a worktree), is not already registered, that the base
+branch exists and that the remote points at `github.com`. With `MATRIX_RUNTIME=orca` it also
+registers the repo in Orca (`orca repo add --path`) when missing. Only `linear` or `github`
+trackers are accepted, and nothing is written into the repo: no init interview, no config files,
+no tech-watch digests. The project config lives in the Matrix database.
+
+- **Checks**: `checks` is optional. By default Matrix reads the committed `package.json` on the
+  base branch and runs its `typecheck`, `lint` and `test` scripts with the package manager named
+  by the lockfile (`bun`, `pnpm`, `yarn`, else `npm`). No scripts means no checks: set them.
+- **Editable paths**: `repo.editablePaths` lists what agents may change (here `app/`, `docs/`,
+  `designs/`). Default: every tracked top-level directory on the base branch plus the usual
+  manifests (`package.json`, lockfiles, tsconfig, ...). Dot paths (`.git`, `.github/workflows`,
+  `.env`, `.matrix`) stay denied whatever the list says. Change it with
+  `PATCH /v1/projects/{id}` and `{"repo": {"editablePaths": [...]}}`.
+- **Matrix artifacts stay host-side**: the derived code graph is written to
+  `$MATRIX_DATA_DIR/projects/<id>/graph/`, never committed; the publisher refuses to push a run
+  branch that touches `.matrix/` or `.github/workflows/`.
+- **Models**: per phase (`spike`, `design`, `implement`, `review`, `qa`, plus
+  `reviewerFallbacks`). Review must use a different model than implement. When the gateway
+  answers `GET /v1/models`, unknown ids are rejected: use gateway ids (for example
+  `claude-opus-4-7` for Opus 5.5, `claude-sonnet-5-5`, `gpt-6-sol`). Setting `implement` or `spike` drops the
+  size tiers.
+- **Later changes**: `PATCH /v1/projects/{id}` with any of `repo.editablePaths`, `tickets`,
+  `checks`, `models`.
+
+### How a run ends
+
+After checks, review and QA pass, and before the merge approval is requested, the server
+(host-side, never in a sandbox) pushes exactly the QA-validated commit to
+`matrix-<ticket>-<slug>` on `https://github.com/<owner>/<repo>.git`, then opens a **draft** PR
+with `gh pr create --draft`. The PR body has the summary, evidence links, `Linear: NEO-n` and a
+Matrix footer. Ticket text is treated as untrusted: hidden characters stripped, `@` mentions,
+`#n` refs, links, images and closing keywords neutralized. The PR link goes into the live Linear
+status comment and the issue sits in **Awaiting merge**. PRs are recorded in
+`$MATRIX_DATA_DIR/pull-requests.json`.
+
+Matrix never merges, never force-pushes and never pushes the base branch. Merge the PR on
+GitHub, then approve the merge in Matrix: the merge phase only checks that the PR was merged at
+the validated head and finishes the ticket (approving earlier just waits again). A PR merged with
+extra commits blocks the ticket for a human. Retries reuse the open PR for the branch; a diverged
+branch or an already merged/closed PR moves to `matrix-<ticket>-<slug>-2`, and so on. Pushes are
+refused when the repo config has `url.*.insteadOf` rewrites, and the secret gate scans the pushed
+range first. Push or `gh` failures never fail the workflow: they show up under
+`/v1/projects/{id}/tracker/failures` and are retried every 5 minutes.

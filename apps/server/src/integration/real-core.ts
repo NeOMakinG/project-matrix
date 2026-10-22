@@ -22,6 +22,7 @@ import {
   type CheckResult,
   CoreError,
   type CorePort,
+  type CreateProjectInput,
   type Incident,
   type IncidentStatus,
   type InitSession,
@@ -33,11 +34,19 @@ import {
   type Project,
   type Run,
   type Adr as ServerAdr,
+  type UpdateProjectInput,
 } from "../core-port.js";
 import { PrivateState } from "../private-state.js";
 import type { PrivateStateOwner } from "../state-owner.js";
+import {
+  defaultEditablePaths,
+  detectChecks,
+  resolveExistingRepo,
+  validateEditablePaths,
+} from "./existing-repo.js";
 import { type FinalizeJournal, finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
+import { applyModelPlan, assertKnownModels, type ModelLister } from "./model-plan.js";
 import { TicketSnapshotLock } from "./ticket-snapshot-lock.js";
 import {
   DEFAULT_TICKETS,
@@ -78,6 +87,13 @@ export interface RealCoreOptions {
   ticketsFor?: (project: StoredProject) => TicketStore;
   /** Recent tracker write failures (see `getTrackerFailures`). */
   trackerHealth?: TrackerHealth;
+  /** `MATRIX_REPO_ROOTS`: where existing repos may be registered from; empty = feature off. */
+  repoRoots?: string[];
+  /** Runtime-side check (and registration) of an existing repo, e.g. Orca's repo list. */
+  verifyRepo?: (repoPath: string) => Promise<void>;
+  /** Model ids the gateway serves (model plans are validated against it when reachable). */
+  listModels?: ModelLister;
+  gitBinary?: string;
 }
 
 /** Maps core's plain errors onto the server's error codes. */
@@ -234,14 +250,9 @@ export class RealCore implements CorePort {
     return project ? toProject(project) : null;
   }
 
-  async createProject(input: {
-    name: string;
-    description: string;
-    workspace: Project["workspace"];
-    tickets?: TicketSettings;
-    checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
-  }): Promise<Project> {
+  async createProject(input: CreateProjectInput): Promise<Project> {
     this.o.stateOwner?.assertOwned();
+    if (input.repo) return this.registerRepo({ ...input, repo: input.repo });
     const id = randomUUID();
     const repoPath = join(this.o.projectsRoot, id);
     await mkdir(this.o.projectsRoot, { recursive: true });
@@ -274,12 +285,114 @@ export class RealCore implements CorePort {
         review: { runner: "codex", model: "fake-reviewer" },
       };
     if (input.checks) config.checks = input.checks;
+    if (input.models) {
+      await assertKnownModels(input.models, this.o.listModels);
+      applyModelPlan(config, input.models);
+    }
     await this.o.store.upsertProject(config);
     // Remote trackers (GitHub, Linear) may already hold issues: hydrate them on first use.
     const remote =
       config.matrix?.tickets.kind === "github" || config.matrix?.tickets.kind === "linear";
     if (!remote && !this.o.ticketsFor) this.hydratedTickets.add(id);
     return toProject(config);
+  }
+
+  /**
+   * Registers a repo that already exists on the host. Validated (allowlisted real path, canonical
+   * git repo, base branch, GitHub remote, runtime registration), then recorded host-side only:
+   * no init interview and nothing written into the repo. Runs end with a draft PR.
+   */
+  private async registerRepo(
+    input: CreateProjectInput & { repo: NonNullable<CreateProjectInput["repo"]> },
+  ): Promise<Project> {
+    return this.mutate("register-repo", async () => {
+      const tickets = input.tickets;
+      if (!tickets || (tickets.kind !== "linear" && tickets.kind !== "github"))
+        throw new CoreError(
+          "invalid_request",
+          "existing repos need a remote tracker (tickets.kind linear or github): Matrix writes nothing into the repo",
+        );
+      const git = this.o.gitBinary ? { gitBinary: this.o.gitBinary } : {};
+      const registered = (await this.o.store.listProjects()).map((p) => p.repoPath);
+      const repo = await resolveExistingRepo(input.repo, this.o.repoRoots ?? [], registered, git);
+      const own = await realpath(this.o.projectsRoot).catch(() => resolve(this.o.projectsRoot));
+      if (repo.path === own || repo.path.startsWith(`${own}/`))
+        throw new CoreError("invalid_request", "repos Matrix created cannot be registered again");
+      if (input.models) await assertKnownModels(input.models, this.o.listModels);
+      await this.o.verifyRepo?.(repo.path);
+      this.o.stateOwner?.assertOwned();
+      const id = randomUUID();
+      const config = newProjectConfig({
+        id,
+        name: input.name,
+        repoPath: repo.path,
+        host: this.o.host,
+        meta: {
+          description: input.description,
+          workspace: input.workspace,
+          tickets,
+          createdAt: new Date().toISOString(),
+          repo: { external: true, remote: repo.remote, github: repo.github },
+        },
+      });
+      config.baseBranch = repo.baseBranch;
+      // Matrix stops at merge: the human merges the draft PR on GitHub.
+      config.lastPhase = "merge";
+      config.checks = input.checks ?? (await detectChecks(repo, git));
+      const editablePaths = input.repo.editablePaths
+        ? validateEditablePaths(input.repo.editablePaths)
+        : await defaultEditablePaths(repo, git);
+      if (config.matrix?.repo) config.matrix.repo.editablePaths = editablePaths;
+      if (this.o.fakeRuntime)
+        config.models = {
+          implement: { runner: "claude-code", model: "fake-implementer" },
+          review: { runner: "codex", model: "fake-reviewer" },
+        };
+      if (input.models) applyModelPlan(config, input.models);
+      await this.o.store.upsertProject(config);
+      return toProject(config);
+    });
+  }
+
+  /** Tracker, checks and model plan after registration (host-side config only). */
+  async updateProject(projectId: string, patch: UpdateProjectInput): Promise<Project> {
+    return this.mutate(`project:${projectId}`, async () => {
+      const current = await this.config(projectId);
+      const external = Boolean(current.matrix?.repo);
+      if (patch.tickets) {
+        if (external && patch.tickets.kind !== "linear" && patch.tickets.kind !== "github")
+          throw new CoreError(
+            "invalid_request",
+            "existing repos need tickets.kind linear or github",
+          );
+        if (!external && patch.tickets.kind !== current.matrix?.tickets.kind)
+          throw new CoreError(
+            "invalid_request",
+            "a Matrix-created repo cannot switch tracker kind after creation",
+          );
+      }
+      if (patch.repo?.editablePaths && !external)
+        throw new CoreError("invalid_request", "editablePaths only applies to existing repos");
+      const editable = patch.repo?.editablePaths
+        ? validateEditablePaths(patch.repo.editablePaths)
+        : undefined;
+      if (patch.models) await assertKnownModels(patch.models, this.o.listModels);
+      const config = structuredClone(await this.config(projectId));
+      if (patch.tickets && config.matrix)
+        config.matrix = { ...config.matrix, tickets: patch.tickets };
+      if (editable && config.matrix?.repo) config.matrix.repo.editablePaths = editable;
+      if (patch.checks)
+        config.checks = patch.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] }));
+      if (patch.models) applyModelPlan(config, patch.models);
+      this.o.stateOwner?.assertOwned();
+      await this.o.store.upsertProject(config);
+      if (patch.tickets) {
+        this.ticketStores.delete(projectId);
+        this.scopedTickets.delete(projectId);
+        this.hydratedTickets.delete(projectId);
+      }
+      return toProject(config);
+    });
   }
 
   async getProjectPolicy(projectId: string) {
@@ -602,6 +715,11 @@ export class RealCore implements CorePort {
 
   async startInit(projectId: string): Promise<InitSession> {
     const project = await this.config(projectId);
+    if (project.matrix?.repo)
+      throw new CoreError(
+        "invalid_state",
+        "existing repos skip the init interview: configure them with PATCH /v1/projects/{id}",
+      );
     this.o.stateOwner?.assertOwned();
     const session: InitSession = {
       id: randomUUID(),

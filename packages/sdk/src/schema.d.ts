@@ -181,14 +181,14 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/v1/projects/{projectId}/tracker/failures": {
+  "/v1/projects/{projectId}": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** Recent ticket-tracker write failures (newest first); workflows never fail on them */
+    /** Get a project */
     get: {
       parameters: {
         query?: never;
@@ -206,7 +206,7 @@ export interface paths {
             [name: string]: unknown;
           };
           content: {
-            "application/json": components["schemas"]["TrackerFailure"][];
+            "application/json": components["schemas"]["Project"];
           };
         };
         /** @description Error */
@@ -270,17 +270,97 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    patch?: never;
+    /** Update a project's tracker, checks or per-phase model plan (host-side config) */
+    patch: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          projectId: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          "application/json": components["schemas"]["UpdateProject"];
+        };
+      };
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Project"];
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
     trace?: never;
   };
-  "/v1/projects/{projectId}": {
+  "/v1/projects/{projectId}/tracker/failures": {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    /** Get a project */
+    /** Recent ticket-tracker write failures (newest first); workflows never fail on them */
     get: {
       parameters: {
         query?: never;
@@ -298,7 +378,7 @@ export interface paths {
             [name: string]: unknown;
           };
           content: {
-            "application/json": components["schemas"]["Project"];
+            "application/json": components["schemas"]["TrackerFailure"][];
           };
         };
         /** @description Error */
@@ -3955,6 +4035,42 @@ export interface components {
         [key: string]: components["schemas"]["AutonomyMode"];
       };
       createdAt: string;
+      /** @description Set for an existing repo registered on the host */
+      repo?: {
+        /** @enum {boolean} */
+        external: true;
+        baseBranch: string;
+        remote: string;
+        github: string;
+        editablePaths: string[];
+      };
+      /** @description Effective model per model-driven phase */
+      models?: {
+        spike?: {
+          runner: string;
+          model: string;
+        };
+        design?: {
+          runner: string;
+          model: string;
+        };
+        implement?: {
+          runner: string;
+          model: string;
+        };
+        review?: {
+          runner: string;
+          model: string;
+        };
+        qa?: {
+          runner: string;
+          model: string;
+        };
+      };
+      checks?: {
+        kind: string;
+        cmd: string[];
+      }[];
     };
     /** @enum {string} */
     AutonomyMode: "human" | "gated" | "autonomous";
@@ -3987,6 +4103,8 @@ export interface components {
         kind: "typecheck" | "lint" | "test" | "adr-check";
         cmd: string[];
       }[];
+      repo?: components["schemas"]["ExistingRepo"];
+      models?: components["schemas"]["ModelPlan"];
     };
     LinearTickets: {
       teamKey: string;
@@ -3994,6 +4112,52 @@ export interface components {
       readyState?: string;
       /** @description Host env var NAME holding the key; default LINEAR_API_KEY */
       apiKeyEnv?: string;
+    };
+    /** @description Register an existing host repo instead of creating an empty one */
+    ExistingRepo: {
+      /** @description Absolute host path under MATRIX_REPO_ROOTS */
+      path: string;
+      /** @default main */
+      baseBranch: string;
+      /**
+       * @description GitHub remote draft PRs are opened on
+       * @default origin
+       */
+      remote: string;
+      /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
+      editablePaths?: string[];
+    };
+    ModelPlan: {
+      spike?: components["schemas"]["PhaseModel"];
+      design?: components["schemas"]["PhaseModel"];
+      implement?: components["schemas"]["PhaseModel"];
+      review?: components["schemas"]["PhaseModel"];
+      qa?: components["schemas"]["PhaseModel"];
+      reviewerFallbacks?: components["schemas"]["PhaseModel"][];
+    };
+    PhaseModel: {
+      /** @enum {string} */
+      runner: "claude-code" | "codex" | "opencode";
+      model: string;
+    };
+    UpdateProject: {
+      repo?: {
+        /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
+        editablePaths?: string[];
+      };
+      tickets?: {
+        /** @enum {string} */
+        kind: "beads" | "markdown" | "github" | "linear";
+        repo?: string;
+        linear?: components["schemas"]["LinearTickets"];
+      };
+      /** @description Check commands run in the sandbox (argv, no shell) */
+      checks?: {
+        /** @enum {string} */
+        kind: "typecheck" | "lint" | "test" | "adr-check";
+        cmd: string[];
+      }[];
+      models?: components["schemas"]["ModelPlan"];
     };
     TrackerFailure: {
       ticketId?: string;

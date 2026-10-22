@@ -18,6 +18,7 @@ import {
   type CheckResult,
   CoreError,
   type CorePort,
+  type CreateProjectInput,
   type Incident,
   type IncidentStatus,
   type InitSession,
@@ -28,6 +29,7 @@ import {
   type ProductGraph,
   type Project,
   type Run,
+  type UpdateProjectInput,
 } from "./core-port.js";
 
 const now = () => new Date().toISOString();
@@ -86,20 +88,32 @@ export class MemoryCore implements CorePort {
     return this.projects.get(id) ?? null;
   }
 
-  async createProject(input: {
-    name: string;
-    description: string;
-    workspace: Project["workspace"];
-  }) {
+  async createProject(input: CreateProjectInput) {
+    if (input.repo)
+      throw new CoreError("invalid_request", "existing repos need the native or orca runtime");
     const project: Project = {
       id: randomUUID(),
-      ...input,
+      name: input.name,
+      description: input.description,
+      workspace: input.workspace,
       autonomy: defaultAutonomy(),
       createdAt: now(),
     };
     this.projects.set(project.id, project);
     this.tickets.set(project.id, []);
     return project;
+  }
+
+  async updateProject(projectId: string, patch: UpdateProjectInput) {
+    const project = this.project(projectId);
+    const { reviewerFallbacks: _fallbacks, ...models } = patch.models ?? {};
+    const updated: Project = {
+      ...project,
+      ...(patch.checks ? { checks: patch.checks.map((c) => ({ ...c, cmd: [...c.cmd] })) } : {}),
+      ...(patch.models ? { models: { ...project.models, ...models } } : {}),
+    };
+    this.projects.set(projectId, updated);
+    return updated;
   }
 
   async setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode) {

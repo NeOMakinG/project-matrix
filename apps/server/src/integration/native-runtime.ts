@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
 import { availableParallelism, freemem, loadavg } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import {
   FactoryToolingError,
@@ -11,6 +12,7 @@ import {
   type RunnerId,
   type Sandbox,
 } from "@matrix/core";
+import { graphArtifacts } from "@matrix/graph";
 import { architectureGates } from "@matrix/rules";
 import { createRunner } from "@matrix/runners";
 import {
@@ -27,11 +29,13 @@ import {
 import {
   NativeWorkspace,
   OrcaWorkspace,
+  safeSegment,
   TrustedWorktrees,
   WorktreeGitPort,
 } from "@matrix/workspace";
 import type { PrivateStateOwner } from "../state-owner.js";
 import { derivedGraphHandover } from "./derived-graph.js";
+import type { StoredProject } from "./mapping.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
 import { type OrcaRuntimeBridge, orcaBridge } from "./orca-runtime.js";
 import { committedQaSnapshot } from "./qa-snapshot.js";
@@ -62,6 +66,16 @@ export interface NativeRuntimeOptions {
   /** Absolute Orca IDE CLI path (default /opt/Orca/resources/bin/orca-ide; never PATH `orca`). */
   orcaBinary?: string;
   stateOwner?: PrivateStateOwner;
+  /**
+   * Per-project edit policy. Existing repos (registered by path) get their own editable paths and
+   * keep Matrix artifacts (the derived code graph) host-side instead of committing them.
+   */
+  projectPolicy?: (projectId: string) => Promise<ProjectEditPolicy>;
+}
+
+export interface ProjectEditPolicy {
+  external: boolean;
+  editablePaths?: string[];
 }
 
 /**
@@ -121,6 +135,12 @@ function sandboxedRunner(
         signal,
       );
       const expectedHead = req.phase === "implement" ? await git.headSha(req.workdir) : undefined;
+      const policy: ProjectEditPolicy = (await opts.projectPolicy?.(req.projectId)) ?? {
+        external: false,
+      };
+      const approvedPaths = policy.editablePaths?.length
+        ? policy.editablePaths
+        : NATIVE_SOURCE_PATHS;
       const viaOrca = orca?.phase(req);
       const ran = await createRunner(id, {
         gateway: {
@@ -144,7 +164,7 @@ function sandboxedRunner(
           readOnly: req.phase !== "implement" || req.readOnly === true,
           prompt:
             req.phase === "implement"
-              ? `${req.prompt}\n\nContainer git metadata is intentionally unavailable. Do not commit or push. Edit only approved source files: ${NATIVE_SOURCE_PATHS.join(", ")}. Do not edit .matrix/graph: the host deterministically regenerates it before scanning and committing your source snapshot.`
+              ? `${req.prompt}\n\nContainer git metadata is intentionally unavailable. Do not commit or push. Edit only approved source files: ${approvedPaths.join(", ")}. Never edit dot paths (.github, .env, .matrix).${policy.external ? "" : " Do not edit .matrix/graph: the host deterministically regenerates it before scanning and committing your source snapshot."}`
               : req.prompt,
         },
         onEvent,
@@ -169,10 +189,13 @@ function sandboxedRunner(
         secrets = [await gatewayKey()];
         const committed = await git.commitImplementation(req.workdir, {
           expectedHead: expectedHead as string,
-          approvedPaths: NATIVE_SOURCE_PATHS,
+          approvedPaths,
           message: `feat: Matrix ticket ${req.ticketId}`,
           signal,
-          derivedGraph: derivedGraphHandover(req.workdir, signal, opts.stateOwner),
+          // Existing repos never get Matrix artifacts committed into their branches.
+          ...(policy.external
+            ? {}
+            : { derivedGraph: derivedGraphHandover(req.workdir, signal, opts.stateOwner) }),
           scan: (source, binding) =>
             gatewayKey().then((key) =>
               scanSourceSnapshot(source, [key], opts.gitleaksBinary, binding),
@@ -319,9 +342,18 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
     git,
     deps: {
       architecture: async (ctx) => {
-        const receipts = await architectureGates(ctx.workdir, {
+        const all = await architectureGates(ctx.workdir, {
           rulesFrom: ctx.project.baseBranch,
         });
+        const external = Boolean((ctx.project as StoredProject).matrix?.repo);
+        const isDrift = (receipt: Receipt) =>
+          typeof receipt.data === "object" &&
+          receipt.data !== null &&
+          "stale" in receipt.data &&
+          Array.isArray(receipt.data.stale);
+        // Existing repos keep the derived graph host-side: no in-repo drift gate for them.
+        const receipts = external ? all.filter((receipt) => !isDrift(receipt)) : all;
+        if (external) await keepGraphHostSide(opts.dataDir, ctx.project.id, ctx.workdir);
         if (
           receipts.some(
             (receipt) =>
@@ -359,4 +391,13 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       merge: localMerge(opts, gatewayKey),
     },
   };
+}
+
+/** Writes an existing repo's derived code graph under the Matrix state dir, never into the repo. */
+async function keepGraphHostSide(dataDir: string, projectId: string, workdir: string) {
+  const dir = join(dataDir, "projects", safeSegment(projectId), "graph");
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const { files } = await graphArtifacts(workdir);
+  for (const [path, content] of Object.entries(files))
+    await writeFile(join(dir, basename(path)), content, { mode: 0o600 });
 }

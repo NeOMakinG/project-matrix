@@ -169,6 +169,21 @@ export class OrcaWorkspace implements Workspace {
     );
   }
 
+  /**
+   * Makes sure an existing repo is registered in Orca (`orca repo add --path`), so its tickets can
+   * run as Orca worktrees. Absolute real paths only; returns the Orca repo id.
+   */
+  async ensureRepo(repoPath: string): Promise<string> {
+    if (!repoPath.startsWith("/")) throw new Error("Orca repo path must be absolute");
+    const path = await realpath(repoPath);
+    try {
+      return await this.repoId(path);
+    } catch {
+      await this.cli.call(["repo", "add", "--path", path, "--json"]);
+      return this.repoId(path);
+    }
+  }
+
   async prepare(target: WorkspaceTarget): Promise<PreparedWorkspace> {
     await this.validate();
     // Never share a ticket with a previous owner's still-running runner (lease takeover).

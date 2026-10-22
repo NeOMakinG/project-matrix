@@ -17,6 +17,55 @@ export interface Project {
   workspace: "orca" | "native";
   autonomy: Record<Phase, AutonomyMode>;
   createdAt: string;
+  /** Present for an existing repo registered on the host (draft PRs, human merge on GitHub). */
+  repo?: {
+    external: true;
+    baseBranch: string;
+    remote: string;
+    github: string;
+    editablePaths: string[];
+  };
+  /** Effective model per model-driven phase. */
+  models?: Partial<Record<ModelPhase, { runner: RunnerKind; model: string }>>;
+  checks?: CheckSpec[];
+}
+
+export type ModelPhase = "spike" | "design" | "implement" | "review" | "qa";
+export type RunnerKind = "claude-code" | "codex" | "opencode";
+export interface CheckSpec {
+  kind: "typecheck" | "lint" | "test" | "adr-check";
+  cmd: string[];
+}
+export interface ModelPlanInput {
+  spike?: { runner: RunnerKind; model: string };
+  design?: { runner: RunnerKind; model: string };
+  implement?: { runner: RunnerKind; model: string };
+  review?: { runner: RunnerKind; model: string };
+  qa?: { runner: RunnerKind; model: string };
+  reviewerFallbacks?: { runner: RunnerKind; model: string }[];
+}
+export interface TicketsInput {
+  kind: "beads" | "markdown" | "github" | "linear";
+  repo?: string;
+  linear?: { teamKey: string; projectLabel: string; readyState?: string; apiKeyEnv?: string };
+}
+export interface CreateProjectInput {
+  name: string;
+  description: string;
+  workspace: Project["workspace"];
+  tickets?: TicketsInput;
+  /** Check commands run by the checks and QA phases (the init interview sets these later). */
+  checks?: CheckSpec[];
+  /** Register an existing host repo instead of creating an empty one (MATRIX_REPO_ROOTS). */
+  repo?: { path: string; baseBranch: string; remote?: string; editablePaths?: string[] };
+  models?: ModelPlanInput;
+}
+export interface UpdateProjectInput {
+  /** Existing repos only: paths agents may change (dot paths always stay denied). */
+  repo?: { editablePaths?: string[] };
+  tickets?: TicketsInput;
+  checks?: CheckSpec[];
+  models?: ModelPlanInput;
 }
 
 export type RunState = "queued" | "running" | "paused" | "awaiting_approval" | RunStatus;
@@ -202,18 +251,8 @@ export interface CorePort {
   listProjects(): Promise<Project[]>;
   getProject(id: string): Promise<Project | null>;
   getProjectPolicy(id: string): Promise<{ project: Project; version: string } | null>;
-  createProject(input: {
-    name: string;
-    description: string;
-    workspace: Project["workspace"];
-    tickets?: {
-      kind: "beads" | "markdown" | "github" | "linear";
-      repo?: string;
-      linear?: { teamKey: string; projectLabel: string; readyState?: string; apiKeyEnv?: string };
-    };
-    /** Check commands run by the checks and QA phases (the init interview sets these later). */
-    checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
-  }): Promise<Project>;
+  createProject(input: CreateProjectInput): Promise<Project>;
+  updateProject(projectId: string, patch: UpdateProjectInput): Promise<Project>;
   setAutonomy(projectId: string, phase: Phase, mode: AutonomyMode, actor: Actor): Promise<Project>;
   /** Sets several phases in one write (all or nothing). */
   setAutonomyPolicy(
@@ -299,7 +338,13 @@ export interface CorePort {
 
 export class CoreError extends Error {
   constructor(
-    readonly code: "not_found" | "conflict" | "invalid_state" | "forbidden" | "tracker_unavailable",
+    readonly code:
+      | "not_found"
+      | "conflict"
+      | "invalid_state"
+      | "invalid_request"
+      | "forbidden"
+      | "tracker_unavailable",
     message: string,
   ) {
     super(message);

@@ -60,6 +60,19 @@ describe("orca contract", () => {
 });
 
 describe("orca workspace", () => {
+  test("ensureRepo reuses a registered repo and registers a missing one by real path", async () => {
+    const repoPath = await repo();
+    const fake = new FakeOrca();
+    const ws = new OrcaWorkspace({ executor: fake.executor() });
+    const id = await ws.ensureRepo(repoPath);
+    expect(fake.calls.filter((c) => c[0] === "repo" && c[1] === "add")).toEqual([
+      ["repo", "add", "--path", repoPath, "--json"],
+    ]);
+    expect(await ws.ensureRepo(repoPath)).toBe(id);
+    expect(fake.calls.filter((c) => c[1] === "add")).toHaveLength(1);
+    await expect(ws.ensureRepo("relative")).rejects.toThrow(/absolute/);
+  });
+
   test("prepare links the Linear issue, records the Orca branch; cleanup archives before rm", async () => {
     const repoPath = await repo();
     const fake = new FakeOrca();

@@ -18,6 +18,11 @@ export interface MatrixMeta {
   workspace: "orca" | "native";
   tickets: TicketSettings;
   createdAt: string;
+  /**
+   * Set for a repo that already existed on the host (registered, not created by Matrix). Its
+   * config lives here, host-side; nothing is written into the repo and runs end with a draft PR.
+   */
+  repo?: { external: true; remote: string; github: string; editablePaths?: string[] };
 }
 
 export type StoredProject = ProjectConfig & { matrix?: MatrixMeta };
@@ -35,7 +40,32 @@ export function toProject(config: StoredProject): Project {
     workspace: config.matrix?.workspace ?? "native",
     autonomy,
     createdAt: config.matrix?.createdAt ?? new Date(0).toISOString(),
+    ...(config.matrix?.repo
+      ? {
+          repo: {
+            external: true as const,
+            baseBranch: config.baseBranch,
+            remote: config.matrix.repo.remote,
+            github: config.matrix.repo.github,
+            editablePaths: [...(config.matrix.repo.editablePaths ?? [])],
+          },
+        }
+      : {}),
+    models: modelView(config),
+    checks: config.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] })),
   };
+}
+
+function modelView(config: StoredProject): NonNullable<Project["models"]> {
+  const out: NonNullable<Project["models"]> = {};
+  for (const phase of ["spike", "design", "implement", "review", "qa"] as const) {
+    const choice =
+      (phase === "spike" || phase === "implement") && config.models.tiers
+        ? config.models.tiers.large
+        : (config.models[phase] ?? config.models.implement);
+    out[phase] = { runner: choice.runner, model: choice.model };
+  }
+  return out;
 }
 
 const RUN_STATE: Record<RunRecord["status"], Run["state"]> = {

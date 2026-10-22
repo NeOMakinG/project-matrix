@@ -722,6 +722,8 @@ const merge =
     return {
       ok: res.ok,
       summary: res.summary,
+      // Not merged yet (e.g. the draft PR still waits on GitHub): ask again, never block.
+      ...(res.pending && !res.ok ? { requiresApproval: true } : {}),
       receipts: [
         { kind: "log", ok: res.ok, summary: res.summary, ...(res.url ? { url: res.url } : {}) },
       ],

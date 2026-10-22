@@ -16,9 +16,13 @@ import { GatewayLlm, type LlmClient } from "@matrix/monitor";
 import type { TicketStore } from "@matrix/tickets";
 import { BeadsQueueTimeoutError, withBeadsQueue } from "@matrix/tickets/adapters/beads-queue";
 import { fileProposals, runWatch, SeenStore } from "@matrix/watch";
+import { OrcaWorkspace } from "@matrix/workspace";
 import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
+import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
 import { repoKnowledge } from "./knowledge.js";
+import type { StoredProject } from "./mapping.js";
+import { gatewayModels } from "./model-plan.js";
 import { fakeTriageLlm, ServerMonitor } from "./monitor.js";
 import type { NativeRuntimeOptions } from "./native-runtime.js";
 import { publishOwnedFile } from "./owned-files.js";
@@ -27,6 +31,7 @@ import { ownedExternalTickets } from "./owned-tickets.js";
 import { resolveQuota } from "./quota-config.js";
 import { RealCore } from "./real-core.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
+import { scanCommittedHistory } from "./secret-scan.js";
 import {
   type TicketBinaries,
   type TicketSettings,
@@ -57,6 +62,10 @@ export interface FactoryOptions {
   watch?: boolean;
   log?: (message: string) => void;
   binaries?: TicketBinaries;
+  /** `MATRIX_REPO_ROOTS`: directories existing repos may be registered from (empty = off). */
+  repoRoots?: string[];
+  /** Test seam: replaces the GitHub draft-PR publisher. */
+  pullRequests?: GitHubPullRequests;
 }
 
 const run = promisify(execFile);
@@ -151,7 +160,24 @@ async function createOwnedFactory(
   const log = options.log ?? ((m: string) => console.log(m));
   const runtime = createRuntime(
     options.runtime,
-    options.native ? { ...options.native, dataDir: options.dataDir, stateOwner } : undefined,
+    options.native
+      ? {
+          ...options.native,
+          dataDir: options.dataDir,
+          stateOwner,
+          // Resolved per run (the store exists by then): existing repos' edit policy.
+          projectPolicy: async (projectId: string) => {
+            const project = (await store.getProject(projectId)) as StoredProject | null;
+            const repo = project?.matrix?.repo;
+            return repo
+              ? {
+                  external: true,
+                  ...(repo.editablePaths ? { editablePaths: repo.editablePaths } : {}),
+                }
+              : { external: false };
+          },
+        }
+      : undefined,
   );
   mkdirSync(join(options.dataDir, "projects"), { recursive: true, mode: 0o700 });
   mkdirSync(join(options.dataDir, "holdout"), { recursive: true, mode: 0o700 });
@@ -166,8 +192,27 @@ async function createOwnedFactory(
   const store = stateOwner.fence(rawStore);
   const bus = new EventBus();
   const holdout = new OwnedHoldoutStore(join(options.dataDir, "holdout"), stateOwner);
+  // Existing repos end with a pushed branch + draft PR (host-side gh); greenfield merges locally.
+  const pullRequests =
+    options.pullRequests ??
+    new GitHubPullRequests({
+      stateFile: join(options.dataDir, "pull-requests.json"),
+      stateOwner,
+      ...(options.binaries?.gh ? { ghBinary: options.binaries.gh } : {}),
+      ...(options.runtime === "fake"
+        ? {}
+        : {
+            scan: (repo: string, range: string) =>
+              scanCommittedHistory(repo, range, options.native?.gitleaksBinary),
+          }),
+    });
   const handlers = {
-    ...createDefaultHandlers({ ...runtime.deps, store, holdout }),
+    ...createDefaultHandlers({
+      ...runtime.deps,
+      store,
+      holdout,
+      merge: externalAwareMerge(pullRequests, runtime.deps.merge),
+    }),
     compound: createCompoundHandler({
       store,
       publish: async (root, path, content) => {
@@ -209,6 +254,7 @@ async function createOwnedFactory(
     ...(options.runtime === "fake" && !options.quota ? {} : resolveQuota(options.quota)),
     host: options.host,
     scratchRoot: join(options.dataDir, "scratch"),
+    pullRequests: stateOwner.fence(pullRequests),
   });
 
   const llm: LlmClient =
@@ -276,6 +322,17 @@ async function createOwnedFactory(
     monitor,
     initRepo: (repoPath, tickets) =>
       initProjectRepo(repoPath, tickets, options.binaries, stateOwner),
+    repoRoots: options.repoRoots ?? [],
+    ...(runtime.workspace instanceof OrcaWorkspace
+      ? {
+          verifyRepo: async (path: string) => {
+            await (runtime.workspace as OrcaWorkspace).ensureRepo(path);
+          },
+        }
+      : {}),
+    ...(options.gateway
+      ? { listModels: gatewayModels(options.gateway.baseUrl, options.gateway.apiKey) }
+      : {}),
     ...(options.binaries ? { binaries: options.binaries } : {}),
   });
 
@@ -317,6 +374,8 @@ async function createOwnedFactory(
   const watchAll = async () => {
     if (Date.now() < watchSchedule.nextAt) return;
     for (const project of await store.listProjects()) {
+      // The watch writes digests into the repo: never into an operator's existing checkout.
+      if ((project as import("./mapping.js").StoredProject).matrix?.repo) continue;
       const result = await stateOwner.guard(() =>
         runWatch({
           root: project.repoPath,

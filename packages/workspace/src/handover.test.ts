@@ -15,6 +15,7 @@ async function fixture(policy?: {
   attributes?: string;
   config?: string;
   packageRoots?: string[];
+  branch?: string;
 }) {
   const repo = await mkdtemp(join(tmpdir(), "matrix-handover-test-"));
   const git = (...args: string[]) =>
@@ -49,7 +50,7 @@ async function fixture(policy?: {
     ticketId: "tiny",
     repoPath: repo,
     baseBranch: "main",
-    branch: "matrix/tiny",
+    branch: policy?.branch ?? "matrix/tiny",
   });
   const port = new WorktreeGitPort({ trusted: workspace.trusted });
   const head = await port.headSha(prepared.workdir);
@@ -311,6 +312,29 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
     );
     expect(await port.cleanForChecks(prepared.workdir)).toBe(committed.headSha);
   }, 30_000);
+  test("existing-repo policy: custom editable paths, Orca branch names, no .matrix in the commit", async () => {
+    const { prepared, port, options, git } = await fixture({ branch: "matrix-NEO-7" });
+    await mkdir(join(prepared.workdir, "app/src/features"), { recursive: true });
+    await writeFile(join(prepared.workdir, "app/src/features/a.ts"), "export const a = 1;\n");
+    const committed = await port.commitImplementation(prepared.workdir, {
+      ...options,
+      approvedPaths: ["app", "docs"],
+    });
+    const files = git("ls-tree", "-r", "--name-only", committed.headSha).split("\n");
+    expect(files).toContain("app/src/features/a.ts");
+    expect(files.some((f) => f.startsWith(".matrix/"))).toBe(false);
+    // Dot paths stay denied even when listed.
+    await mkdir(join(prepared.workdir, ".github/workflows"), { recursive: true });
+    await writeFile(join(prepared.workdir, ".github/workflows/ci.yml"), "on: push\n");
+    await expect(
+      port.commitImplementation(prepared.workdir, {
+        ...options,
+        expectedHead: committed.headSha,
+        approvedPaths: ["app", ".github"],
+      }),
+    ).rejects.toThrow(/unapproved implementation path/);
+  }, 30_000);
+
   test("scans immutable source before committing and keeps base unchanged", async () => {
     const { prepared, port, head, options, git } = await fixture();
     await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");

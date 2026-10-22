@@ -69,6 +69,12 @@ export class FakeOrca {
             flags,
           })),
         };
+      case "repo add": {
+        const path = this.#flag(args, "path") ?? "";
+        const repo = { id: `r${this.repos.length + 1}`, path };
+        this.repos.push(repo);
+        return { repo };
+      }
       case "repo list":
         return { repos: this.repos };
       case "worktree create": {
