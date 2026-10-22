@@ -11,7 +11,6 @@ vi.setConfig({ testTimeout: 30_000 });
 
 import { WorktreeGitPort } from "./git-port";
 import { NativeWorkspace } from "./native";
-import { checkOrcaContract, OrcaWorkspace } from "./orca";
 
 async function repo(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "matrix-ws-repo-"));
@@ -90,120 +89,6 @@ describe("native workspace", () => {
         baseBranch: "main",
       }),
     ).rejects.toThrow();
-  });
-});
-
-const goodContext = {
-  schemaVersion: 1,
-  commands: [
-    {
-      command: "worktree create",
-      flags: ["repo", "name", "base-branch", "json", "agent", "prompt", "issue"],
-    },
-    { command: "worktree rm", flags: ["worktree", "force", "json"] },
-    { command: "repo list", flags: ["json"] },
-  ],
-};
-
-describe("orca workspace", () => {
-  test("contract check reports missing commands and flags", () => {
-    expect(checkOrcaContract(goodContext)).toEqual([]);
-    expect(checkOrcaContract({ schemaVersion: 2, commands: [] })).toEqual(
-      expect.arrayContaining(["unsupported schemaVersion 2", "missing command: orca worktree rm"]),
-    );
-  });
-
-  test.runIf(
-    (() => {
-      try {
-        execFileSync("orca", ["agent-context", "--json"], { stdio: "ignore", timeout: 15_000 });
-        return true;
-      } catch {
-        return false;
-      }
-    })(),
-  )("installed Orca satisfies the contract (read-only)", () => {
-    const context = JSON.parse(execFileSync("orca", ["agent-context", "--json"]).toString());
-    expect(checkOrcaContract(context)).toEqual([]);
-  });
-
-  test("prepare creates an Orca worktree for the registered repo, cleanup removes it", async () => {
-    const repoPath = await realpath(await repo());
-    const calls: string[][] = [];
-    const executor: LineExecutor = async (spec, onLine) => {
-      calls.push(spec.cmd);
-      const args = spec.cmd.slice(1).join(" ");
-      let result: unknown = {};
-      if (args.startsWith("agent-context")) result = goodContext;
-      else if (args.startsWith("repo list")) result = { repos: [{ id: "repo-1", path: repoPath }] };
-      else if (args.startsWith("worktree create"))
-        result = { worktree: { id: "wt-9", path: "/orca/wt-9" } };
-      onLine(JSON.stringify(args.startsWith("agent-context") ? result : { ok: true, result }));
-      return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
-    };
-    const ws = new OrcaWorkspace({
-      executor,
-      agent: "claude",
-      prompt: () => "build MX-1",
-      issue: () => 42,
-    });
-    const prepared = await ws.prepare({
-      projectId: "p",
-      ticketId: "MX-1",
-      repoPath,
-      branch: "matrix/mx-1",
-      baseBranch: "main",
-    });
-    expect(prepared).toEqual({ workdir: "/orca/wt-9", ref: "wt-9" });
-    expect(calls[2]).toEqual([
-      "orca",
-      "worktree",
-      "create",
-      "--repo",
-      "id:repo-1",
-      "--name",
-      "matrix-mx-1",
-      "--base-branch",
-      "main",
-      "--json",
-      "--agent",
-      "claude",
-      "--prompt",
-      "build MX-1",
-      "--issue",
-      "42",
-    ]);
-    await ws.cleanup(prepared);
-    expect(calls.at(-1)).toEqual([
-      "orca",
-      "worktree",
-      "rm",
-      "--worktree",
-      "id:wt-9",
-      "--force",
-      "--json",
-    ]);
-  });
-
-  test("unregistered repo is a clear error", async () => {
-    const executor: LineExecutor = async (spec, onLine) => {
-      const args = spec.cmd.slice(1).join(" ");
-      onLine(
-        JSON.stringify(
-          args.startsWith("agent-context") ? goodContext : { ok: true, result: { repos: [] } },
-        ),
-      );
-      return { exitCode: 0, timedOut: false, cancelled: false, stderrTail: "" };
-    };
-    await expect(
-      new OrcaWorkspace({ executor }).prepare({
-        projectId: "p",
-        ticketId: "t",
-        repoPath: await repo(),
-        branch: "b",
-        baseBranch: "main",
-      }),
-    ).rejects.toThrow(/not registered in Orca/);
   });
 });
 

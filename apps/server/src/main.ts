@@ -62,6 +62,7 @@ const factory = await createFactory({
           ...(env.MATRIX_PODMAN ? { podmanBinary: env.MATRIX_PODMAN } : {}),
           ...(env.MATRIX_GITLEAKS ? { gitleaksBinary: env.MATRIX_GITLEAKS } : {}),
           ...(env.MATRIX_ORCA_ENVIRONMENT ? { orcaEnvironment: env.MATRIX_ORCA_ENVIRONMENT } : {}),
+          ...(env.MATRIX_ORCA_BINARY ? { orcaBinary: env.MATRIX_ORCA_BINARY } : {}),
         },
       }
     : {}),
