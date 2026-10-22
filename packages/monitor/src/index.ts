@@ -8,6 +8,7 @@ export * from "./notify.js";
 export * from "./policy.js";
 export * from "./pollers.js";
 export * from "./ports.js";
+export { redact, singleLine } from "./redact.js";
 export * from "./signal.js";
 export * from "./triage.js";
 export * from "./verify.js";

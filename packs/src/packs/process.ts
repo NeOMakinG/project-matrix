@@ -32,6 +32,7 @@ export const processPack: Pack = {
       infer: (ctx) => ([...ctx.files].some((f) => f.startsWith(".beads/")) ? "beads" : undefined),
       adr: { topic: "ticket system", context: "The ticket system is the factory's control plane." },
     },
+    ...linearQuestions(),
     {
       id: "process.branching",
       pack: "process",
@@ -101,3 +102,31 @@ export const processPack: Pack = {
     },
   ],
 };
+
+function usesLinear(a: Record<string, unknown>): boolean {
+  return a["process.tickets"] === "linear";
+}
+
+/** Linear needs a team and a project label; the API key stays in the host env (name only). */
+function linearQuestions(): Pack["questions"] {
+  const q = (id: string, prompt: string, recommended?: string): Pack["questions"][number] => ({
+    id: `process.linear.${id}`,
+    pack: "process",
+    kind: "text",
+    field: `process.linear.${id}`,
+    prompt,
+    dependsOn: ["process.tickets"],
+    when: usesLinear,
+    ...(recommended ? { recommended } : {}),
+  });
+  return [
+    q("teamKey", "Linear team key (e.g. NEO)?"),
+    q("projectLabel", "Linear label that scopes this project (e.g. project:my-app)?"),
+    q("readyState", "Linear column Matrix picks issues up from?", "Ready"),
+    q(
+      "apiKeyEnv",
+      "Host env var NAME holding the Linear API key (never the key itself)?",
+      "LINEAR_API_KEY",
+    ),
+  ];
+}

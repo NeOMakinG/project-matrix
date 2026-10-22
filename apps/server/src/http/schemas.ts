@@ -25,6 +25,35 @@ export const Project = z
   })
   .openapi("Project");
 
+/** Linear settings. The API key itself is never accepted: only the host env var NAME holding it. */
+export const LinearTickets = z
+  .object({
+    teamKey: z.string().regex(/^[A-Z][A-Z0-9]{0,9}$/),
+    projectLabel: z
+      .string()
+      .min(1)
+      .max(80)
+      .regex(/^[^\u0000-\u001f\u007f]+$/),
+    readyState: z.string().min(1).max(80).optional(),
+    apiKeyEnv: z
+      .string()
+      .max(64)
+      .regex(/^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$/, "must be an env var name containing LINEAR")
+      .optional()
+      .openapi({ description: "Host env var NAME holding the key; default LINEAR_API_KEY" }),
+  })
+  .strict()
+  .openapi("LinearTickets");
+
+export const TrackerFailure = z
+  .object({
+    ticketId: z.string().optional(),
+    operation: z.string(),
+    message: z.string(),
+    at: z.string(),
+  })
+  .openapi("TrackerFailure");
+
 export const CreateProject = z
   .object({
     name: z.string().min(1).max(100),
@@ -32,11 +61,17 @@ export const CreateProject = z
     workspace: z.enum(["orca", "native"]).default("orca"),
     tickets: z
       .object({
-        kind: z.enum(["beads", "markdown", "github"]),
+        kind: z.enum(["beads", "markdown", "github", "linear"]),
         repo: z
           .string()
           .regex(/^[\w.-]+\/[\w.-]+$/)
           .optional(),
+        linear: LinearTickets.optional(),
+      })
+      .strict()
+      .refine((t) => (t.kind === "linear") === (t.linear !== undefined), {
+        message: "`linear` is required for, and only allowed with, kind linear",
+        path: ["linear"],
       })
       .optional()
       .openapi({ description: "Ticket tracker; beads by default" }),

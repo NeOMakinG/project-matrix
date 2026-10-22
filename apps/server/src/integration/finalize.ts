@@ -16,6 +16,7 @@ import type { PrivateStateOwner } from "../state-owner.js";
 import { mirrorBacklog, type TrackerJournal } from "./finalize-tracker.js";
 import type { StoredProject } from "./mapping.js";
 import { publishOwnedFile } from "./owned-files.js";
+import type { TicketSettings } from "./tickets.js";
 
 type Generated = Extract<Awaited<ReturnType<typeof runInit>>, { status: "ok" }>;
 export interface FinalizeJournal extends TrackerJournal {
@@ -166,7 +167,11 @@ export async function finalizeProject(input: {
   }
   const generate = () =>
     runInit({
-      answers: toAnswers({ ...answers, "process.tickets": chosenTracker }),
+      answers: toAnswers({
+        ...answers,
+        "process.tickets": chosenTracker,
+        ...linearAnswers(input.project.matrix?.tickets),
+      }),
       outDir: staging as string,
       acceptRecommended: input.acceptRecommended,
       scaffold: true,
@@ -325,4 +330,16 @@ export async function finalizeProject(input: {
   };
   state.save({ ...journal, policyVersion: saved.version, completed });
   return completed;
+}
+
+/** The project's Linear settings win over interview answers (the tracker is fixed at creation). */
+function linearAnswers(tickets: TicketSettings | undefined): Record<string, string> {
+  const l = tickets?.kind === "linear" ? tickets.linear : undefined;
+  if (!l) return {};
+  return {
+    "process.linear.teamKey": l.teamKey,
+    "process.linear.projectLabel": l.projectLabel,
+    "process.linear.readyState": l.readyState ?? "Ready",
+    "process.linear.apiKeyEnv": l.apiKeyEnv ?? "LINEAR_API_KEY",
+  };
 }

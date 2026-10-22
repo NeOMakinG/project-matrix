@@ -32,6 +32,8 @@ import {
   trackerDeadline,
 } from "./tickets.js";
 import { TrackerUnavailableError } from "./tracker-error.js";
+import { TrackerHealth } from "./tracker-health.js";
+import { TrackerSync } from "./tracker-sync.js";
 
 export interface FactoryOptions {
   stateOwner?: PrivateStateOwner;
@@ -234,8 +236,20 @@ async function createOwnedFactory(
     projectIds: async () => (await store.listProjects()).map((p) => p.id),
   });
 
+  const trackerHealth = new TrackerHealth(bus, log);
+  trackerHealth.start();
+  const trackerSync = new TrackerSync({
+    bus,
+    tickets: async (projectId) => {
+      if (!core) throw new Error("factory not ready");
+      return core.ticketStore(projectId);
+    },
+  });
+  trackerSync.start();
+
   core = new RealCore({
     stateOwner,
+    trackerHealth,
     fakeRuntime: options.runtime === "fake",
     stateFile: join(options.dataDir, "core-state.json"),
     store,
@@ -262,6 +276,8 @@ async function createOwnedFactory(
     lastError: undefined as string | undefined,
   };
   const halt = () => {
+    trackerSync.stop();
+    trackerHealth.stop();
     for (const timer of timers) clearInterval(timer);
     timers.length = 0;
     reconciler.stop();
@@ -343,6 +359,8 @@ async function createOwnedFactory(
     stateOwner,
     core,
     store,
+    trackerSync,
+    trackerHealth,
     bus,
     reconciler,
     monitor,

@@ -1,9 +1,9 @@
-import type { Ticket, TicketStatus } from "../types.js";
+import type { Ticket, TicketStatus, TrackerPhase } from "../types.js";
 import { joinBody, type MatrixMeta, splitBody } from "./github.js";
 import { sanitizeUntrusted } from "./linear-client.js";
 import type { LinearIssue } from "./linear-queries.js";
 
-/** Linear workflow state names Matrix moves issues into. Coarse for now; later PRs map per phase. */
+/** Linear workflow state names Matrix moves issues into for coarse ticket statuses. */
 export interface LinearStateNames {
   open: string;
   ready: string;
@@ -23,6 +23,33 @@ export const DEFAULT_STATE_NAMES: LinearStateNames = {
   done: "Done",
   closed: "Canceled",
 };
+
+/** Board column per Matrix phase while a workflow runs or waits for approval. */
+export type LinearPhaseColumns = Partial<Record<string, string>>;
+
+export const DEFAULT_PHASE_COLUMNS: LinearPhaseColumns = {
+  spike: "Spike",
+  design: "Implement",
+  implement: "Implement",
+  checks: "Implement",
+  review: "Review",
+  qa: "QA",
+  merge: "Awaiting merge",
+};
+
+/**
+ * Column for a workflow position, or undefined when the issue should stay where it is: pending
+ * (queued or backing off) and blocked keep the current column, unknown phases are not moved.
+ */
+export function columnFor(
+  position: TrackerPhase,
+  names: LinearStateNames,
+  phases: LinearPhaseColumns,
+): string | undefined {
+  if (position.status === "done") return names.done;
+  if (position.status !== "running" && position.status !== "waiting_approval") return undefined;
+  return Object.hasOwn(phases, position.phase) ? phases[position.phase] : undefined;
+}
 
 const TERMINAL_TYPES = new Set(["completed", "canceled"]);
 export const isTerminal = (stateType: string) => TERMINAL_TYPES.has(stateType);
@@ -58,6 +85,20 @@ export function fromLinearPriority(p: number): Ticket["priority"] | undefined {
 /** Matrix-only fields (phase, blocked flag) ride in the same hidden body block as GitHub. */
 export interface LinearMeta extends MatrixMeta {
   blocked?: boolean;
+  /** Comment ids of Matrix's live comments, by key (see `upsertComment`). */
+  comments?: Record<string, string>;
+}
+
+const COMMENT_KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
+const COMMENT_ID = /^[A-Za-z0-9-]{1,64}$/;
+export const isCommentKey = (key: string) => COMMENT_KEY.test(key);
+
+function safeComments(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value).slice(0, 20))
+    if (COMMENT_KEY.test(k) && typeof v === "string" && COMMENT_ID.test(v)) out[k] = v;
+  return Object.keys(out).length ? out : undefined;
 }
 
 export function readBody(description: string | null): { text: string; meta: LinearMeta } {
@@ -65,13 +106,17 @@ export function readBody(description: string | null): { text: string; meta: Line
   const safe: LinearMeta = {};
   if (typeof meta.phase === "string") safe.phase = meta.phase;
   if ((meta as LinearMeta).blocked === true) safe.blocked = true;
+  const comments = safeComments((meta as LinearMeta).comments);
+  if (comments) safe.comments = comments;
   return { text, meta: safe };
 }
 
 export function writeBody(text: string, meta: LinearMeta): string {
+  const comments = safeComments(meta.comments);
   const clean: LinearMeta = {
     ...(meta.phase ? { phase: meta.phase } : {}),
     ...(meta.blocked ? { blocked: true } : {}),
+    ...(comments ? { comments } : {}),
   };
   return joinBody(text, clean);
 }

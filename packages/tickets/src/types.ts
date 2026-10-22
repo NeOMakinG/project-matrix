@@ -44,6 +44,14 @@ export interface TicketQuery {
   labels?: string[];
 }
 
+/** Workflow position reported to trackers that model the pipeline as board columns. */
+export interface TrackerPhase {
+  /** Matrix phase, e.g. `spike`, `implement`, `merge`. */
+  phase: string;
+  /** Workflow status: pending, running, waiting_approval, blocked or done. */
+  status: string;
+}
+
 export interface TicketStore {
   readonly kind: "beads" | "github" | "linear" | "markdown";
   list(query?: TicketQuery): Promise<Ticket[]>;
@@ -53,4 +61,16 @@ export interface TicketStore {
   comment(id: string, body: string): Promise<void>;
   link(from: string, to: string, type: LinkType): Promise<void>;
   ready(): Promise<Ticket[]>;
+  /**
+   * Optional: move the ticket to the board column for a workflow phase. Adapters without
+   * per-phase columns leave it undefined; callers then rely on `update({ status })` alone.
+   */
+  setPhase?(id: string, position: TrackerPhase): Promise<void>;
+  /**
+   * Optional: keep one comment per `key` on the ticket, created once and edited in place.
+   * Adapters that cannot edit comments leave it undefined (callers then post nothing).
+   */
+  upsertComment?(id: string, key: string, body: string): Promise<void>;
+  /** Optional: create tracker-side scoping the store relies on (e.g. a project label). */
+  ensureScope?(): Promise<void>;
 }

@@ -10,6 +10,8 @@ export interface FakeLinear {
   /** Responses to serve before normal handling (e.g. 429s). */
   queue: Array<{ status: number; body: unknown; headers?: Record<string, string> }>;
   pageSize: number;
+  /** Comments by id (body + owning issue uuid). */
+  comments: Map<string, { issueId: string; body: string; isMe?: boolean }>;
 }
 
 const STATES: Array<[string, string]> = [
@@ -42,6 +44,7 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
     calls: [],
     queue: [],
     pageSize: 2,
+    comments: new Map(),
   };
 
   const view = (issue: LinearIssue): LinearIssue => ({
@@ -144,8 +147,31 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
         apply(issue, v.input);
         return { issueUpdate: { success: true, issue: view(issue) } };
       }
-      case "MatrixComment":
-        return { commentCreate: { success: true } };
+      case "MatrixComment": {
+        const id = `comment-${++seq}`;
+        fake.comments.set(id, { issueId: v.input.issueId, body: v.input.body });
+        return { commentCreate: { success: true, comment: { id } } };
+      }
+      case "MatrixCommentLookup": {
+        const c = fake.comments.get(v.id);
+        if (!c) throw new Error("Entity not found: Comment");
+        return {
+          comment: { id: v.id, issue: { id: c.issueId }, user: { isMe: c.isMe !== false } },
+        };
+      }
+      case "MatrixIssueComments": {
+        const issue = byUuid(v.id) as LinearIssue;
+        const nodes = [...fake.comments.entries()]
+          .filter(([, c]) => c.issueId === issue.id)
+          .map(([id, c]) => ({ id, body: c.body, user: { isMe: c.isMe !== false } }));
+        return { issue: { comments: { nodes } } };
+      }
+      case "MatrixCommentUpdate": {
+        const comment = fake.comments.get(v.id);
+        if (!comment) throw new Error("Entity not found: Comment");
+        comment.body = v.input.body;
+        return { commentUpdate: { success: true } };
+      }
       case "MatrixRelation":
         relations.push({
           id: `rel-${++seq}`,

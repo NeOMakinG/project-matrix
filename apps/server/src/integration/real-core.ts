@@ -45,6 +45,7 @@ import {
   ticketStoreFor,
   trackerDeadline,
 } from "./tickets.js";
+import type { TrackerFailure, TrackerHealth } from "./tracker-health.js";
 
 export interface KnowledgePort {
   adrs(repoPath: string): Promise<ServerAdr[]>;
@@ -74,6 +75,8 @@ export interface RealCoreOptions {
   binaries?: TicketBinaries;
   /** Overrides the ticket store per project (tests). */
   ticketsFor?: (project: StoredProject) => TicketStore;
+  /** Recent tracker write failures (see `getTrackerFailures`). */
+  trackerHealth?: TrackerHealth;
 }
 
 /** Maps core's plain errors onto the server's error codes. */
@@ -100,6 +103,7 @@ export class RealCore implements CorePort {
   private readonly mutations = new Map<string, Promise<unknown>>();
   private readonly ticketSyncs = new Map<string, Promise<void>>();
   private readonly hydratedTickets = new Set<string>();
+  private readonly scopedTickets = new Set<string>();
   private readonly finalizingProjects = new Set<string>();
   private readonly ticketSnapshotLock = new TicketSnapshotLock();
 
@@ -192,6 +196,21 @@ export class RealCore implements CorePort {
           return ticket;
         }),
     };
+    if (store.setPhase) {
+      const move = store.setPhase.bind(store);
+      indexed.setPhase = (id, position) =>
+        this.withTicketSnapshotLock(projectId, async () => {
+          await move(id, position);
+          const ticket = await store.get(id);
+          if (ticket) await this.index(projectId, ticket);
+        });
+    }
+    if (store.upsertComment) {
+      const upsert = store.upsertComment.bind(store);
+      indexed.upsertComment = (id, key, body) =>
+        this.withTicketSnapshotLock(projectId, () => upsert(id, key, body));
+    }
+    if (store.ensureScope) indexed.ensureScope = store.ensureScope.bind(store);
     const owned = this.o.stateOwner?.fence(indexed) ?? indexed;
     this.ticketStores.set(projectId, owned);
     return owned;
@@ -351,7 +370,17 @@ export class RealCore implements CorePort {
 
   private async syncTicketsLocked(projectId: string): Promise<void> {
     await trackerDeadline(async (signal) => {
-      const tickets = await (await this.ticketStore(projectId)).list();
+      const store = await this.ticketStore(projectId);
+      if (!this.scopedTickets.has(projectId)) {
+        try {
+          await store.ensureScope?.();
+          this.scopedTickets.add(projectId);
+        } catch (error) {
+          this.trackerFailed(projectId, "ensureScope", error);
+        }
+        signal.throwIfAborted();
+      }
+      const tickets = await store.list();
       signal.throwIfAborted();
       this.o.stateOwner?.assertOwned();
       await this.o.store.replaceIndexedTickets(projectId, tickets, signal);
@@ -359,6 +388,21 @@ export class RealCore implements CorePort {
       this.o.stateOwner?.assertOwned();
       this.hydratedTickets.add(projectId);
     }, this.o.stateOwner?.signal);
+  }
+
+  private trackerFailed(projectId: string, operation: string, error: unknown): void {
+    this.o.bus.publish({
+      type: "tracker.failed",
+      projectId,
+      operation,
+      message: error instanceof Error ? error.message : String(error),
+      at: new Date().toISOString(),
+    });
+  }
+
+  async getTrackerFailures(projectId: string): Promise<TrackerFailure[]> {
+    await this.config(projectId);
+    return this.o.trackerHealth?.failures(projectId) ?? [];
   }
 
   async createTicket(projectId: string, input: NewTicket): Promise<Ticket> {

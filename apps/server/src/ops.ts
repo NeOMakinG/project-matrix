@@ -122,7 +122,11 @@ export class Operations {
       name: string;
       description: string;
       workspace: Project["workspace"];
-      tickets?: { kind: "beads" | "markdown" | "github"; repo?: string };
+      tickets?: {
+        kind: "beads" | "markdown" | "github" | "linear";
+        repo?: string;
+        linear?: { teamKey: string; projectLabel: string; readyState?: string; apiKeyEnv?: string };
+      };
       checks?: { kind: "typecheck" | "lint" | "test" | "adr-check"; cmd: string[] }[];
     },
   ) {
@@ -565,6 +569,15 @@ export class Operations {
   async getInitProgress(p: Principal, sessionId: string) {
     const session = await this.getInit(p, sessionId);
     return initProgress(session.answers);
+  }
+
+  getTrackerFailures(p: Principal, projectId: string) {
+    return this.op(
+      p,
+      "read",
+      `/projects/${projectId}/tracker/failures`,
+      projectId,
+    )(async () => (await this.core.getTrackerFailures?.(projectId)) ?? []);
   }
 
   getChecks(p: Principal, projectId: string) {

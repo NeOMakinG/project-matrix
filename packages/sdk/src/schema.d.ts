@@ -181,6 +181,98 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/v1/projects/{projectId}/tracker/failures": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Recent ticket-tracker write failures (newest first); workflows never fail on them */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          projectId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description OK */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["TrackerFailure"][];
+          };
+        };
+        /** @description Error */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Error */
+        429: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/v1/projects/{projectId}": {
     parameters: {
       query?: never;
@@ -3795,8 +3887,9 @@ export interface components {
       /** @description Ticket tracker; beads by default */
       tickets?: {
         /** @enum {string} */
-        kind: "beads" | "markdown" | "github";
+        kind: "beads" | "markdown" | "github" | "linear";
         repo?: string;
+        linear?: components["schemas"]["LinearTickets"];
       };
       /** @description Check commands run in the sandbox (argv, no shell) */
       checks?: {
@@ -3804,6 +3897,19 @@ export interface components {
         kind: "typecheck" | "lint" | "test" | "adr-check";
         cmd: string[];
       }[];
+    };
+    LinearTickets: {
+      teamKey: string;
+      projectLabel: string;
+      readyState?: string;
+      /** @description Host env var NAME holding the key; default LINEAR_API_KEY */
+      apiKeyEnv?: string;
+    };
+    TrackerFailure: {
+      ticketId?: string;
+      operation: string;
+      message: string;
+      at: string;
     };
     SetAutonomy: {
       phase: components["schemas"]["Phase"];

@@ -6,11 +6,17 @@ import type {
   TicketQuery,
   TicketStatus,
   TicketStore,
+  TrackerPhase,
 } from "../types.js";
 import { matches } from "./beads.js";
 import { LinearApiError, LinearClient, type LinearClientOptions } from "./linear-client.js";
 import {
+  columnFor,
+  DEFAULT_PHASE_COLUMNS,
   DEFAULT_STATE_NAMES,
+  isCommentKey,
+  isTerminal,
+  type LinearPhaseColumns,
   type LinearStateNames,
   openBlockers,
   readBody,
@@ -31,7 +37,13 @@ export interface LinearStoreOptions extends LinearClientOptions {
   readyState?: string;
   /** Override target state names per Matrix status. */
   states?: Partial<LinearStateNames>;
+  /** Override the board column per Matrix phase (see `DEFAULT_PHASE_COLUMNS`). */
+  phaseColumns?: LinearPhaseColumns;
 }
+
+const norm = (s: string) => s.trim().toLowerCase();
+/** Coarse statuses the reconciler sets at phase start; with a phase they map to its column. */
+const PHASED = new Set<TicketStatus>(["in_progress", "review", "qa"]);
 
 interface Team {
   id: string;
@@ -46,6 +58,7 @@ export class LinearTicketStore implements TicketStore {
   readonly #teamKey: string;
   readonly #label: string;
   readonly #names: LinearStateNames;
+  readonly #phases: LinearPhaseColumns;
   #team: Promise<Team> | undefined;
 
   constructor(options: LinearStoreOptions) {
@@ -61,6 +74,7 @@ export class LinearTicketStore implements TicketStore {
       ...options.states,
       ...(options.readyState ? { ready: options.readyState } : {}),
     };
+    this.#phases = { ...DEFAULT_PHASE_COLUMNS, ...options.phaseColumns };
   }
 
   #idOk(id: string): boolean {
@@ -90,9 +104,17 @@ export class LinearTicketStore implements TicketStore {
     return this.#team;
   }
 
-  async #stateId(status: Exclude<TicketStatus, "blocked">): Promise<string> {
-    const name = this.#names[status];
-    const state = (await this.#loadTeam()).states.get(name.trim().toLowerCase());
+  #stateId(status: Exclude<TicketStatus, "blocked">): Promise<string> {
+    return this.#stateIdByName(this.#names[status]);
+  }
+
+  /** State id by name, or undefined when the team has no such column (custom boards). */
+  async #optionalStateId(name: string): Promise<string | undefined> {
+    return (await this.#loadTeam()).states.get(norm(name))?.id;
+  }
+
+  async #stateIdByName(name: string): Promise<string> {
+    const state = (await this.#loadTeam()).states.get(norm(name));
     if (!state)
       throw new LinearApiError(`Linear state "${name}" not found in team ${this.#teamKey}`);
     return state.id;
@@ -234,8 +256,18 @@ export class LinearTicketStore implements TicketStore {
     if (patch.title !== undefined) input.title = patch.title;
     if (patch.priority !== undefined) input.priority = toLinearPriority(patch.priority);
     // "blocked" keeps the current column; the flag lives in the body block.
-    if (patch.status !== undefined && patch.status !== "blocked")
-      input.stateId = await this.#stateId(patch.status);
+    if (patch.status !== undefined && patch.status !== "blocked") {
+      const column =
+        patch.phase !== undefined && PHASED.has(patch.status)
+          ? columnFor({ phase: patch.phase, status: "running" }, this.#names, this.#phases)
+          : undefined;
+      // A phase start never pulls an issue a human finished or canceled back onto the board.
+      const reopen = isTerminal(issue.state.type) && PHASED.has(patch.status);
+      if (!reopen)
+        input.stateId =
+          (column ? await this.#optionalStateId(column) : undefined) ??
+          (await this.#stateId(patch.status));
+    }
     if (patch.labels !== undefined)
       input.labelIds = await this.#labelIds([this.#label, ...patch.labels]);
     if (patch.assignee !== undefined) input.assigneeId = await this.#userId(patch.assignee);
@@ -260,12 +292,95 @@ export class LinearTicketStore implements TicketStore {
   }
 
   async comment(id: string, body: string): Promise<void> {
+    await this.#createComment(await this.#must(id), body);
+  }
+
+  async #createComment(issue: Q.LinearIssue, body: string): Promise<string> {
+    const data = await this.#client.request<{
+      commentCreate: { success: boolean; comment: { id: string } | null };
+    }>(Q.CREATE_COMMENT, { input: { issueId: issue.id, body } });
+    if (!data.commentCreate.success || !data.commentCreate.comment)
+      throw new LinearApiError(`Linear comment on ${issue.identifier} failed`);
+    return data.commentCreate.comment.id;
+  }
+
+  /** Moves the issue to the column of a workflow phase; never reopens a finished issue. */
+  async setPhase(id: string, position: TrackerPhase): Promise<void> {
+    const column = columnFor(position, this.#names, this.#phases);
+    if (!column) return;
     const issue = await this.#must(id);
-    const data = await this.#client.request<{ commentCreate: { success: boolean } }>(
-      Q.CREATE_COMMENT,
-      { input: { issueId: issue.id, body } },
-    );
-    if (!data.commentCreate.success) throw new LinearApiError(`Linear comment on ${id} failed`);
+    if (norm(issue.state.name) === norm(column)) return;
+    // A human closed or canceled it while Matrix worked: leave it there.
+    if (isTerminal(issue.state.type)) return;
+    // Boards without this column keep the coarse column the reconciler already set.
+    const stateId = await this.#optionalStateId(column);
+    if (!stateId) return;
+    const data = await this.#client.request<{ issueUpdate: { success: boolean } }>(Q.UPDATE_ISSUE, {
+      id: issue.id,
+      input: { stateId },
+    });
+    if (!data.issueUpdate.success) throw new LinearApiError(`Linear move of ${id} failed`);
+  }
+
+  /**
+   * One live comment per `key`: created once, then edited in place. Its id rides in the hidden
+   * Matrix block of the issue description; a deleted comment is recreated.
+   */
+  async upsertComment(id: string, key: string, body: string): Promise<void> {
+    if (!isCommentKey(key)) throw new Error(`invalid comment key ${JSON.stringify(key)}`);
+    const issue = await this.#must(id);
+    const marked = `${body}\n\n<!-- matrix-comment:${key} -->`;
+    const known = readBody(issue.description).meta.comments?.[key];
+    // The stored id is untrusted (anyone can edit the description): only edit our own comment
+    // on this very issue. Otherwise recover a lost id by marker, else create a new comment.
+    const target =
+      (known && (await this.#ownComment(known, issue.id)) ? known : undefined) ??
+      (await this.#markedComment(issue.id, key));
+    if (target) {
+      const data = await this.#client.request<{ commentUpdate: { success: boolean } }>(
+        Q.UPDATE_COMMENT,
+        { id: target, input: { body: marked } },
+      );
+      if (!data.commentUpdate.success) throw new LinearApiError(`Linear comment on ${id} failed`);
+      if (target === known) return;
+    }
+    const commentId = target ?? (await this.#createComment(issue, marked));
+    // Re-read right before writing so a human edit since the first read is kept.
+    const fresh = await this.#must(id);
+    const { text, meta } = readBody(fresh.description);
+    meta.comments = { ...meta.comments, [key]: commentId };
+    const data = await this.#client.request<{ issueUpdate: { success: boolean } }>(Q.UPDATE_ISSUE, {
+      id: issue.id,
+      input: { description: writeBody(text, meta) },
+    });
+    if (!data.issueUpdate.success) throw new LinearApiError(`Linear issueUpdate ${id} failed`);
+  }
+
+  async #ownComment(commentId: string, issueUuid: string): Promise<boolean> {
+    try {
+      const data = await this.#client.request<{
+        comment: { issue: { id: string } | null; user: { isMe: boolean } | null } | null;
+      }>(Q.COMMENT, { id: commentId });
+      return data.comment?.issue?.id === issueUuid && data.comment.user?.isMe === true;
+    } catch (error) {
+      if (error instanceof LinearApiError && /not found/i.test(error.message)) return false;
+      throw error;
+    }
+  }
+
+  async #markedComment(issueUuid: string, key: string): Promise<string | undefined> {
+    const data = await this.#client.request<{
+      issue: {
+        comments: { nodes: Array<{ id: string; body: string; user: { isMe: boolean } | null }> };
+      } | null;
+    }>(Q.ISSUE_COMMENTS, { id: issueUuid });
+    const marker = `<!-- matrix-comment:${key} -->`;
+    return data.issue?.comments.nodes.find((c) => c.user?.isMe && c.body.includes(marker))?.id;
+  }
+
+  /** Makes sure the project label exists on the team (created when missing). */
+  async ensureScope(): Promise<void> {
+    await this.#labelIds([this.#label]);
   }
 
   /** `from blocks to`, `from is parent of to`, or `from related to` (same as other adapters). */

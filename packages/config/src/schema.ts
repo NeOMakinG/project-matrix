@@ -185,6 +185,8 @@ export const linearTickets = z.object({
   apiKeyEnv: z
     .string()
     .regex(/^[A-Z_][A-Z0-9_]*$/, "must be an env var name, not a key")
+    // Only Linear-named vars: the value is sent to api.linear.app as the Authorization header.
+    .regex(/^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$/, "must be an env var name containing LINEAR")
     .default("LINEAR_API_KEY"),
 });
 
@@ -193,7 +195,7 @@ export type LinearTicketsConfig = z.infer<typeof linearTickets>;
 export const processConfig = z.object({
   disposableArtifacts: z.array(z.string().min(1)).optional(),
   tickets: z.enum(["beads", "github", "linear", "markdown"]),
-  /** Required by the server when `tickets` is "linear"; the init interview does not ask yet. */
+  /** Required when `tickets` is "linear" (asked by the init interview). */
   linear: linearTickets.optional(),
   adrDir: z.string().default("docs/adr"),
   branching: z.enum(["trunk-with-prs", "gitflow"]),

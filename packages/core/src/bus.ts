@@ -29,7 +29,19 @@ export type BusEvent =
     }
   | { type: "approval.decided"; approvalId: string; status: "approved" | "rejected" }
   | { type: "workflow.blocked"; projectId: string; ticketId: string; reason: string }
-  | { type: "autonomy.changed"; projectId: string; phase: Phase | "default"; mode: string };
+  | { type: "autonomy.changed"; projectId: string; phase: Phase | "default"; mode: string }
+  | TrackerFailedEvent;
+
+/** A best-effort write to the project's ticket tracker failed; the workflow carries on. */
+export interface TrackerFailedEvent {
+  type: "tracker.failed";
+  projectId: string;
+  ticketId?: string;
+  /** What Matrix tried: `update`, `comment`, `setPhase`, `upsertComment`, `ensureScope`. */
+  operation: string;
+  message: string;
+  at: string;
+}
 
 export type BusListener = (event: BusEvent) => void;
 
