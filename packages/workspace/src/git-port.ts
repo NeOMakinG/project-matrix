@@ -277,7 +277,7 @@ export class WorktreeGitPort implements GitPort {
     workdir: string,
     refuseHidden = true,
     dependencies?: string[],
-  ): Promise<Set<string>> {
+  ): Promise<Exclusion> {
     const { baseSha } = await this.#trusted.lookup(workdir);
     if (!baseSha) throw new Error("trusted BASE required for artifact policy");
     const tree = await this.#git(workdir, ["ls-tree", "-z", baseSha, "--", "matrix.config.ts"]);
@@ -295,27 +295,47 @@ export class WorktreeGitPort implements GitPort {
     const tracked = new Set(
       (await this.#git(workdir, ["ls-tree", "-r", "--name-only", "-z", "HEAD"])).split("\0"),
     );
-    const disposable = new Set<string>();
+    // A predicate, not a snapshot: dependency/disposable files created after this listing (caches a
+    // lingering bundler writes under node_modules) stay excluded from staging and the fingerprint.
+    const disposable: Exclusion = {
+      has: (path) => !tracked.has(path) && (matches(path) || isDependencyPath(path)),
+    };
+    if (!refuseHidden && !dependencies) return disposable;
     const all = await this.#git(workdir, ["ls-files", "--others", "-z"], true);
-    const cached = await this.#git(workdir, ["ls-files", "--cached", "-z"]);
-    for (const path of `${all}${cached}`.split("\0").filter(Boolean)) {
-      if (tracked.has(path)) continue;
-      if (matches(path)) disposable.add(path);
-      else if (isDependencyPath(path)) {
-        disposable.add(path);
-        dependencies?.push(path);
-      }
+    if (dependencies) {
+      const cached = await this.#git(workdir, ["ls-files", "--cached", "-z"]);
+      for (const path of `${all}${cached}`.split("\0").filter(Boolean))
+        if (disposable.has(path) && !matches(path)) dependencies.push(path);
     }
+    if (!refuseHidden) return disposable;
     const visible = new Set(
       (await this.#git(workdir, ["ls-files", "--others", "--exclude-standard", "-z"], true)).split(
         "\0",
       ),
     );
     for (const path of all.split("\0").filter(Boolean)) {
-      if (refuseHidden && !disposable.has(path) && !visible.has(path))
+      if (!disposable.has(path) && !visible.has(path))
         throw new Error(`ignored artifact preserved; trusted BASE deny-clean policy: ${path}`);
     }
     return disposable;
+  }
+
+  /**
+   * Paths staged and fingerprinted: the index (tracked and force-added files, always) plus untracked
+   * files git does not ignore. Ignored files can never be committed (the gate refuses ignored
+   * non-disposable artifacts) and are kept out of checks by `cleanForChecks`; untracked
+   * dependencies and BASE-disposable artifacts are excluded even without a .gitignore entry.
+   */
+  async #candidatePaths(workdir: string, excluded: Exclusion): Promise<string[]> {
+    const cached = await this.#git(workdir, ["ls-files", "--cached", "-z"]);
+    const others = await this.#git(
+      workdir,
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      true,
+    );
+    return [...new Set(`${cached}${others}`.split("\0").filter(Boolean))].filter(
+      (path) => !excluded.has(path),
+    );
   }
 
   async commitImplementation(
@@ -380,9 +400,7 @@ export class WorktreeGitPort implements GitPort {
       await mkdir(source, { mode: 0o700 });
       const staging = join(temporary, "staging");
       await mkdir(staging, { mode: 0o700 });
-      const files = await this.#git(workdir, ["ls-files", "--cached", "--others", "-z"], true);
-      for (const path of new Set(files.split("\0").filter(Boolean))) {
-        if (disposable.has(path)) continue;
+      for (const path of await this.#candidatePaths(workdir, disposable)) {
         options.signal?.throwIfAborted();
         const stat = await lstat(join(workdir, path)).catch((error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return undefined;
@@ -447,7 +465,9 @@ export class WorktreeGitPort implements GitPort {
         return result.stdout.trim();
       };
       await candidate("read-tree", head);
-      if (paths.length) await candidate("add", "-A", "--", ...paths);
+      // --force: index entries inside ignored dirs (force-added source) are approved paths too. The
+      // staging tree only holds candidate paths, so no other ignored file can be picked up.
+      if (paths.length) await candidate("add", "-A", "--force", "--", ...paths);
       if (Object.keys(generated).length)
         await candidate("add", "-A", "--", ...Object.keys(generated));
       const index = await candidate("ls-files", "--stage", "-z");
@@ -671,9 +691,7 @@ export class WorktreeGitPort implements GitPort {
     const disposable = await this.#assertNoHiddenArtifacts(workdir, false);
     const hash = createHash("sha256");
     hash.update(await this.headSha(workdir));
-    const untracked = await this.#git(workdir, ["ls-files", "-z", "--cached", "--others"], true);
-    for (const path of [...new Set(untracked.split("\0").filter(Boolean))].sort()) {
-      if (disposable.has(path)) continue;
+    for (const path of (await this.#candidatePaths(workdir, disposable)).sort()) {
       hash.update(`\0${path}\0`);
       const full = join(workdir, path);
       const stat = await lstat(full).catch((error: NodeJS.ErrnoException) => {
@@ -703,6 +721,11 @@ export class WorktreeGitPort implements GitPort {
     );
     return hash.digest("hex");
   }
+}
+
+/** Paths left out of commits and the handover fingerprint. */
+interface Exclusion {
+  has(path: string): boolean;
 }
 
 /**

@@ -624,3 +624,127 @@ describe("installed dependencies (node_modules) without a BASE policy", () => {
     expect(await readFile(join(outside, "keep"), "utf8")).toBe("keep");
   });
 });
+
+describe("staging and fingerprint skip ignored and dependency paths", () => {
+  const wtGit = (workdir: string, ...args: string[]) =>
+    execFileSync(
+      "git",
+      ["-C", workdir, "-c", "user.name=T", "-c", "user.email=t@localhost", ...args],
+      { encoding: "utf8" },
+    ).trim();
+
+  /** A large installed tree with `.bin` symlinks, like a real `app/node_modules`. */
+  async function install(workdir: string) {
+    for (let index = 0; index < 400; index++) {
+      const dir = join(workdir, `app/node_modules/pkg${index}/lib`);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "index.js"), `module.exports = ${index};\n`);
+    }
+    await mkdir(join(workdir, "app/node_modules/.bin"), { recursive: true });
+    for (let index = 0; index < 50; index++)
+      await symlink(
+        `../pkg${index}/lib/index.js`,
+        join(workdir, `app/node_modules/.bin/b${index}`),
+      );
+  }
+
+  test.each([true, false])(
+    "commit succeeds while node_modules keeps changing (ignored=%s)",
+    async (ignored) => {
+      const { prepared, port, options } = await fixture({
+        ...(ignored ? { ignore: "node_modules/\n" } : {}),
+        packageRoots: ["app"],
+      });
+      await install(prepared.workdir);
+      await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+      await writeFile(join(prepared.workdir, "src/fresh.ts"), "export const fresh = 1;\n");
+      // A lingering bundler keeps writing caches under node_modules throughout the handover.
+      const cache = join(prepared.workdir, "app/node_modules/.cache");
+      await mkdir(cache, { recursive: true });
+      let tick = 0;
+      let writing = true;
+      const writer = (async () => {
+        while (writing) {
+          await writeFile(join(cache, `c${tick++}`), String(tick));
+          await writeFile(join(cache, "busy.json"), String(tick));
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+      })();
+      try {
+        const result = await port.commitImplementation(prepared.workdir, {
+          ...options,
+          scan: async (snapshot, binding) => {
+            expect(binding.objects.map((object) => object.path).sort()).toEqual([
+              "src/answer.ts",
+              "src/fresh.ts",
+            ]);
+            expect(existsSync(join(snapshot, "app/node_modules"))).toBe(false);
+            await writeFile(join(cache, "during-scan.json"), "x");
+            return options.scan();
+          },
+        });
+        const tree = wtGit(prepared.workdir, "ls-tree", "-r", "--name-only", result.headSha);
+        expect(tree).toContain("src/fresh.ts");
+        expect(tree).not.toContain("node_modules");
+      } finally {
+        writing = false;
+        await writer;
+      }
+    },
+    60_000,
+  );
+
+  test("a tracked file changed during the handover still refuses", async () => {
+    const { prepared, port, options, head } = await fixture({
+      ignore: "node_modules/\n",
+      packageRoots: ["app"],
+    });
+    await install(prepared.workdir);
+    await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+    await expect(
+      port.commitImplementation(prepared.workdir, {
+        ...options,
+        scan: async () => {
+          await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 3;\n");
+          return options.scan();
+        },
+      }),
+    ).rejects.toThrow(/changed during secret scan/);
+    expect(await port.headSha(prepared.workdir)).toBe(head);
+  }, 60_000);
+
+  test("force-added files: source in an ignored dir is committed, dependencies never", async () => {
+    const { prepared, port, options } = await fixture({
+      ignore: "node_modules/\ngenerated/\n",
+      packageRoots: ["app"],
+    });
+    await install(prepared.workdir);
+    await mkdir(join(prepared.workdir, "src/generated"), { recursive: true });
+    await writeFile(join(prepared.workdir, "src/generated/types.ts"), "export type T = 1;\n");
+    wtGit(prepared.workdir, "add", "-f", "src/generated/types.ts", "app/node_modules/pkg1/lib");
+    // Index entries under node_modules stay in the fingerprint (refusal is the safe side) but are
+    // never staged, scanned or committed, and checks drop them from the index and wipe the tree.
+    const result = await port.commitImplementation(prepared.workdir, {
+      ...options,
+      scan: async (_snapshot, binding) => {
+        expect(binding.objects.map((object) => object.path)).toEqual(["src/generated/types.ts"]);
+        return options.scan();
+      },
+    });
+    const tree = wtGit(prepared.workdir, "ls-tree", "-r", "--name-only", result.headSha);
+    expect(tree).toContain("src/generated/types.ts");
+    expect(tree).not.toContain("node_modules");
+    expect(await port.cleanForChecks(prepared.workdir)).toBe(result.headSha);
+    expect(existsSync(join(prepared.workdir, "app/node_modules"))).toBe(false);
+  }, 60_000);
+
+  test("an ignored non-dependency artifact is still refused at commit", async () => {
+    const { prepared, port, options } = await fixture({ ignore: "build/\n" });
+    await mkdir(join(prepared.workdir, "build"), { recursive: true });
+    await writeFile(join(prepared.workdir, "build/hidden.js"), "process.exit(0)");
+    await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+    await expect(port.commitImplementation(prepared.workdir, options)).rejects.toThrow(
+      /ignored artifact preserved/,
+    );
+  }, 60_000);
+});
