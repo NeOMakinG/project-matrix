@@ -1,9 +1,9 @@
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { RunEvent, RunRequest } from "@matrix/core";
 import { asRunToken } from "@matrix/sandbox";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test } from "vitest";
 import { claudeCodeRunner, codexRunner } from "./index";
 
 const gateway = {
@@ -24,9 +24,15 @@ const toolLine = JSON.stringify({
   message: { content: [{ type: "tool_use", id: "t1", name: "ScheduleWakeup", input: {} }] },
 });
 
+const dirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+
 /** A fake CLI: drains stdin, prints `lines` (a "WAIT:<ms>" entry pauses), then `tail`. */
 async function fakeCli(lines: string[], tail: "exit" | "hang" | "hang-ignoring-term") {
   const dir = await mkdtemp(join(tmpdir(), "matrix-fake-cli-"));
+  dirs.push(dir);
   const bin = join(dir, "fake-cli");
   const script = `#!/usr/bin/env node
 process.stdin.resume();
@@ -119,15 +125,28 @@ describe("run completion and idle detection", () => {
   }, 15_000);
 
   test("steady output keeps resetting the idle timer", async () => {
-    const steady = Array.from({ length: 7 }, () => ["WAIT:100", toolLine]).flat();
-    // 700 ms of total activity against a 400 ms idle limit (the first line covers node startup).
+    const steady = Array.from({ length: 5 }, () => ["WAIT:300", toolLine]).flat();
+    // 1.5 s of total activity against a 1 s idle limit (the first line covers node startup).
     const { dir, bin } = await fakeCli([toolLine, ...steady, resultLine], "exit");
     const result = await claudeCodeRunner({
       gateway,
       binary: bin,
       baseEnv,
-      idleTimeoutMs: 400,
+      idleTimeoutMs: 1000,
     }).run(request(dir), () => {}, new AbortController().signal);
+    expect(result.status).toBe("ok");
+  });
+
+  test("a caller abort after the result event keeps the finished run", async () => {
+    const { dir, bin } = await fakeCli([resultLine], "hang");
+    const controller = new AbortController();
+    const result = await claudeCodeRunner({ gateway, binary: bin, baseEnv }).run(
+      request(dir),
+      (e) => {
+        if (e.kind === "cost") setTimeout(() => controller.abort(), 50);
+      },
+      controller.signal,
+    );
     expect(result.status).toBe("ok");
   });
 
@@ -159,5 +178,20 @@ describe("run completion and idle detection", () => {
     }).run(request(dir, "codex"), () => {}, new AbortController().signal);
     expect(result.status).toBe("ok");
     expect(result.summary).toBe("ok");
+  });
+
+  test("codex: a CLI that hangs after turn.failed is stopped and the run fails", async () => {
+    const { dir, bin } = await fakeCli(
+      [JSON.stringify({ type: "turn.failed", error: { message: "model refused" } })],
+      "hang",
+    );
+    const result = await codexRunner({
+      gateway,
+      binary: bin,
+      baseEnv,
+      completionGraceMs: 200,
+    }).run(request(dir, "codex"), () => {}, new AbortController().signal);
+    expect(result.status).toBe("failed");
+    expect(result.summary.split("\n")[0]).toBe("model refused");
   });
 });

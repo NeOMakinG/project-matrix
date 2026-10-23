@@ -21,6 +21,8 @@ const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
  * session open until the run timeout. Names checked against Claude Code 2.1.296's init event;
  * unknown names are harmless deny rules, kept so a renamed or re-enabled tool stays blocked.
  */
+export const CLAUDE_BASH_MAX_TIMEOUT_MS = 8 * 60_000;
+
 export const CLAUDE_DISALLOWED_TOOLS = [
   "ScheduleWakeup",
   "CronCreate",
@@ -162,6 +164,8 @@ export const claudeCodeDefinition: CliRunnerDefinition = {
         DISABLE_AUTOUPDATER: "1",
         // No `run_in_background` Bash, no auto-backgrounding: every command finishes in the turn.
         CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+        // One Bash call (default cap 10 min) must fit inside the runner's 10-min idle limit.
+        BASH_MAX_TIMEOUT_MS: String(CLAUDE_BASH_MAX_TIMEOUT_MS),
       },
     };
   },

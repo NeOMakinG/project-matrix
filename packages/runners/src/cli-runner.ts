@@ -226,6 +226,12 @@ export function createCliRunner(
         clearTimeout(graceTimer);
         signal.removeEventListener("abort", forwardAbort);
       }
+      // Our stop only counts if the executor saw the abort: a process that already exited (while the
+      // executor cleaned up) keeps its real exit code. A caller abort after the final event does not
+      // discard the finished work.
+      const stoppedBy = !outcome.cancelled
+        ? undefined
+        : (stopReason ?? (parser.isComplete?.() ? "completed" : undefined));
       const parsed = parser.finish();
       const receipts: Receipt[] = [];
       if (options.transcriptPath) {
@@ -242,18 +248,18 @@ export function createCliRunner(
         });
       }
       let status: RunResult["status"];
-      if (stopReason === "idle") status = "failed";
+      if (stoppedBy === "idle") status = "failed";
       // The final event arrived; the stop signal is ours, so the parsed result decides.
-      else if (stopReason === "completed") status = parsed.isError ? "failed" : "ok";
+      else if (stoppedBy === "completed") status = parsed.isError ? "failed" : "ok";
       else if (outcome.cancelled) status = "cancelled";
       else if (outcome.timedOut) status = "timeout";
       else if (outcome.exitCode !== 0 || parsed.isError) status = "failed";
       else status = "ok";
       let summary = parsed.summary;
       const interruption =
-        stopReason === "idle"
+        stoppedBy === "idle"
           ? `runner idle: no output for ${formatDuration(idleMs)}`
-          : status === "failed" && stopReason !== "completed"
+          : status === "failed" && stoppedBy !== "completed"
             ? interruptionOf(outcome)
             : undefined;
       if (interruption)
@@ -270,7 +276,7 @@ export function createCliRunner(
       emit({
         kind: "done",
         message: `${definition.id} ${status}`,
-        data: { exitCode: outcome.exitCode, ...(stopReason ? { stopReason } : {}) },
+        data: { exitCode: outcome.exitCode, ...(stoppedBy ? { stopReason: stoppedBy } : {}) },
       });
       return {
         runId: req.runId,
