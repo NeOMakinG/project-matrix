@@ -1,6 +1,7 @@
 import type { Ticket, TicketStatus, TrackerPhase } from "../types.js";
-import { joinBody, type MatrixMeta, splitBody } from "./github.js";
+import { joinBody, type MatrixMeta } from "./github.js";
 import { sanitizeUntrusted } from "./linear-client.js";
+import { findLegacyBlock } from "./linear-meta.js";
 import type { LinearIssue } from "./linear-queries.js";
 
 /** Linear workflow state names Matrix moves issues into for coarse ticket statuses. */
@@ -89,6 +90,8 @@ export interface LinearMeta extends MatrixMeta {
   blockedIn?: string;
   /** Comment ids of Matrix's live comments, by key (see `upsertComment`). */
   comments?: Record<string, string>;
+  /** Column Matrix itself last moved the issue into (host-side only; history lags). */
+  lastState?: string;
 }
 
 const COMMENT_KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -103,32 +106,43 @@ function safeComments(value: unknown): Record<string, string> | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
-export function readBody(description: string | null): { text: string; meta: LinearMeta } {
-  const { text, meta } = splitBody(sanitizeUntrusted(description ?? ""));
+/** Validates untrusted meta (a legacy description block, or a host file) field by field. */
+export function safeMeta(meta: Record<string, unknown>): LinearMeta {
   const safe: LinearMeta = {};
-  if (typeof meta.phase === "string") safe.phase = meta.phase;
-  if ((meta as LinearMeta).blocked === true) safe.blocked = true;
-  const blockedIn = (meta as LinearMeta).blockedIn;
+  if (typeof meta.phase === "string" && meta.phase.length <= 80) safe.phase = meta.phase;
+  if (meta.blocked === true) safe.blocked = true;
+  const blockedIn = meta.blockedIn;
   if (safe.blocked && typeof blockedIn === "string" && blockedIn.length <= 80)
     safe.blockedIn = blockedIn;
-  const comments = safeComments((meta as LinearMeta).comments);
+  const comments = safeComments(meta.comments);
   if (comments) safe.comments = comments;
-  return { text, meta: safe };
+  if (typeof meta.lastState === "string" && meta.lastState.length <= 80)
+    safe.lastState = meta.lastState;
+  return safe;
 }
 
+/** Description text and the legacy hidden block's meta (empty when there is none). */
+export function readBody(description: string | null): { text: string; meta: LinearMeta } {
+  const block = findLegacyBlock(description);
+  if (!block) return { text: sanitizeUntrusted(description ?? ""), meta: {} };
+  return { text: sanitizeUntrusted(block.text), meta: safeMeta(block.meta) };
+}
+
+/** Legacy mode only (no host meta store): text plus the hidden block. */
 export function writeBody(text: string, meta: LinearMeta): string {
-  const comments = safeComments(meta.comments);
-  const clean: LinearMeta = {
-    ...(meta.phase ? { phase: meta.phase } : {}),
-    ...(meta.blocked ? { blocked: true } : {}),
-    ...(meta.blocked && meta.blockedIn ? { blockedIn: meta.blockedIn } : {}),
-    ...(comments ? { comments } : {}),
-  };
+  const { lastState: _host, ...clean } = safeMeta(meta as Record<string, unknown>);
   return joinBody(text, clean);
 }
 
-export function toTicket(issue: LinearIssue, names: LinearStateNames): Ticket {
-  const { text, meta } = readBody(issue.description);
+/** `meta` is the issue's host-side meta when known; else the legacy block is read. */
+export function toTicket(
+  issue: LinearIssue,
+  names: LinearStateNames,
+  hostMeta?: LinearMeta,
+): Ticket {
+  const body = readBody(issue.description);
+  const text = body.text;
+  const meta = hostMeta ?? body.meta;
   const deps = issue.inverseRelations.nodes
     .filter((r) => r.type === "blocks")
     .map((r) => r.issue.identifier);

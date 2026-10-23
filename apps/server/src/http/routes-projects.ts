@@ -384,6 +384,9 @@ function linearSettings(l: z.infer<typeof S.LinearTickets>) {
     projectLabel: l.projectLabel,
     ...(l.readyState ? { readyState: l.readyState } : {}),
     ...(l.apiKeyEnv ? { apiKeyEnv: l.apiKeyEnv } : {}),
+    ...(l.app
+      ? { app: { clientIdEnv: l.app.clientIdEnv, clientSecretEnv: l.app.clientSecretEnv } }
+      : {}),
   };
 }
 

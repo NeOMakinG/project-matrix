@@ -61,15 +61,36 @@ mutation MatrixComment($input: CommentCreateInput!) {
 
 export const COMMENT = `
 query MatrixCommentLookup($id: String!) {
-  comment(id: $id) { id issue { id } user { isMe } }
+  comment(id: $id) { id issue { id } user { id isMe } }
 }`;
 
 export const ISSUE_COMMENTS = `
 query MatrixIssueComments($id: String!) {
   issue(id: $id) {
-    comments(first: 100) { nodes { id body createdAt user { isMe displayName name } } }
+    comments(first: 100) { nodes { id body createdAt user { id isMe displayName name } } }
   }
 }`;
+
+export const VIEWER = `
+query MatrixViewer { viewer { id app } }`;
+
+/** Recent state changes of one issue, to tell a human's move from Matrix's own. */
+export const ISSUE_HISTORY = `
+query MatrixIssueHistory($id: String!) {
+  issue(id: $id) {
+    history(first: 100, orderBy: createdAt) {
+      nodes { createdAt actor { id } botActor { id } fromState { name } toState { name } }
+    }
+  }
+}`;
+
+export interface LinearHistoryNode {
+  createdAt: string;
+  actor: { id: string } | null;
+  botActor: { id: string } | null;
+  fromState: { name: string } | null;
+  toState: { name: string } | null;
+}
 
 export const UPDATE_COMMENT = `
 mutation MatrixCommentUpdate($id: String!, $input: CommentUpdateInput!) {
