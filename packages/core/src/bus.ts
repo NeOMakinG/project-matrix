@@ -35,6 +35,8 @@ export type BusEvent =
       ticketId: string;
       url: string;
       branch: string;
+      /** Set when the PR waits on a manual QA handoff (reason shown in the status comment). */
+      manualQa?: string;
     }
   | { type: "autonomy.changed"; projectId: string; phase: Phase | "default"; mode: string }
   | TrackerFailedEvent

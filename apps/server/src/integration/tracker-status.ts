@@ -50,6 +50,7 @@ export function renderStatus(
   pullRequest?: StatusLink,
   checks?: string,
   newFailures?: readonly string[],
+  manualQa?: string,
 ): string {
   const lines = [
     `**Matrix** · phase ${code(w.phase)} · ${code(w.status)}`,
@@ -67,7 +68,11 @@ export function renderStatus(
       `- Orca: Run ${code(orca.run)}${orca.dispatch ? ` · dispatch ${code(orca.dispatch)}` : ""} (open in Orca desktop/mobile)`,
     );
   if (pullRequest)
-    lines.push(`- Draft PR: [${pullRequest.label}](${pullRequest.url}) (awaiting a human merge)`);
+    lines.push(
+      manualQa
+        ? `- Draft PR: [${pullRequest.label}](${pullRequest.url}) (${code(singleLine(redact(manualQa), 120))}; checklist in the PR)`
+        : `- Draft PR: [${pullRequest.label}](${pullRequest.url}) (awaiting a human merge)`,
+    );
   if (links.length) lines.push(`- Links: ${links.map((l) => `[${l.label}](${l.url})`).join(", ")}`);
   return lines.join("\n");
 }

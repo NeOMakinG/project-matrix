@@ -244,3 +244,28 @@ test("the pushed commit of an existing repo never carries .matrix/ paths (real g
   const files = git(repo, "diff", "--name-only", `main...${clean}`).trim().split("\n");
   expect(files).toEqual(["app/src/features/a.ts"]);
 });
+
+test("a manual QA handoff renders the public checklist in the draft PR body", async () => {
+  const { calls, executor } = fakeExec((spec) => {
+    if (spec.cmd.includes("list")) return { out: ghList([]) };
+    if (spec.cmd.includes("create")) return { out: PR };
+    return {};
+  });
+  const prs = new GitHubPullRequests({ executor, ghBinary: "/usr/bin/gh" });
+  await prs.publish(
+    request({
+      manualQa: {
+        surfaces: ["android"],
+        criteria: ["Export button shows", "Ping @team, fixes #4"],
+      },
+    }),
+  );
+  const body = calls.find((c) => c.cmd.includes("create"))?.stdin ?? "";
+  expect(body).toContain("## Manual QA needed");
+  expect(body).toContain("No android QA driver");
+  expect(body).toContain("- [ ] Export button shows");
+  expect(body).not.toMatch(/@team|fixes #4/);
+  expect(body).toContain("QA needs a human");
+  expect(body).not.toContain("checks, review and QA passed");
+  expect(calls.some((c) => c.cmd.includes("merge"))).toBe(false);
+});

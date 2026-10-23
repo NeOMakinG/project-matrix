@@ -4281,6 +4281,11 @@ export interface components {
       /** @description Set when overridden */
       idleTimeoutMs?: number;
       implementGuidance?: string;
+      qa?: {
+        surfaces?: ("host" | "api" | "web" | "android" | "ios")[];
+        /** @enum {string} */
+        driver: "none" | "manual";
+      };
     };
     /** @enum {string} */
     AutonomyMode: "human" | "gated" | "autonomous";
@@ -4335,6 +4340,15 @@ export interface components {
       idleTimeoutMs?: number;
       /** @description Operator-written guidance appended to the implement prompt as trusted project configuration (e.g. which test command to use for targeted runs). */
       implementGuidance?: string;
+      qa?: {
+        /** @description Surfaces QA must exercise for this project (trusted config) */
+        surfaces?: ("host" | "api" | "web" | "android" | "ios")[];
+        /**
+         * @description manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block.
+         * @enum {string}
+         */
+        driver?: "none" | "manual";
+      };
     };
     LinearTickets: {
       teamKey: string;
@@ -4470,6 +4484,16 @@ export interface components {
       idleTimeoutMs?: number | null;
       /** @description null removes it */
       implementGuidance?: string | null;
+      /** @description Replaces QA settings; null removes them */
+      qa?: {
+        /** @description Surfaces QA must exercise for this project (trusted config) */
+        surfaces?: ("host" | "api" | "web" | "android" | "ios")[];
+        /**
+         * @description manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block.
+         * @enum {string}
+         */
+        driver?: "none" | "manual";
+      } | null;
     };
     TrackerFailure: {
       ticketId?: string;

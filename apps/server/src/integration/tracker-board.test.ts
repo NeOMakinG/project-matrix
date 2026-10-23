@@ -200,6 +200,28 @@ describe("tracker status rendering", () => {
     expect(safeLink("p[r]", "https://x.test/a")).toEqual({ label: "pr", url: "https://x.test/a" });
   });
 
+  test("a manual QA handoff shows its reason next to the draft PR (fake Linear)", async () => {
+    const { fake, linear, bus, sync } = setup();
+    const t = await linear.create({ title: "T", body: "" });
+    bus.publish({
+      type: "workflow.changed",
+      workflow: wf(t.id, { phase: "merge", status: "waiting_approval" }),
+    });
+    bus.publish({
+      type: "pull_request.opened",
+      projectId: "p1",
+      ticketId: t.id,
+      url: "https://github.com/acme/wayline/pull/9",
+      branch: "matrix-x",
+      manualQa: "manual Android QA required — draft PR ready",
+    });
+    await sync.flush();
+    expect(fake.issues.get(t.id)?.state.name).toBe("Awaiting merge");
+    const comment = [...fake.comments.values()].map((c) => c.body).join("\n");
+    expect(comment).toContain("https://github.com/acme/wayline/pull/9");
+    expect(comment).toContain("manual Android QA required — draft PR ready");
+  });
+
   test("checks line summarizes new vs pre-existing failures from run receipts", async () => {
     const { fake, linear, bus, sync } = setup();
     const t = await linear.create({ title: "T", body: "" });

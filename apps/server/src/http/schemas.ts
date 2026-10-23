@@ -76,6 +76,12 @@ export const Project = z
       .openapi({ description: "Effective wall-clock limit per run of each phase, in ms" }),
     idleTimeoutMs: z.number().optional().openapi({ description: "Set when overridden" }),
     implementGuidance: z.string().optional(),
+    qa: z
+      .object({
+        surfaces: z.array(z.enum(["host", "api", "web", "android", "ios"])).optional(),
+        driver: z.enum(["none", "manual"]),
+      })
+      .optional(),
   })
   .openapi("Project");
 
@@ -185,6 +191,20 @@ const ImplementGuidance = z.string().trim().min(1).max(4000).openapi({
   description:
     "Operator-written guidance appended to the implement prompt as trusted project configuration (e.g. which test command to use for targeted runs).",
 });
+
+const QaSettings = z
+  .object({
+    surfaces: z
+      .array(z.enum(["host", "api", "web", "android", "ios"]))
+      .max(5)
+      .optional()
+      .openapi({ description: "Surfaces QA must exercise for this project (trusted config)" }),
+    driver: z.enum(["none", "manual"]).optional().openapi({
+      description:
+        "manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block.",
+    }),
+  })
+  .strict();
 
 const EditablePaths = z.array(z.string().min(1).max(200)).min(1).max(100).openapi({
   description:
@@ -331,6 +351,9 @@ export const UpdateProject = z
     implementGuidance: ImplementGuidance.nullable()
       .optional()
       .openapi({ description: "null removes it" }),
+    qa: QaSettings.nullable()
+      .optional()
+      .openapi({ description: "Replaces QA settings; null removes them" }),
   })
   .strict()
   .openapi("UpdateProject");
@@ -368,6 +391,7 @@ export const CreateProject = z
     baselineWarmup: BaselineWarmup.optional(),
     idleTimeoutMs: IdleTimeoutMs.optional(),
     implementGuidance: ImplementGuidance.optional(),
+    qa: QaSettings.optional(),
   })
   .openapi("CreateProject");
 

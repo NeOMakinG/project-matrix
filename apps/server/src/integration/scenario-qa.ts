@@ -55,6 +55,8 @@ export function scenarioQaDriver(options: {
   owner?: PrivateStateOwner;
 }): QaDriver {
   return {
+    // Host probes only: no Android/iOS device driver runs here (manual handoff covers those).
+    surfaces: ["host", "api", "web"],
     // Throw sites vouch for their own fixed messages (vouchedToolingError); nothing is vouched here.
     run: (ctx, request) => runScenarioQa(options, ctx, request),
   };

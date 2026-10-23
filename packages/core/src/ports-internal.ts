@@ -3,7 +3,7 @@ import type { DesignEvidence, DesignScope } from "./design.js";
 import type { HoldoutScenario } from "./holdout.js";
 import type { AutonomyMode, Phase, Receipt, RunEventKind } from "./ports.js";
 import type { JudgeScenarioEvidence } from "./qa-evidence.js";
-import type { PhaseModel, ProjectConfig, WorkflowState } from "./types.js";
+import type { PhaseModel, ProjectConfig, QaSurface, WorkflowState } from "./types.js";
 
 export type Authorization =
   | { ok: true; headSha: string; mode: AutonomyMode; approvalId?: string }
@@ -54,6 +54,8 @@ export interface GitPort {
 }
 
 export interface QaDriver {
+  /** Surfaces this driver can exercise on this host; unset = host/api/web probes only. */
+  readonly surfaces?: readonly QaSurface[];
   run(
     ctx: PhaseContext,
     request?: { scenarios: HoldoutScenario[]; reviewer: PhaseModel },
@@ -97,6 +99,8 @@ export interface PullRequestRequest {
   /** The commit checks, review and QA validated; exactly this SHA is pushed. */
   headSha: string;
   evidence: PullRequestEvidence[];
+  /** Set when QA was handed off to a human: surfaces + PUBLIC acceptance criteria (never holdout text). */
+  manualQa?: { surfaces: QaSurface[]; criteria: string[] };
 }
 
 /**

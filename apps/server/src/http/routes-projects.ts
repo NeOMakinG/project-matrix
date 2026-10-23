@@ -76,6 +76,7 @@ export function projectRoutes(app: App, ops: Operations) {
           ...(body.implementGuidance !== undefined
             ? { implementGuidance: body.implementGuidance }
             : {}),
+          ...(body.qa !== undefined ? { qa: body.qa } : {}),
         }),
       );
     },
@@ -107,6 +108,7 @@ export function projectRoutes(app: App, ops: Operations) {
           ...(body.implementGuidance !== undefined
             ? { implementGuidance: body.implementGuidance }
             : {}),
+          ...(body.qa !== undefined ? { qa: body.qa } : {}),
         }),
       );
     },

@@ -11,6 +11,7 @@ export * from "./environment.js";
 export * from "./handlers.js";
 export * from "./holdout.js";
 export * from "./machine.js";
+export * from "./manual-qa.js";
 export * from "./models.js";
 export * from "./ports.js";
 export type * from "./ports-internal.js";

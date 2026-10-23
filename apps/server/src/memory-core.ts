@@ -32,6 +32,7 @@ import {
   type Run,
   type UpdateProjectInput,
 } from "./core-port.js";
+import { validQaSettings } from "./integration/mapping.js";
 
 const now = () => new Date().toISOString();
 const CANCEL_REASON = "stopped by human (cancelled via API)";
@@ -144,7 +145,16 @@ export class MemoryCore implements CorePort {
       ...(patch.baselineWarmup !== undefined ? { baselineWarmup: patch.baselineWarmup } : {}),
       ...(typeof patch.idleTimeoutMs === "number" ? { idleTimeoutMs: patch.idleTimeoutMs } : {}),
       ...(patch.implementGuidance ? { implementGuidance: patch.implementGuidance } : {}),
+      ...(patch.qa
+        ? {
+            qa: {
+              ...validQaSettings(patch.qa),
+              driver: patch.qa.driver === "manual" ? "manual" : "none",
+            },
+          }
+        : {}),
     };
+    if (patch.qa === null) delete updated.qa;
     if (patch.timeouts === null) delete updated.timeouts;
     if (patch.resources === null) delete updated.resources;
     if (patch.idleTimeoutMs === null) delete updated.idleTimeoutMs;
