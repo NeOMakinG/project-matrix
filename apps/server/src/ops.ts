@@ -253,6 +253,24 @@ export class Operations {
     )(() => this.core.cancelRun(id).then((run) => this.withApproval(run)));
   }
 
+  cancelTicket(p: Principal, projectId: string, ticketId: string) {
+    return this.op(
+      p,
+      "runs:start",
+      `/projects/${projectId}/tickets/${ticketId}/cancel`,
+      projectId,
+    )(() => this.core.cancelTicket(projectId, ticketId));
+  }
+
+  cancelProject(p: Principal, projectId: string) {
+    return this.op(
+      p,
+      "runs:start",
+      `/projects/${projectId}/cancel`,
+      projectId,
+    )(() => this.core.cancelProject(projectId));
+  }
+
   async listReceipts(p: Principal, runId: string) {
     const projectId = await this.projectOfRun(runId);
     return this.op(

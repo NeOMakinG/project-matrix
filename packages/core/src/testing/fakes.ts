@@ -76,6 +76,14 @@ export class FakeTicketStore implements TicketStore {
     const t = this.tickets.get(id);
     if (t) this.tickets.set(id, { ...t, labels: t.labels.filter((l) => l !== label) });
   }
+  /** Tickets a human moved to a not-started column, by id (column name). */
+  readonly humanMoves = new Map<string, string>();
+  async stopRequests(ids: string[]) {
+    return ids.flatMap((id) => {
+      const column = this.humanMoves.get(id);
+      return column ? [{ id, column }] : [];
+    });
+  }
   /** Comments humans wrote on the tracker (Matrix's own posts are `comments`). */
   readonly humanComments: { id: string; body: string; author: string }[] = [];
   async listComments(id: string): Promise<TicketComment[]> {

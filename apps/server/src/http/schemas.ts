@@ -646,3 +646,13 @@ export const InitProgress = z
     contradictions: z.array(Contradiction),
   })
   .openapi("InitProgress");
+
+export const CancelResult = z
+  .object({
+    projectId: z.string(),
+    ticketId: z.string(),
+    /** False when the ticket had no active workflow. */
+    stopped: z.boolean(),
+    reason: z.string(),
+  })
+  .openapi("CancelResult");

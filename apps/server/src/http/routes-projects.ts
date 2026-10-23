@@ -274,6 +274,33 @@ export function projectRoutes(app: App, ops: Operations) {
 
   app.openapi(
     route({
+      method: "post",
+      path: "/v1/projects/{projectId}/tickets/{ticketId}/cancel",
+      tag: "tickets",
+      summary: "Stop a ticket's workflow (cancels its run; move to Ready or start again to resume)",
+      params: TicketParam,
+      response: S.CancelResult,
+    }),
+    async (c) => {
+      const { projectId, ticketId } = c.req.valid("param");
+      return c.json(await ops.cancelTicket(c.var.principal, projectId, ticketId));
+    },
+  );
+
+  app.openapi(
+    route({
+      method: "post",
+      path: "/v1/projects/{projectId}/cancel",
+      tag: "projects",
+      summary: "Stop every active workflow of a project",
+      params: ProjectParam,
+      response: z.array(S.CancelResult),
+    }),
+    async (c) => c.json(await ops.cancelProject(c.var.principal, c.req.valid("param").projectId)),
+  );
+
+  app.openapi(
+    route({
       method: "get",
       path: "/v1/projects/{projectId}/adrs",
       tag: "knowledge",

@@ -14,6 +14,7 @@ import {
   type Store,
 } from "@matrix/core";
 import type { NewTicket, Ticket, TicketPatch, TicketQuery, TicketStore } from "@matrix/tickets";
+import type { CancelResult } from "../core-port.js";
 import {
   type Actor,
   type Approval,
@@ -36,6 +37,9 @@ import {
   type Adr as ServerAdr,
   type UpdateProjectInput,
 } from "../core-port.js";
+
+const CANCEL_REASON = "stopped by human (cancelled via API)";
+
 import { PrivateState } from "../private-state.js";
 import type { PrivateStateOwner } from "../state-owner.js";
 import {
@@ -645,8 +649,45 @@ export class RealCore implements CorePort {
     throw new CoreError("invalid_state", "pausing a run isn't supported by the core yet");
   }
 
-  async cancelRun(_id: string): Promise<Run> {
-    throw new CoreError("invalid_state", "cancelling a run isn't supported by the core yet");
+  /**
+   * Human stop through the API. The run's workflow blocks with a human-stop reason (the active run
+   * is aborted: the native runtime kills the container, Orca interrupts and closes the terminal).
+   */
+  async cancelRun(id: string): Promise<Run> {
+    const record = await this.o.store.getRun(id);
+    if (!record) throw new CoreError("not_found", `run ${id} not found`);
+    if (record.status !== "running")
+      throw new CoreError("invalid_state", `run already ${record.status}`);
+    const w = await this.o.store.getWorkflow(record.projectId, record.ticketId);
+    if (w?.currentRunId === id)
+      await this.o.reconciler.stopWorkflow(record.projectId, record.ticketId, CANCEL_REASON);
+    // An orphaned run record (its workflow moved on) is aborted if still local, and closed.
+    else if (!this.o.reconciler.abortRun(id, CANCEL_REASON))
+      await this.o.store.updateRun(id, {
+        status: "cancelled",
+        finishedAt: new Date(),
+        summary: CANCEL_REASON,
+      });
+    return this.runView((await this.o.store.getRun(id)) ?? record);
+  }
+
+  async cancelTicket(projectId: string, ticketId: string): Promise<CancelResult> {
+    if (!(await this.o.store.getProject(projectId)))
+      throw new CoreError("not_found", `project ${projectId} not found`);
+    const stopped = await this.o.reconciler.stopWorkflow(projectId, ticketId, CANCEL_REASON);
+    return { projectId, ticketId, stopped: stopped !== null, reason: CANCEL_REASON };
+  }
+
+  async cancelProject(projectId: string): Promise<CancelResult[]> {
+    if (!(await this.o.store.getProject(projectId)))
+      throw new CoreError("not_found", `project ${projectId} not found`);
+    const active = await this.o.store.listWorkflows({
+      status: ["pending", "running", "waiting_approval"],
+    });
+    const out: CancelResult[] = [];
+    for (const w of active.filter((x) => x.projectId === projectId))
+      out.push(await this.cancelTicket(projectId, w.ticketId));
+    return out;
   }
 
   async listReceipts(runId: string): Promise<Receipt[]> {

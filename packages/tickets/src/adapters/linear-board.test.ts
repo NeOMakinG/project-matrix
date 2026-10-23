@@ -200,3 +200,28 @@ describe("LinearTicketStore live comment", () => {
     });
   });
 });
+
+describe("LinearTicketStore stop requests", () => {
+  test("only issues a human moved to Backlog/Todo are stop requests (never Ready)", async () => {
+    const { fake, store } = make();
+    const ids: string[] = [];
+    for (const title of ["a", "b", "c", "d"])
+      ids.push((await store.create({ title, body: "x" })).id);
+    const [backlog, todo, ready, working] = ids as [string, string, string, string];
+    const move = (id: string, name: string) => {
+      const issue = fake.issues.get(id);
+      const state = fake.states.find((st) => st.name === name);
+      if (!issue || !state) throw new Error(`cannot move ${id} to ${name}`);
+      issue.state = state;
+    };
+    move(backlog, "Backlog");
+    move(todo, "Todo");
+    await store.update(ready, { status: "ready" });
+    await store.setPhase(working, { phase: "implement", status: "running" });
+    expect(await store.stopRequests(ids)).toEqual([
+      { id: backlog, column: "Backlog" },
+      { id: todo, column: "Todo" },
+    ]);
+    expect(column(fake, working)).toBe("Implement");
+  });
+});

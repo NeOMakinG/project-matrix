@@ -82,7 +82,10 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
   const matchesFilter = (i: LinearIssue, f: Record<string, any>) =>
     i.team.key === f.team?.key?.eq &&
     i.labels.nodes.some((l) => l.name === f.labels?.some?.name?.eq) &&
-    (!f.state || i.state.name.toLowerCase() === String(f.state.name.eqIgnoreCase).toLowerCase());
+    (!f.state?.name ||
+      i.state.name.toLowerCase() === String(f.state.name.eqIgnoreCase).toLowerCase()) &&
+    (!f.state?.type?.in || f.state.type.in.includes(i.state.type)) &&
+    (!f.number?.in || f.number.in.includes(Number(i.identifier.split("-")[1])));
 
   const handle = (op: string, v: Record<string, any>): unknown => {
     switch (op) {

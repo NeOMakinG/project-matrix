@@ -27,6 +27,8 @@ export interface WorkflowState {
   requeuedAt?: Date;
   /** Re-queues during the UTC day of `requeuedAt` (flapping guard). */
   requeueCount?: number;
+  /** Set only by `Reconciler.stopWorkflow`: a human stopped it, so resuming costs no budget. */
+  stoppedBy?: "human";
   version: number;
 }
 

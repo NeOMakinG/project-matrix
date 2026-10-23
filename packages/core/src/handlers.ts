@@ -17,7 +17,7 @@ import {
 import {
   HoldoutStore,
   holdoutReceipt,
-  parseScenarios,
+  parseScenarioBatch,
   parseVerdicts,
   privateQaCause,
   QA_JUDGE_CRITERIA,
@@ -207,7 +207,13 @@ const spike =
       // The run summary can quote model output (holdout text): report the status only.
       if (scen.status !== "ok") throw new Error(`scenario model run ${scen.status}`);
       scenarioRun.status = "failed";
-      return parseScenarios(scen.summary);
+      const batch = parseScenarioBatch(scen.summary);
+      if (batch.dropped.length)
+        ctx.emit(
+          `dropped ${batch.dropped.length} invalid private scenario(s): ${[...new Set(batch.dropped)].join("; ")}`,
+          "log",
+        );
+      return batch.scenarios;
     };
     try {
       const scenarios = await retryPrivateQa(ctx.signal, async (attempt) => {

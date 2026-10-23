@@ -17,6 +17,11 @@ export interface ProcessOutcome {
   timedOut: boolean;
   cancelled: boolean;
   stderrTail: string;
+  /**
+   * Set when the process did not end on its own (killed by a signal, container stopped, worker
+   * lost): a real error description, so callers never mistake the model's last words for the cause.
+   */
+  interrupted?: string;
 }
 
 export type LineExecutor = (
@@ -159,11 +164,19 @@ export const hostExecutor: LineExecutor = (spec, onLine, signal) =>
       signal.removeEventListener("abort", onAbort);
       reject(safeLaunchError(spec, error));
     });
-    child.on("close", (code) => {
+    child.on("close", (code, killedBy) => {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
       lines.flush();
-      resolve({ exitCode: code ?? -1, timedOut, cancelled, stderrTail });
+      resolve({
+        exitCode: code ?? -1,
+        timedOut,
+        cancelled,
+        stderrTail,
+        ...(killedBy && !timedOut && !cancelled
+          ? { interrupted: `process killed by ${killedBy}` }
+          : {}),
+      });
     });
     child.stdin.on("error", () => {});
     child.stdin.end(spec.stdin ?? "");

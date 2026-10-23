@@ -205,6 +205,14 @@ function validApprover(a: ApprovalRecord, runOwner: string | undefined): boolean
   return a.decidedBy !== runOwner;
 }
 
+/** Prefix of the last error of a workflow a human stopped; a later restart costs no budget. */
+export const HUMAN_STOP = "stopped by human";
+
+/** Abort reason of a run a human stopped (vs. timeouts, lease loss, shutdown). */
+export class HumanStopError extends Error {}
+
+const ACTIVE_STATUSES = ["pending", "running", "waiting_approval"] as const;
+
 export class Reconciler {
   /** Heads whose draft PR is published (skips repeat work on later ticks). */
   private readonly published = new Set<string>();
@@ -258,8 +266,10 @@ export class Reconciler {
     };
     await this.reapExpired(report);
     const projects = await this.o.store.listProjects();
-    for (const project of projects)
+    for (const project of projects) {
       if (this.o.projectDispatchAllowed?.(project.id) !== false) await this.syncReady(project);
+      await this.honorStopRequests(project);
+    }
 
     const now = this.clock();
     const byId = new Map(projects.map((project) => [project.id, project]));
@@ -415,6 +425,88 @@ export class Reconciler {
     }
   }
 
+  /** Aborts a run this reconciler executes, as a human stop; false when it is not local. */
+  abortRun(runId: string, reason: string): boolean {
+    const run = this.active.get(runId);
+    run?.controller.abort(new HumanStopError(reason));
+    return run !== undefined;
+  }
+
+  /** A ticket a human moved back to Backlog/Todo while its workflow is active stops it. */
+  private async honorStopRequests(project: ProjectConfig): Promise<void> {
+    const tickets = this.o.tickets(project.id);
+    if (!tickets.stopRequests) return;
+    const active = (await this.o.store.listWorkflows({ status: [...ACTIVE_STATUSES] })).filter(
+      (w) => w.projectId === project.id,
+    );
+    if (!active.length) return;
+    let requests: { id: string; column: string }[];
+    try {
+      requests = await tickets.stopRequests(active.map((w) => w.ticketId));
+    } catch (error) {
+      this.trackerFailed(project.id, "*", "stop-requests", error);
+      return;
+    }
+    for (const r of requests)
+      await this.stopWorkflow(project.id, r.id, `${HUMAN_STOP} (moved to ${r.column})`);
+  }
+
+  /**
+   * Stops an active workflow on a human's request: aborts its run when this reconciler runs it
+   * (the runner kills the container / Orca terminal), marks the run cancelled, and blocks the
+   * workflow with `reason`. No attempt or restart budget is consumed and the ticket is never
+   * moved; moving it to Ready later restarts it. Returns null when nothing was active.
+   */
+  async stopWorkflow(
+    projectId: string,
+    ticketId: string,
+    reason: string,
+  ): Promise<WorkflowState | null> {
+    let saved: WorkflowState | undefined;
+    let runId: string | undefined;
+    for (let tries = 0; !saved && tries < 3; tries++) {
+      const w = await this.o.store.getWorkflow(projectId, ticketId);
+      if (!w || !(ACTIVE_STATUSES as readonly string[]).includes(w.status)) return null;
+      const next: WorkflowState = {
+        ...w,
+        status: "blocked",
+        lastError: reason,
+        stoppedBy: "human",
+      };
+      for (const key of ["leaseOwner", "leaseExpiresAt", "nextAttemptAt", "currentRunId"] as const)
+        delete next[key];
+      try {
+        saved = await this.o.store.saveWorkflow(next);
+        runId = w.status === "running" ? w.currentRunId : undefined;
+      } catch (error) {
+        if (!(error instanceof VersionConflictError)) throw error;
+      }
+    }
+    if (!saved) return null;
+    const local = [...this.active.values()].find(
+      (r) => r.projectId === projectId && r.ticketId === ticketId,
+    );
+    if (local) local.controller.abort(new HumanStopError(reason));
+    // A run owned elsewhere (or orphaned) is closed here; its owner is fenced when it finishes.
+    else if (runId)
+      await this.o.store.updateRun(runId, {
+        status: "cancelled",
+        finishedAt: this.clock(),
+        summary: reason,
+      });
+    this.quotaDeferrals.delete(`${projectId}\u0000${ticketId}`);
+    this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+    await this.trackerWrite(projectId, ticketId, "comment", () =>
+      this.o
+        .tickets(projectId)
+        .comment(
+          ticketId,
+          `Matrix ${reason}. The current run was cancelled; nothing else changed. Move the ticket to Ready to restart it at ${saved.phase} (does not count against the daily restart limit).`,
+        ),
+    );
+    return saved;
+  }
+
   /**
    * A blocked ticket showing up as ready again means a human re-queued it: restart the workflow
    * in its phase with fresh attempt/loop budgets (new generation, so no stale step replays) and
@@ -431,8 +523,10 @@ export class Reconciler {
     const now = this.clock();
     const today = w.requeuedAt?.toISOString().slice(0, 10) === this.day();
     const count = today ? (w.requeueCount ?? 0) : 0;
+    // A human stopped it on purpose: resuming it is not flapping and costs no restart budget.
+    const afterStop = w.stoppedBy === "human";
     try {
-      if (count >= this.maxRequeues) {
+      if (!afterStop && count >= this.maxRequeues) {
         if (count > this.maxRequeues) return;
         await this.o.store.saveWorkflow({ ...w, requeueCount: count + 1 });
         await this.trackerWrite(project.id, ticketId, "comment", () =>
@@ -452,12 +546,12 @@ export class Reconciler {
         loops: IRREVERSIBLE.has(w.phase) ? w.loops : 0,
         priority: priority ?? w.priority,
         generation: (w.generation ?? 0) + 1,
-        requeuedAt: now,
-        requeueCount: count + 1,
+        ...(afterStop ? {} : { requeuedAt: now, requeueCount: count + 1 }),
       };
       for (const key of ["lastError", "nextAttemptAt", "leaseOwner", "leaseExpiresAt"] as const)
         delete next[key];
       delete next.currentRunId;
+      delete next.stoppedBy;
       const saved = await this.o.store.saveWorkflow(next);
       this.quotaDeferrals.delete(`${project.id}\u0000${ticketId}`);
       this.o.bus.publish({ type: "workflow.changed", workflow: saved });
@@ -472,7 +566,9 @@ export class Reconciler {
     await this.trackerWrite(project.id, ticketId, "comment", () =>
       tickets.comment(
         ticketId,
-        `Matrix restarted this ticket at ${w.phase} (restart ${count + 1} of ${this.maxRequeues} today).`,
+        afterStop
+          ? `Matrix restarted this ticket at ${w.phase} after a human stop (no restart budget used).`
+          : `Matrix restarted this ticket at ${w.phase} (restart ${count + 1} of ${this.maxRequeues} today).`,
       ),
     );
   }
@@ -1210,6 +1306,9 @@ export class Reconciler {
     const scratch: string[] = [];
     let outcome: PhaseOutcome;
     try {
+      // Stopped (or taken over) between the claim and here: never launch the runner.
+      if (!this.owns(await this.o.store.getWorkflow(project.id, w.ticketId), runId))
+        throw new Error("run no longer owned at start");
       const tickets = this.o.tickets(project.id);
       const ticket = await tickets.get(w.ticketId);
       if (!ticket) throw new Error(`ticket ${w.ticketId} not found`);
@@ -1322,7 +1421,7 @@ export class Reconciler {
           ok: false,
           summary: String((signal.reason as Error | undefined)?.message ?? "aborted"),
           receipts: outcome.receipts,
-          runStatus: "timeout",
+          runStatus: signal.reason instanceof HumanStopError ? "cancelled" : "timeout",
         };
       }
     } catch (error) {
@@ -1334,6 +1433,8 @@ export class Reconciler {
           ? { restartDesign: true }
           : { runStatus: signal.aborted ? ("timeout" as const) : ("failed" as const) }),
       };
+      if (signal.reason instanceof HumanStopError)
+        outcome = { ...outcome, summary: signal.reason.message, runStatus: "cancelled" };
     } finally {
       clearInterval(timer);
       await Promise.all(
@@ -1344,7 +1445,14 @@ export class Reconciler {
     // Fencing: only the lease holder of this exact run may record a step result or move the workflow.
     const latest = await this.o.store.getWorkflow(project.id, w.ticketId);
     const latestWorkdir = latest?.workdir;
+    // Stopped by a human (here or through another reconciler): record why, not the lease loss.
+    const humanStop =
+      latest?.status === "blocked" && latest.stoppedBy === "human"
+        ? (latest.lastError ?? HUMAN_STOP)
+        : undefined;
     const fenced = !this.owns(latest, runId);
+    if (fenced && humanStop)
+      outcome = { ...outcome, ok: false, summary: humanStop, runStatus: "cancelled" };
     if (fenced && w.workdir && w.workspaceRef && latestWorkdir !== w.workdir) {
       // Another reconciler took over on a fresh worktree; this one is ours to dispose of.
       await this.o.workspace
@@ -1362,7 +1470,7 @@ export class Reconciler {
         runStatus: "failed",
         summary: `${isGatewayUnavailable(quota.reason) ? "gateway" : "quota"}: ${outcome.summary}`,
       };
-    await this.finish(project, runId, key, outcome, reserved, fenced);
+    await this.finish(project, runId, key, outcome, reserved, fenced, humanStop !== undefined);
     if (fenced) return;
     if (quota) await this.deferForQuota(project, latest as WorkflowState, quota);
     else await this.transition(project, latest as WorkflowState, outcome);
@@ -1486,6 +1594,7 @@ export class Reconciler {
     outcome: PhaseOutcome,
     reserved: number,
     fenced: boolean,
+    humanStop = false,
   ): Promise<void> {
     const status = fenced
       ? "cancelled"
@@ -1496,7 +1605,7 @@ export class Reconciler {
           : "failed";
     await this.o.store.updateRun(runId, {
       status,
-      summary: fenced ? `fenced (lease lost): ${outcome.summary}` : outcome.summary,
+      summary: fenced && !humanStop ? `fenced (lease lost): ${outcome.summary}` : outcome.summary,
       finishedAt: this.clock(),
       ...(outcome.runner ? { runner: outcome.runner } : {}),
       ...(outcome.model ? { model: outcome.model } : {}),

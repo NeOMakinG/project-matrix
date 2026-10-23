@@ -274,7 +274,12 @@ export interface CorePort {
     actor: Actor,
   ): Promise<Run>;
   pauseRun(id: string): Promise<Run>;
+  /** Human stop of the run's ticket: the run is cancelled and its workflow blocks (no budget used). */
   cancelRun(id: string): Promise<Run>;
+  /** Human stop of a ticket's active workflow; `stopped` is false when nothing was active. */
+  cancelTicket(projectId: string, ticketId: string): Promise<CancelResult>;
+  /** Human stop of every active workflow of a project. */
+  cancelProject(projectId: string): Promise<CancelResult[]>;
   listReceipts(runId: string): Promise<Receipt[]>;
   listApprovals(query: { projectId?: string; status?: ApprovalStatus }): Promise<Approval[]>;
   getApproval(id: string): Promise<Approval | null>;
@@ -349,4 +354,11 @@ export class CoreError extends Error {
   ) {
     super(message);
   }
+}
+
+export interface CancelResult {
+  projectId: string;
+  ticketId: string;
+  stopped: boolean;
+  reason: string;
 }
