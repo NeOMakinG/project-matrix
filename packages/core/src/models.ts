@@ -2,6 +2,14 @@ import type { Ticket } from "@matrix/tickets";
 import type { Phase } from "./ports.js";
 import type { PhaseModel, ProjectConfig } from "./types.js";
 
+/** Wall-clock limit of one run of `phase`: the project's per-phase override or `runTimeoutMs`. */
+export function phaseTimeoutMs(config: ProjectConfig, phase: Phase): number {
+  return config.timeouts?.[phase] ?? config.runTimeoutMs;
+}
+
+/** Runner idle limit the factory assumes when the project sets none (matches the CLI runner). */
+export const DEFAULT_RUN_IDLE_MS = 10 * 60_000;
+
 export function resolveModel(config: ProjectConfig, model: string): string {
   return config.models.aliases?.[model] ?? model;
 }

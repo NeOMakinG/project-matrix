@@ -176,6 +176,20 @@
               },
               "required": ["kind", "cmd"]
             }
+          },
+          "timeouts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "Effective wall-clock limit per run of each phase, in ms"
+          },
+          "idleTimeoutMs": {
+            "type": "number",
+            "description": "Set when overridden"
+          },
+          "implementGuidance": {
+            "type": "string"
           }
         },
         "required": ["id", "name", "description", "workspace", "autonomy", "createdAt"]
@@ -270,6 +284,21 @@
           },
           "models": {
             "$ref": "#/components/schemas/ModelPlan"
+          },
+          "timeouts": {
+            "$ref": "#/components/schemas/PhaseTimeouts"
+          },
+          "idleTimeoutMs": {
+            "type": "integer",
+            "minimum": 60000,
+            "maximum": 7200000,
+            "description": "A model run with no output for this long stops as 'runner idle', in ms (1-120 min). Default 10 min."
+          },
+          "implementGuidance": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "Operator-written guidance appended to the implement prompt as trusted project configuration (e.g. which test command to use for targeted runs)."
           }
         },
         "required": ["name"]
@@ -446,6 +475,43 @@
         "required": ["runner", "model"],
         "additionalProperties": false
       },
+      "PhaseTimeouts": {
+        "type": "object",
+        "properties": {
+          "spike": {
+            "type": "integer",
+            "minimum": 300000,
+            "maximum": 7200000
+          },
+          "design": {
+            "type": "integer",
+            "minimum": 300000,
+            "maximum": 7200000
+          },
+          "implement": {
+            "type": "integer",
+            "minimum": 300000,
+            "maximum": 7200000
+          },
+          "checks": {
+            "type": "integer",
+            "minimum": 300000,
+            "maximum": 7200000
+          },
+          "review": {
+            "type": "integer",
+            "minimum": 300000,
+            "maximum": 7200000
+          },
+          "qa": {
+            "type": "integer",
+            "minimum": 300000,
+            "maximum": 7200000
+          }
+        },
+        "additionalProperties": false,
+        "description": "Wall-clock limit per run of a phase, in ms (5-120 min). Phases left out use the default (30 min). On PATCH the object replaces the previous overrides; null clears them all."
+      },
       "UpdateProject": {
         "type": "object",
         "properties": {
@@ -542,6 +608,28 @@
           },
           "models": {
             "$ref": "#/components/schemas/ModelPlan"
+          },
+          "timeouts": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PhaseTimeouts"
+              },
+              {
+                "type": ["object", "null"]
+              }
+            ]
+          },
+          "idleTimeoutMs": {
+            "type": ["integer", "null"],
+            "minimum": 60000,
+            "maximum": 7200000,
+            "description": "null resets to the default"
+          },
+          "implementGuidance": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "null removes it"
           }
         },
         "additionalProperties": false
@@ -2181,7 +2269,7 @@
     "/v1/projects/{projectId}": {
       "patch": {
         "tags": ["projects"],
-        "summary": "Update a project's tracker, checks or per-phase model plan (host-side config)",
+        "summary": "Update a project's tracker, checks, per-phase model plan, run timeouts or implement guidance (host-side config)",
         "security": [
           {
             "bearer": []

@@ -5,7 +5,7 @@ import { type BusEvent, EventBus } from "../bus.js";
 import type { FigmaDesignPort, UiContextPort } from "../design.js";
 import { createDefaultHandlers, type HandlerDeps } from "../handlers.js";
 import { HoldoutStore } from "../holdout.js";
-import type { Receipt, RunRequest, RunResult } from "../ports.js";
+import type { Receipt, RunEvent, RunRequest, RunResult } from "../ports.js";
 import type { ActionRequest, MergePort, PullRequestPort } from "../ports-internal.js";
 import type { QuotaPolicy } from "../quota.js";
 import { Reconciler } from "../reconcile.js";
@@ -37,6 +37,7 @@ export interface HarnessOptions {
     req: RunRequest,
     call: number,
     signal: AbortSignal,
+    emit: (kind: RunEvent["kind"], message: string) => void,
   ) => Partial<RunResult> | Promise<Partial<RunResult>>;
   qaReceipts?: () => Receipt[];
   leaseMs?: number;
@@ -75,9 +76,11 @@ export function createHarness(opts: HarnessOptions = {}) {
   let reviewCalls = 0;
   let designCalls = 0;
 
-  const implementer = new FakeRunner("claude-code", async (req, signal) => {
+  const implementer = new FakeRunner("claude-code", async (req, signal, emit) => {
     if (req.phase === "implement") {
-      return (await opts.implement?.(req, implementCalls++, signal)) ?? { summary: "implemented" };
+      return (
+        (await opts.implement?.(req, implementCalls++, signal, emit)) ?? { summary: "implemented" }
+      );
     }
     return { summary: opts.spikePlan ?? "plan: 3 steps" };
   });

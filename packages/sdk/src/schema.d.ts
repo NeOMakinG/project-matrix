@@ -270,7 +270,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** Update a project's tracker, checks or per-phase model plan (host-side config) */
+    /** Update a project's tracker, checks, per-phase model plan, run timeouts or implement guidance (host-side config) */
     patch: {
       parameters: {
         query?: never;
@@ -4262,6 +4262,13 @@ export interface components {
         kind: string;
         cmd: string[];
       }[];
+      /** @description Effective wall-clock limit per run of each phase, in ms */
+      timeouts?: {
+        [key: string]: number;
+      };
+      /** @description Set when overridden */
+      idleTimeoutMs?: number;
+      implementGuidance?: string;
     };
     /** @enum {string} */
     AutonomyMode: "human" | "gated" | "autonomous";
@@ -4296,6 +4303,11 @@ export interface components {
       }[];
       repo?: components["schemas"]["ExistingRepo"];
       models?: components["schemas"]["ModelPlan"];
+      timeouts?: components["schemas"]["PhaseTimeouts"];
+      /** @description A model run with no output for this long stops as 'runner idle', in ms (1-120 min). Default 10 min. */
+      idleTimeoutMs?: number;
+      /** @description Operator-written guidance appended to the implement prompt as trusted project configuration (e.g. which test command to use for targeted runs). */
+      implementGuidance?: string;
     };
     LinearTickets: {
       teamKey: string;
@@ -4348,6 +4360,15 @@ export interface components {
       runner: "claude-code" | "codex" | "opencode";
       model: string;
     };
+    /** @description Wall-clock limit per run of a phase, in ms (5-120 min). Phases left out use the default (30 min). On PATCH the object replaces the previous overrides; null clears them all. */
+    PhaseTimeouts: {
+      spike?: number;
+      design?: number;
+      implement?: number;
+      checks?: number;
+      review?: number;
+      qa?: number;
+    };
     UpdateProject: {
       repo?: {
         /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
@@ -4375,6 +4396,11 @@ export interface components {
         cmd: string[];
       }[];
       models?: components["schemas"]["ModelPlan"];
+      timeouts?: components["schemas"]["PhaseTimeouts"] & (Record<string, never> | null);
+      /** @description null resets to the default */
+      idleTimeoutMs?: number | null;
+      /** @description null removes it */
+      implementGuidance?: string | null;
     };
     TrackerFailure: {
       ticketId?: string;

@@ -113,7 +113,21 @@ export class MemoryCore implements CorePort {
       ...project,
       ...(patch.checks ? { checks: patch.checks.map((c) => ({ ...c, cmd: [...c.cmd] })) } : {}),
       ...(patch.models ? { models: { ...project.models, ...models } } : {}),
+      ...(patch.timeouts
+        ? {
+            timeouts: Object.fromEntries(
+              Object.entries(patch.timeouts).filter(
+                (e): e is [string, number] => e[1] !== undefined,
+              ),
+            ),
+          }
+        : {}),
+      ...(typeof patch.idleTimeoutMs === "number" ? { idleTimeoutMs: patch.idleTimeoutMs } : {}),
+      ...(patch.implementGuidance ? { implementGuidance: patch.implementGuidance } : {}),
     };
+    if (patch.timeouts === null) delete updated.timeouts;
+    if (patch.idleTimeoutMs === null) delete updated.idleTimeoutMs;
+    if (patch.implementGuidance === null) delete updated.implementGuidance;
     this.projects.set(projectId, updated);
     return updated;
   }

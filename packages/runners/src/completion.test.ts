@@ -113,6 +113,20 @@ describe("run completion and idle detection", () => {
     expect(result.summary).not.toMatch(/timed out|SIGTERM/);
   });
 
+  test("the request's idle timeout (project setting) overrides the runner default", async () => {
+    const { dir, bin } = await fakeCli([toolLine], "hang");
+    const result = await claudeCodeRunner({
+      gateway,
+      binary: bin,
+      baseEnv,
+      idleTimeoutMs: 60_000,
+    }).run({ ...request(dir), idleTimeoutMs: 300 }, () => {}, new AbortController().signal);
+    expect(result.status).toBe("failed");
+    expect(result.summary.split("\n")[0]).toBe(
+      "run interrupted: claude-code runner idle: no output for 300 ms",
+    );
+  });
+
   test("a CLI ignoring SIGTERM after its result is killed and the run is ok", async () => {
     const { dir, bin } = await fakeCli([resultLine], "hang-ignoring-term");
     const result = await claudeCodeRunner({

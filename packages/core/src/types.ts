@@ -73,6 +73,12 @@ export interface ProjectConfig {
   maxLoops: number;
   maxAttempts: number;
   runTimeoutMs: number;
+  /** Per-phase overrides of `runTimeoutMs` (ms); phases left out use `runTimeoutMs`. */
+  timeouts?: Partial<Record<Phase, number>>;
+  /** Model runs with no output for this long stop as "runner idle" (ms). Unset: runner default. */
+  idleTimeoutMs?: number;
+  /** Operator-written implement guidance (trusted project config), appended to the prompt. */
+  implementGuidance?: string;
   /**
    * Last phase of the loop; the workflow is done once it passes. Existing-repo projects end at
    * `merge` (the human merges the draft PR on GitHub); unset runs every phase.

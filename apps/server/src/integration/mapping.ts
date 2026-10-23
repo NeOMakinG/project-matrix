@@ -6,10 +6,19 @@ import {
   PHASES,
   type Phase,
   type ProjectConfig,
+  phaseTimeoutMs,
   REVIEW_LANES,
   type RunRecord,
 } from "@matrix/core";
-import type { Approval, Project, Run, SetupStep } from "../core-port.js";
+import {
+  type Approval,
+  CoreError,
+  type PhaseTimeoutsInput,
+  type Project,
+  type Run,
+  type SetupStep,
+  type UpdateProjectInput,
+} from "../core-port.js";
 import type { TicketSettings } from "./tickets.js";
 
 /** Server-side metadata kept inside the stored project config (core stores the config as JSON). */
@@ -39,6 +48,53 @@ export type StoredProject = ProjectConfig & { matrix?: MatrixMeta };
 export const iso = (d: Date | string | undefined) =>
   d === undefined ? undefined : d instanceof Date ? d.toISOString() : d;
 
+const TIMEOUT_PHASES = ["spike", "design", "implement", "checks", "review", "qa"] as const;
+const MIN_TIMEOUT_MS = 5 * 60_000;
+const MAX_TIMEOUT_MS = 120 * 60_000;
+
+function boundedMs(value: number, min: number, what: string): number {
+  if (!Number.isInteger(value) || value < min || value > MAX_TIMEOUT_MS)
+    throw new CoreError(
+      "invalid_request",
+      `${what} must be an integer between ${min} and ${MAX_TIMEOUT_MS} ms`,
+    );
+  return value;
+}
+
+/**
+ * Applies run timeouts and implement guidance (create or PATCH). `undefined` keeps the current
+ * value, `null` clears it; timeouts replace the previous overrides as a whole. Bounds are
+ * re-checked here so a non-HTTP caller cannot store a 0 ms or multi-day limit.
+ */
+export function applyRunSettings(
+  config: StoredProject,
+  patch: Pick<UpdateProjectInput, "timeouts" | "idleTimeoutMs" | "implementGuidance">,
+): void {
+  if (patch.timeouts === null) delete config.timeouts;
+  else if (patch.timeouts) {
+    const timeouts: Partial<Record<Phase, number>> = {};
+    for (const [phase, ms] of Object.entries(patch.timeouts as PhaseTimeoutsInput)) {
+      if (ms === undefined) continue;
+      if (!(TIMEOUT_PHASES as readonly string[]).includes(phase))
+        throw new CoreError("invalid_request", `timeouts.${phase} is not a configurable phase`);
+      timeouts[phase as Phase] = boundedMs(ms, MIN_TIMEOUT_MS, `timeouts.${phase}`);
+    }
+    if (Object.keys(timeouts).length) config.timeouts = timeouts;
+    else delete config.timeouts;
+  }
+  if (patch.idleTimeoutMs === null) delete config.idleTimeoutMs;
+  else if (patch.idleTimeoutMs !== undefined)
+    config.idleTimeoutMs = boundedMs(patch.idleTimeoutMs, 60_000, "idleTimeoutMs");
+  if (patch.implementGuidance === null) delete config.implementGuidance;
+  else if (patch.implementGuidance !== undefined) {
+    const text = patch.implementGuidance.trim();
+    if (text.length > 4000)
+      throw new CoreError("invalid_request", "implementGuidance is limited to 4000 characters");
+    if (text) config.implementGuidance = text;
+    else delete config.implementGuidance;
+  }
+}
+
 export function toProject(config: StoredProject): Project {
   const autonomy = {} as Record<Phase, AutonomyMode>;
   for (const phase of PHASES) autonomy[phase] = autonomyFor(config, phase);
@@ -66,6 +122,11 @@ export function toProject(config: StoredProject): Project {
       : {}),
     models: modelView(config),
     checks: config.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] })),
+    timeouts: Object.fromEntries(
+      TIMEOUT_PHASES.map((phase) => [phase, phaseTimeoutMs(config, phase)]),
+    ),
+    ...(config.idleTimeoutMs !== undefined ? { idleTimeoutMs: config.idleTimeoutMs } : {}),
+    ...(config.implementGuidance ? { implementGuidance: config.implementGuidance } : {}),
   };
 }
 

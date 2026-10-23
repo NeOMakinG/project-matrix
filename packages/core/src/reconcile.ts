@@ -32,7 +32,7 @@ import {
   requiresApproval,
   type Transition,
 } from "./machine.js";
-import { resolveModel, selectModel } from "./models.js";
+import { DEFAULT_RUN_IDLE_MS, phaseTimeoutMs, resolveModel, selectModel } from "./models.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, RunnerId, Workspace } from "./ports.js";
 import type {
   Authorization,
@@ -166,6 +166,26 @@ const publicCooldown = (c: ProviderCooldown) => ({
 
 const hash = (...parts: (string | number)[]) =>
   createHash("sha256").update(parts.join("\u0000")).digest("hex").slice(0, 32);
+
+/**
+ * Last error of a run stopped by its phase wall clock. "Still active" (a tool call within the idle
+ * window) means the budget was too small or the agent spent it on slow commands, not that it hung.
+ */
+export function runTimeoutSummary(
+  timeoutMs: number,
+  idleTimeoutMs: number | undefined,
+  lastTool: { at: Date; message: string } | undefined,
+  now: Date,
+): string {
+  const minutes = Math.round(timeoutMs / 6_000) / 10;
+  const head = `run timeout after ${minutes} min`;
+  if (!lastTool) return `${head} (no tool activity)`;
+  const sinceMs = Math.max(0, now.getTime() - lastTool.at.getTime());
+  const windowMs = idleTimeoutMs && idleTimeoutMs > 0 ? idleTimeoutMs : DEFAULT_RUN_IDLE_MS;
+  const tool = lastTool.message.replace(/\s+/g, " ").trim().slice(0, 200);
+  if (sinceMs <= windowMs) return `${head} while still active (last tool: ${tool})`;
+  return `${head} (no tool activity for ${Math.round(sinceMs / 60_000)} min; last tool: ${tool})`;
+}
 
 export function stepKey(w: WorkflowState): string {
   // Generation 0 keeps the historical key so in-flight workflows replay as before.
@@ -1302,7 +1322,15 @@ export class Reconciler {
     const timer = setInterval(() => {
       void this.heartbeat(project.id, w.ticketId, runId, controller).catch(() => undefined);
     }, this.heartbeatMs);
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(project.runTimeoutMs)]);
+    const timeoutMs = phaseTimeoutMs(project, w.phase);
+    const runTimeout = AbortSignal.timeout(timeoutMs);
+    const signal = AbortSignal.any([controller.signal, runTimeout]);
+    let lastTool: { at: Date; message: string } | undefined;
+    // Only the phase wall clock firing counts: human stops, lease loss and shutdown keep their reason.
+    const timedOutSummary = () =>
+      runTimeout.aborted && signal.reason === runTimeout.reason
+        ? runTimeoutSummary(timeoutMs, project.idleTimeoutMs, lastTool, this.clock())
+        : undefined;
     const scratch: string[] = [];
     let outcome: PhaseOutcome;
     try {
@@ -1377,7 +1405,10 @@ export class Reconciler {
         branch,
         idempotencyKey,
         signal,
-        emit: (message, kind = "log", data) => void this.record(runId, kind, message, data),
+        emit: (message, kind = "log", data) => {
+          if (kind === "tool") lastTool = { at: this.clock(), message };
+          void this.record(runId, kind, message, data);
+        },
         scratchDir: async () => {
           await mkdir(this.scratchRoot, { recursive: true, mode: 0o700 });
           const dir = await mkdtemp(join(this.scratchRoot, `${runId}-`));
@@ -1419,7 +1450,8 @@ export class Reconciler {
       if (signal.aborted) {
         outcome = {
           ok: false,
-          summary: String((signal.reason as Error | undefined)?.message ?? "aborted"),
+          summary:
+            timedOutSummary() ?? String((signal.reason as Error | undefined)?.message ?? "aborted"),
           receipts: outcome.receipts,
           runStatus: signal.reason instanceof HumanStopError ? "cancelled" : "timeout",
         };
@@ -1427,7 +1459,7 @@ export class Reconciler {
     } catch (error) {
       outcome = {
         ok: false,
-        summary: (error as Error).message,
+        summary: timedOutSummary() ?? (error as Error).message,
         receipts: [],
         ...(error instanceof DesignBindingChangedError
           ? { restartDesign: true }
