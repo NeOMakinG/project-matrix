@@ -12,7 +12,13 @@ import {
   type ProcessSpec,
 } from "@matrix/sandbox";
 import { describe, expect, test } from "vitest";
-import { claudeCodeRunner, codexRunner, createRunner, opencodeRunner } from "./index";
+import {
+  CLAUDE_DISALLOWED_TOOLS,
+  claudeCodeRunner,
+  codexRunner,
+  createRunner,
+  opencodeRunner,
+} from "./index";
 
 const gateway = {
   anthropicBaseUrl: "http://127.0.0.1:18080",
@@ -157,8 +163,15 @@ describe("claude-code runner", () => {
       "--verbose",
       "--model",
       "claude-fable-5-1",
+      "--strict-mcp-config",
+      "--disallowedTools",
+      CLAUDE_DISALLOWED_TOOLS.join(","),
       "--dangerously-skip-permissions",
     ]);
+    expect(CLAUDE_DISALLOWED_TOOLS).toEqual(
+      expect.arrayContaining(["ScheduleWakeup", "CronCreate", "AskUserQuestion", "Task"]),
+    );
+    expect(call?.env).toMatchObject({ CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" });
     expect(call?.stdin).toBe("do the thing");
     expect(call?.env).toMatchObject({
       PATH: "/usr/bin",

@@ -15,6 +15,32 @@ import {
 
 const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
+/**
+ * Tools that wait, schedule, ask a human or start work that outlives the turn. A headless run has
+ * nobody to answer and nothing to wake it: a `ScheduleWakeup` as the last call kept a finished
+ * session open until the run timeout. Names checked against Claude Code 2.1.296's init event;
+ * unknown names are harmless deny rules, kept so a renamed or re-enabled tool stays blocked.
+ */
+export const CLAUDE_DISALLOWED_TOOLS = [
+  "ScheduleWakeup",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "AskUserQuestion",
+  "EnterPlanMode",
+  "ExitPlanMode",
+  "EnterWorktree",
+  "ExitWorktree",
+  "Workflow",
+  "Monitor",
+  // Subagents can be backgrounded and outlive the turn; the runner is a single agent.
+  "Task",
+  "Agent",
+  "SendMessage",
+  "ListAgents",
+  "TaskStop",
+] as const;
+
 /** Parses `claude -p --output-format stream-json --verbose` output. */
 export function claudeCodeParser(): EventParser {
   let result: ParseSummary = { summary: "", isError: false };
@@ -94,6 +120,7 @@ export function claudeCodeParser(): EventParser {
       }
       return out;
     },
+    isComplete: () => sawResult,
     finish() {
       if (!sawResult)
         return { summary: lastText || "no result event from claude-code", isError: true };
@@ -114,6 +141,11 @@ export const claudeCodeDefinition: CliRunnerDefinition = {
       "--verbose",
       "--model",
       req.model,
+      // No MCP servers from user/project config: only what the runner passes explicitly (none).
+      "--strict-mcp-config",
+      // One comma-separated value: the flag is variadic and would swallow following arguments.
+      "--disallowedTools",
+      CLAUDE_DISALLOWED_TOOLS.join(","),
     ];
     if (opts.skipPermissions) cmd.push("--dangerously-skip-permissions");
     return {
@@ -128,6 +160,8 @@ export const claudeCodeDefinition: CliRunnerDefinition = {
         ANTHROPIC_DEFAULT_HAIKU_MODEL: req.model,
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         DISABLE_AUTOUPDATER: "1",
+        // No `run_in_background` Bash, no auto-backgrounding: every command finishes in the turn.
+        CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
       },
     };
   },
