@@ -722,8 +722,8 @@ describe("staging and fingerprint skip ignored and dependency paths", () => {
     await mkdir(join(prepared.workdir, "src/generated"), { recursive: true });
     await writeFile(join(prepared.workdir, "src/generated/types.ts"), "export type T = 1;\n");
     wtGit(prepared.workdir, "add", "-f", "src/generated/types.ts", "app/node_modules/pkg1/lib");
-    // Index entries under node_modules stay in the fingerprint (refusal is the safe side) but are
-    // never staged, scanned or committed, and checks drop them from the index and wipe the tree.
+    // Index entries under node_modules (not in HEAD) are never staged, scanned or committed, and
+    // checks drop them from the index and wipe the tree.
     const result = await port.commitImplementation(prepared.workdir, {
       ...options,
       scan: async (_snapshot, binding) => {

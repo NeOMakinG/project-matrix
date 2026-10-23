@@ -603,6 +603,8 @@ export class WorktreeGitPort implements GitPort {
       if (committed.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(next))
         throw new Error("implementation commit failed");
       options.signal?.throwIfAborted();
+      // The fingerprint skips ignored files, so re-refuse any ignored artifact planted after the scan.
+      await this.#assertNoHiddenArtifacts(workdir);
       if ((await this.treeState(workdir)) !== finalState)
         throw new Error("implementation changed before reference update");
       if (
