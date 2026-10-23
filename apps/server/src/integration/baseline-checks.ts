@@ -11,6 +11,7 @@ import {
   checkArgv,
   type DependencySetupPort,
   environmentFailure,
+  type FailureId,
   MAX_FAILURES,
   type PhaseContext,
   resolveParser,
@@ -35,8 +36,14 @@ export interface BaselineChecksOptions {
   compareByDefault(ctx: PhaseContext): boolean;
 }
 
-/** Bump when the way base results are produced or parsed changes. */
-const CACHE_VERSION = 2;
+/**
+ * Bump when the way base results are produced or parsed changes. 3: failures are `{key, text}`
+ * with hash keys of the full normalized message (v2 cached truncated strings whose re-trim made
+ * every long message look new).
+ */
+const CACHE_VERSION = 3;
+/** Longest failure key accepted from the cache (key parts are bounded by the parsers). */
+const MAX_KEY = 2048;
 const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const LOCKFILE =
   /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
@@ -65,8 +72,17 @@ function validRun(value: unknown): BaselineRun | undefined {
   if (!v || !Number.isInteger(v.code)) return undefined;
   if (v.failures === null) return { code: v.code as number, failures: null };
   if (!Array.isArray(v.failures) || v.failures.length > MAX_FAILURES) return undefined;
-  if (!v.failures.every((f) => typeof f === "string")) return undefined;
-  return { code: v.code as number, failures: v.failures.map((f) => sanitizeFailure(f)) };
+  const failures: FailureId[] = [];
+  for (const f of v.failures as unknown[]) {
+    // Only the current shape: a legacy bare-string entry means a stale result, re-run the base.
+    const o = f as { key?: unknown; text?: unknown } | null;
+    if (!o || typeof o !== "object" || typeof o.key !== "string" || typeof o.text !== "string")
+      return undefined;
+    if (!o.key || o.key.length > MAX_KEY) return undefined;
+    // The key is used as stored (re-normalizing it would break equality); text is re-sanitized.
+    failures.push({ key: o.key, text: sanitizeFailure(o.text) });
+  }
+  return { code: v.code as number, failures };
 }
 
 /**

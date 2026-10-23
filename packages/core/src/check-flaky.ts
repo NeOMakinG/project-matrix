@@ -1,4 +1,5 @@
 import { type BaselineRun, newFailures } from "./check-baseline.js";
+import type { Failure } from "./check-parsers.js";
 
 /**
  * At most this many new failures may be excused as flaky in one check. More than that passing on
@@ -7,11 +8,11 @@ import { type BaselineRun, newFailures } from "./check-baseline.js";
  */
 export const MAX_FLAKY = 3;
 
-export interface RetryVerdict {
+export interface RetryVerdict<T extends Failure = Failure> {
   /** New failures that failed again on the retry: they count. */
-  confirmed: string[];
+  confirmed: T[];
   /** New failures that passed on the retry: reported separately, do not fail the check. */
-  flaky: string[];
+  flaky: T[];
   note?: string;
 }
 
@@ -20,11 +21,11 @@ export interface RetryVerdict {
  * the retry cannot vouch for (unparseable output, timeout, too many vanishing failures) stays
  * confirmed: retries can only excuse a few individually identified failures, never a whole run.
  */
-export function confirmByRetry(
-  fresh: string[],
+export function confirmByRetry<T extends Failure>(
+  fresh: T[],
   retry: BaselineRun | undefined,
-  base?: string[],
-): RetryVerdict {
+  base?: readonly Failure[],
+): RetryVerdict<T> {
   if (!fresh.length) return { confirmed: [], flaky: [] };
   if (!retry) return { confirmed: fresh, flaky: [], note: "retry unavailable" };
   if (retry.code === 124) return { confirmed: fresh, flaky: [], note: "retry timed out" };
