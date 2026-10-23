@@ -28,7 +28,7 @@ describe("review lane prompt", () => {
     expect(prompt).toContain("git is unavailable in this review sandbox by design");
     expect(prompt).toContain("toolingNotes");
     expect(prompt).toContain(`head ${"c".repeat(40)}`);
-    expect(prompt).toContain("- app/src/film.ts");
+    expect(prompt).toContain('- "app/src/film.ts"');
     expect(prompt).toContain("+export const x = 1;");
     expect(prompt).not.toContain("git diff main...HEAD");
     expect(prompt).not.toContain("UI never imports the database.");
@@ -57,11 +57,13 @@ describe("review lane prompt", () => {
 describe("tooling-note guard", () => {
   test("the NEO-7 environment P1 is reclassified", () => {
     expect(isToolingFinding(p1("Architecture review blocked by missing Git worktree"))).toBe(true);
-    expect(
-      isToolingFinding(
-        p1("Cannot inspect the diff", { file: "N/A", detail: "not a git repository" }),
-      ),
-    ).toBe(true);
+    for (const title of [
+      "Git metadata unavailable in the review sandbox.",
+      "fatal: not a git repository",
+      "Cannot run git",
+      "Missing .git directory",
+    ])
+      expect(isToolingFinding(p1(title, { file: "N/A" }), context.changedFiles)).toBe(true);
   });
 
   test.each([
@@ -71,6 +73,14 @@ describe("tooling-note guard", () => {
     p1("Worktree is missing cleanup when review is blocked in app/src/film.ts"),
     p1("Unable to verify token signature; code skips verification"),
     p1("SQL injection in film query"),
+    p1("Admin CLI ships without permissions check"),
+    p1("Merge should be blocked by missing authorization"),
+    p1("Release review blocked: sandbox runs probes with network"),
+    p1("Worktree trust check removed; cannot verify the worktree owner", { file: "N/A" }),
+    p1("Secret committed to repository history", { file: "repository" }),
+    p1("Installer cannot run git so deploy silently skips migrations", { file: "-" }),
+    p1("Missing git worktree", { file: "src/admin.ts:3" }),
+    p1("Review blocked by missing git worktree cleanup in the release script"),
   ])("real findings stay blocking: $title", (finding) => {
     expect(isToolingFinding(finding, context.changedFiles)).toBe(false);
   });
@@ -114,7 +124,7 @@ describe("review phase", () => {
     const t = h.tickets.add("Films");
     await h.drain();
     expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
-    expect(prompts.some((prompt) => prompt.includes("- app/src/film.ts"))).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes('- "app/src/film.ts"'))).toBe(true);
   });
 
   test("a real P1 still blocks even when host context fails", async () => {

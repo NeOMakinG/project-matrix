@@ -180,6 +180,11 @@ test("large and binary committed assets become empty placeholders and are never 
     fake.tree += `100644 blob ${"f".repeat(40)}  5000000\tapp/data/huge.json\0`;
     const snapshot = await committedQaSnapshot(setup.context, setup.git, setup.trusted);
     expect(snapshot.placeholders).toBe(3);
+    expect(snapshot.placeholderPaths).toEqual([
+      "app/assets/model.onnx",
+      "app/assets/icon.png",
+      "app/data/huge.json",
+    ]);
     for (const path of ["app/assets/model.onnx", "app/assets/icon.png", "app/data/huge.json"])
       expect((await readFile(join(snapshot.directory, path))).length).toBe(0);
     expect(await readFile(join(snapshot.directory, "src/add.ts"), "utf8")).toBe(

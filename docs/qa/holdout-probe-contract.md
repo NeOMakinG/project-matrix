@@ -61,5 +61,5 @@ bounded) through `FactoryToolingError.operatorCause`; driver messages without it
 Review lanes: review sandboxes have no git metadata by design. The host computes base,
 merge-base and head SHAs, the changed files, the diff, ADRs/architecture docs and the derived
 code graph, and passes them in the lane prompt. Lanes report environment limitations as
-`toolingNotes`; findings that are plainly about the review environment (no code location, no
+`toolingNotes`; findings whose whole title is an environment-only shape (no code location, no
 changed file named) are reclassified as tooling notes host-side and never block.

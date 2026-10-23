@@ -15,3 +15,17 @@ export class FactoryToolingError extends Error {
     super(message);
   }
 }
+
+/**
+ * A FactoryToolingError whose message is a fixed Matrix-authored string, vouched safe for
+ * operators. Never pass model output, holdout text, probe source or an inner error's message.
+ */
+export function vouchedToolingError(
+  message: string,
+  receipts: Receipt[] = [],
+  costUsd?: number,
+): FactoryToolingError {
+  const error = new FactoryToolingError(message, receipts, costUsd);
+  error.operatorCause = message;
+  return error;
+}

@@ -66,7 +66,7 @@ export type PhaseHandlers = Record<Phase, PhaseHandler> & {
   getDesignCapability?: (project: ProjectConfig) => FigmaMcpCapability | undefined;
 };
 
-export { FactoryToolingError } from "./factory-error.js";
+export { FactoryToolingError, vouchedToolingError } from "./factory-error.js";
 
 export interface HandlerDeps {
   figma?: FigmaDesignPort;
@@ -636,9 +636,14 @@ const review =
       }
     }
     const p1 = receipts.flatMap(findingsOf).filter((f) => f.severity === "P1").length;
+    const notes = receipts.reduce(
+      (n, r) =>
+        n + ((r.data as { toolingNotes?: string[] } | undefined)?.toolingNotes?.length ?? 0),
+      0,
+    );
     return {
       ok: p1 === 0,
-      summary: `${receipts.length} lanes, ${p1} P1`,
+      summary: `${receipts.length} lanes, ${p1} P1${notes ? `, ${notes} tooling notes (review environment; see receipts)` : ""}`,
       receipts,
       runStatus: "ok",
       model: reviewer.model,

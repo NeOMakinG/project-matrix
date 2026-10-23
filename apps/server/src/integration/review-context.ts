@@ -57,11 +57,16 @@ export async function hostReviewContext(
     .toString("utf8")
     .split("\0")
     .filter(Boolean);
-  // A diff bigger than the buffer is still reviewed: the lanes are told it was truncated.
+  // A diff the host cannot read in full is still reviewed: the lanes are told it was truncated.
+  let diffFailed = false;
   const rawDiff = await run(
     ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "-M", mergeBase, headSha],
     64 * 1024 ** 2,
-  ).catch(() => Buffer.from("[diff too large for the host buffer]"));
+  ).catch(() => {
+    ctx.signal.throwIfAborted();
+    diffFailed = true;
+    return Buffer.from("[the host could not read the full diff]");
+  });
   const diff = cut(rawDiff.toString("utf8"), MAX_DIFF_CHARS);
   const docs: ReviewContext["docs"] = [];
   let docBytes = 0;
@@ -76,7 +81,7 @@ export async function hostReviewContext(
     if (type !== "blob" || !blob || !/\.md$/i.test(path)) continue;
     if (Number(size) > MAX_DOC_BYTES || docBytes + Number(size) > MAX_DOCS_TOTAL) continue;
     const content = (await run(["cat-file", "blob", blob])).toString("utf8");
-    docBytes += content.length;
+    docBytes += Buffer.byteLength(content);
     docs.push({ path, content });
   }
   const graph = await readGraph(dataDir, ctx.project.id).catch(() =>
@@ -92,7 +97,7 @@ export async function hostReviewContext(
     headSha,
     changedFiles: changedFiles.slice(0, MAX_CHANGED_FILES),
     diff: diff.text,
-    diffTruncated: diff.truncated || changedFiles.length > MAX_CHANGED_FILES,
+    diffTruncated: diffFailed || diff.truncated || changedFiles.length > MAX_CHANGED_FILES,
     docs,
     ...(graph ? { graph: cut(graph, MAX_GRAPH_CHARS).text } : {}),
   };

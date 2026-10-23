@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative } from "node:path";
 import { promisify } from "node:util";
-import { FactoryToolingError, type PhaseContext } from "@matrix/core";
+import { type PhaseContext, vouchedToolingError } from "@matrix/core";
 import { gitLocation, safeGitEnv } from "@matrix/sandbox";
 import type { TrustedWorktrees, WorktreeGitPort } from "@matrix/workspace";
 import type { PrivateStateOwner } from "../state-owner.js";
@@ -23,6 +23,8 @@ export interface QaSnapshot {
   headSha: string;
   /** Committed files materialized empty (binary assets or above the per-file cap). */
   placeholders?: number;
+  /** Up to 100 placeholder paths, so the planner never asserts on emptied files. */
+  placeholderPaths?: string[];
   directory: string;
   materialize(directory: string): void;
 }
@@ -67,7 +69,7 @@ export async function committedQaSnapshot(
             : typeof code === "number"
               ? `git exit ${code}`
               : "git unavailable";
-      throw new FactoryToolingError(
+      throw vouchedToolingError(
         `QA committed snapshot ${args[0]} failed (${reason}); verify trusted workspace metadata`,
       );
     }
@@ -76,6 +78,7 @@ export async function committedQaSnapshot(
   const files: { path: string; mode: number; content: Buffer }[] = [];
   let bytes = 0;
   let placeholders = 0;
+  const placeholderPaths: string[] = [];
   for (const record of tree.split("\0").filter(Boolean)) {
     const tab = record.indexOf("\t");
     const [mode, type, sha, sizeText] = record.slice(0, tab).split(/ +/);
@@ -93,21 +96,19 @@ export async function committedQaSnapshot(
       path.includes("\\") ||
       path.split("/").some((part) => !part || part === "." || part === ".." || part === ".git")
     )
-      throw new FactoryToolingError(
-        "QA snapshot refuses unsafe paths or non-regular committed files",
-      );
+      throw vouchedToolingError("QA snapshot refuses unsafe paths or non-regular committed files");
     // Large and binary assets (models, media, fonts) are never read: an empty file keeps the path
     // importable while the snapshot stays within memory and size limits.
     const placeholder = qaSnapshotPlaceholder(path, size);
-    if (placeholder) placeholders += 1;
+    if (placeholder && ++placeholders <= 100) placeholderPaths.push(path);
     const content = placeholder ? Buffer.alloc(0) : await read("cat-file", "blob", sha);
     bytes += content.length;
     if (bytes > 128 * 1024 ** 2 || files.length >= 100_000)
-      throw new FactoryToolingError("QA committed snapshot exceeds resource limits");
+      throw vouchedToolingError("QA committed snapshot exceeds resource limits");
     files.push({ path, mode: mode === "100755" ? 0o755 : 0o644, content });
   }
   if ((await git.cleanForChecks(ctx.workdir)) !== headSha)
-    throw new FactoryToolingError("QA source commit changed while preparing snapshot");
+    throw vouchedToolingError("QA source commit changed while preparing snapshot");
   check();
   const materialize = (directory: string) => {
     check();
@@ -120,7 +121,7 @@ export async function committedQaSnapshot(
       !withinWorktree.startsWith("..") ||
       !containsWorktree.startsWith("..")
     )
-      throw new FactoryToolingError("QA snapshot must be outside and not contain the worktree");
+      throw vouchedToolingError("QA snapshot must be outside and not contain the worktree");
     for (const file of files) {
       check();
       mkdirSync(dirname(join(directory, file.path)), { recursive: true, mode: 0o700 });
@@ -131,5 +132,5 @@ export async function committedQaSnapshot(
   const directory = await ctx.scratchDir();
   check();
   materialize(directory);
-  return { headSha, directory, materialize, placeholders };
+  return { headSha, directory, materialize, placeholders, placeholderPaths };
 }

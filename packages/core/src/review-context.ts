@@ -45,7 +45,11 @@ function fenceChange(label: string, text: string): string {
 export function renderReviewContext(lane: ReviewLane, context: ReviewContext): string {
   const parts = [
     `Change under review: ${context.baseBranch} at ${context.baseSha}, merge-base ${context.mergeBase}, head ${context.headSha}.`,
-    `Changed files (${context.changedFiles.length}):\n${context.changedFiles.map((f) => `- ${f}`).join("\n") || "- (none)"}`,
+    // Paths are implementer-controlled (may hold newlines): JSON-encoded inside a fence.
+    fenceChange(
+      "CHANGED FILES",
+      `${context.changedFiles.length} changed files:\n${context.changedFiles.map((f) => `- ${JSON.stringify(f)}`).join("\n") || "- (none)"}`,
+    ),
     fenceChange(
       "CHANGE DIFF",
       `${context.diff}${context.diffTruncated ? "\n[diff truncated by the host; read the changed files in the read-only workdir for the rest]" : ""}`,
@@ -65,24 +69,40 @@ export function renderReviewContext(lane: ReviewLane, context: ReviewContext): s
   return parts.join("\n\n");
 }
 
-const ENV_SUBJECT =
-  /\b(?:git|\.git|worktrees?|working tree|repository metadata|git (?:metadata|history)|tool(?:s|ing)?|cli|binary|permissions?|sandbox|container|file ?system)\b/i;
-const ENV_FAILURE =
-  /not a git repository|no (?:git|\.git) (?:metadata|directory|repository)|missing (?:the )?(?:git (?:metadata|worktree|repository|directory)|\.git\b)|missing (?:git )?worktree|(?:git|\.git|worktree)(?: metadata)? (?:is |was )?(?:missing|unavailable|absent|not available|not present)|(?:unable|could ?n[o']t|cannot|can't) (?:to )?(?:run|execute|access|inspect|verify) (?:git|the (?:diff|worktree|repository))|review (?:is |was )?blocked|blocked by (?:the )?(?:missing|unavailable|absent|lack)/i;
+const GIT = String.raw`(?:git(?: metadata| worktree| repository| directory| history)?|\.git(?: directory| metadata)?|(?:a |the )?worktree)`;
+const WHERE = String.raw`(?: (?:in|inside) (?:the |this )?(?:review )?(?:sandbox|container|environment))?`;
+/**
+ * Whole-title shapes that only ever describe the review environment, never a code defect. Anchored
+ * at both ends: any extra words (a consequence, a component, a file) keep the finding blocking.
+ */
+const ENVIRONMENT_TITLES: RegExp[] = [
+  new RegExp(
+    String.raw`^(?:[a-z/-]+ )?review (?:is |was )?(?:blocked|incomplete|not possible) (?:by|due to|because of) (?:the |a )?(?:missing|unavailable|absent|lack of(?: a| the)?) ${GIT}${WHERE}$`,
+    "i",
+  ),
+  new RegExp(String.raw`^(?:missing|unavailable|no) ${GIT}${WHERE}$`, "i"),
+  new RegExp(
+    String.raw`^${GIT} (?:is |was )?(?:missing|unavailable|absent|not available|not present)${WHERE}$`,
+    "i",
+  ),
+  new RegExp(String.raw`^(?:fatal: )?not a git repository${WHERE}$`, "i"),
+  new RegExp(String.raw`^(?:cannot|can't|unable to) (?:run|access|use) ${GIT}${WHERE}$`, "i"),
+];
 
-/** A finding location that names no code: empty, N/A-like, or the git metadata itself. */
-const NO_CODE_LOCATION =
-  /^\s*(?:|n\/?a|none|unknown|-|\.git\S*|(?:git )?worktree|repository|repo)\s*$/i;
+/** A finding location that names no code: absent, N/A-like, or the git metadata itself. */
+const NO_CODE_LOCATION = /^\s*(?:|n\/?a|none|\.git\/?)\s*$/i;
 
 /**
- * Host guard: a finding is a tooling note only when it is plainly about the review environment
- * (an environment subject AND an environment failure phrase), names no code location, and never
- * mentions a file the change touched. Anything pointing at code stays a finding, whatever it says.
+ * Host guard, deliberately narrow: a finding becomes a tooling note only when its whole title is
+ * one of the environment-only shapes above (trailing punctuation ignored), it names no code
+ * location, and neither title nor detail mentions a changed file. Any other wording stays a
+ * finding, whatever environment words it contains.
  */
 export function isToolingFinding(finding: ReviewFinding, changedFiles: string[] = []): boolean {
   if (!NO_CODE_LOCATION.test(finding.file ?? "")) return false;
+  const title = finding.title.trim().replace(/[.!]+$/, "");
+  if (!ENVIRONMENT_TITLES.some((shape) => shape.test(title))) return false;
   const text = `${finding.title}\n${finding.detail ?? ""}`;
-  if (!ENV_SUBJECT.test(text) || !ENV_FAILURE.test(text)) return false;
   return !changedFiles.some((file) => file && text.includes(file));
 }
 

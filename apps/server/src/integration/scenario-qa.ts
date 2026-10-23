@@ -18,6 +18,7 @@ import {
   retryPrivateQa,
   type ScenarioEvidence,
   selectModel,
+  vouchedToolingError,
 } from "@matrix/core";
 import { scanSecretText, secretNeedles } from "@matrix/sandbox";
 import { z } from "zod";
@@ -54,16 +55,8 @@ export function scenarioQaDriver(options: {
   owner?: PrivateStateOwner;
 }): QaDriver {
   return {
-    async run(ctx, request) {
-      try {
-        return await runScenarioQa(options, ctx, request);
-      } catch (error) {
-        // Every FactoryToolingError raised by this driver and the committed snapshot carries a
-        // fixed Matrix-authored message (never model output or holdout text): vouch for it.
-        if (error instanceof FactoryToolingError) error.operatorCause ??= error.message;
-        throw error;
-      }
-    },
+    // Throw sites vouch for their own fixed messages (vouchedToolingError); nothing is vouched here.
+    run: (ctx, request) => runScenarioQa(options, ctx, request),
   };
 }
 
@@ -80,16 +73,14 @@ async function runScenarioQa(
     options.owner?.assertOwned();
   };
   check();
-  if (!request) throw new FactoryToolingError("QA requires private holdout scenario context");
+  if (!request) throw vouchedToolingError("QA requires private holdout scenario context");
   const implementer =
     ctx.workflow.implementerModel ?? selectModel(ctx.project, "implement", ctx.ticket).model;
   const reviewerModel = resolveModel(ctx.project, request.reviewer.model);
   if (reviewerModel === implementer || reviewerModel === resolveModel(ctx.project, implementer))
-    throw new FactoryToolingError(
-      "QA probes require a reviewer model distinct from the implementer",
-    );
+    throw vouchedToolingError("QA probes require a reviewer model distinct from the implementer");
   if (ctx.project.checks.length > 32)
-    throw new FactoryToolingError("QA check count exceeds resource limits");
+    throw vouchedToolingError("QA check count exceeds resource limits");
   const secrets = await options.secrets();
   check();
   const redact = redactNativeDiagnostic(secrets);
@@ -101,7 +92,7 @@ async function runScenarioQa(
       !(await options.git.isClean(ctx.workdir)) ||
       (await options.git.headSha(ctx.workdir)) !== snapshot.headSha
     )
-      throw new FactoryToolingError(
+      throw vouchedToolingError(
         "QA original worktree or committed SHA changed during isolated probes",
       );
     check();
@@ -136,7 +127,7 @@ async function runScenarioQa(
       )
       .catch(() => {
         check();
-        throw new FactoryToolingError(
+        throw vouchedToolingError(
           "QA host probe execution unavailable; no scenario evidence was attested",
           receipts,
         );
@@ -186,9 +177,9 @@ async function runScenarioQa(
     request.scenarios.length > 16 ||
     new Set(request.scenarios.map((item) => item.id)).size !== request.scenarios.length
   )
-    throw new FactoryToolingError("QA requires at most 16 distinct private scenarios", receipts);
+    throw vouchedToolingError("QA requires at most 16 distinct private scenarios", receipts);
   const runner = options.runners[request.reviewer.runner];
-  if (!runner) throw new FactoryToolingError("QA reviewer runner is unavailable", receipts);
+  if (!runner) throw vouchedToolingError("QA reviewer runner is unavailable", receipts);
   await bound();
   let planningCost = 0;
   const probes = await retryPrivateQa(signal, async () => {
@@ -210,7 +201,7 @@ async function runScenarioQa(
             "Source is a read-only disposable snapshot of the reviewed committed SHA; no git metadata is available. Do not write files or claim execution results.",
             ...(snapshot.placeholders
               ? [
-                  `${snapshot.placeholders} large or binary committed assets (images, media, models, fonts) are empty placeholder files: do not assert on their bytes.`,
+                  `${snapshot.placeholders} large or binary committed files are empty placeholders: never read or assert on them; a scenario that depends on their content must fail its probe with an explanatory message. Placeholders${snapshot.placeholders > (snapshot.placeholderPaths?.length ?? 0) ? " (first 100)" : ""}: ${JSON.stringify(snapshot.placeholderPaths ?? [])}`,
                 ]
               : []),
             "Return one probe per scenario. The host will write and execute each probe in a separate fresh copy, with no network, credentials, or worktree access.",
@@ -226,7 +217,7 @@ async function runScenarioQa(
         signal,
       )
       .catch(() => {
-        throw new FactoryToolingError(
+        throw vouchedToolingError(
           "QA probe planning failed; private evidence unavailable",
           receipts,
         );
@@ -234,7 +225,7 @@ async function runScenarioQa(
     await bound();
     planningCost += plan.costUsd ?? 0;
     if (plan.status !== "ok")
-      throw new FactoryToolingError(
+      throw vouchedToolingError(
         "QA probe planning failed; private evidence unavailable",
         receipts,
         planningCost,
@@ -276,7 +267,7 @@ async function runScenarioQa(
       )
         throw new Error("secret in probe");
     } catch {
-      throw new FactoryToolingError(
+      throw vouchedToolingError(
         "QA planner must provide executable, credential-free probes for every scenario; model-claimed evidence is not trusted",
         receipts,
         planningCost,
@@ -285,10 +276,10 @@ async function runScenarioQa(
     return probes;
   }).catch((error: unknown) => {
     // Keep the specific tooling reason (e.g. worktree changed) but always report all planning spend.
-    throw new FactoryToolingError(
-      error instanceof FactoryToolingError
-        ? error.message
-        : "QA probe planning failed; private evidence unavailable",
+    // An inner cause is forwarded only when its own throw site vouched for it.
+    const inner = error instanceof FactoryToolingError ? error.operatorCause : undefined;
+    throw vouchedToolingError(
+      inner ?? "QA probe planning failed; private evidence unavailable",
       receipts,
       planningCost,
     );
