@@ -1,11 +1,18 @@
 import { describe, expect, test } from "vitest";
 import {
   checkArgv,
+  type FailureId,
+  failureText,
   MAX_PARSE_BYTES,
-  parseCheckOutput,
+  normalizeMessage,
+  parseCheckOutput as parseFailures,
   resolveParser,
   sanitizeFailure,
 } from "./check-parsers.js";
+
+/** Display texts (most tests read these); keys are covered in "failure keys" below. */
+const parseCheckOutput = (...args: Parameters<typeof parseFailures>) =>
+  parseFailures(...args)?.map(failureText) ?? null;
 
 const fail = (stdout: string, stderr = "") => ({ code: 1, stdout, stderr });
 const ROOTS = ["/host/wt", "/work"];
@@ -205,5 +212,83 @@ describe("forged reports", () => {
   test("long lines are truncated, never dropped (a failure cannot hide behind a huge name)", () => {
     const out = parseCheckOutput("node-test-tap", fail(`not ok 1 - ${"n".repeat(10_000)}`));
     expect(out).toHaveLength(1);
+  });
+});
+
+describe("failure keys", () => {
+  const eslintRun = (message: string, root = "/work") =>
+    fail(
+      JSON.stringify([
+        {
+          filePath: `${root}/src/Trip.tsx`,
+          messages: [{ ruleId: "react-hooks/preserve-manual-memoization", severity: 2, message }],
+        },
+      ]),
+    );
+  const keys = (out: ReturnType<typeof parseFailures>) => (out as FailureId[]).map((f) => f.key);
+  // The live Travel Journal case: a React Compiler message whose 240-char truncation boundary
+  // fell on a space, so head (re-trimmed, 239 chars) and base (240 chars) never matched.
+  const prefix =
+    "Compilation Skipped: Existing memoization could not be preserved. React Compiler has " +
+    "skipped optimizing this component because the existing manual memoization could not be ";
+  const long = `${prefix.padEnd(239, "x")} memoization. The inferred dependencies did not match.`;
+
+  test("trailing space at the truncation boundary: head and base keys are identical", () => {
+    expect(long[239]).toBe(" ");
+    const head = parseFailures("eslint-json", eslintRun(long), ["/work"]);
+    const base = parseFailures("eslint-json", eslintRun(`${long} `), ["/work"]);
+    expect(keys(head)).toEqual(keys(base));
+    const [h] = head as FailureId[];
+    expect(h?.key).toMatch(
+      /^eslint:src\/Trip\.tsx:react-hooks\/preserve-manual-memoization:[0-9a-f]{16}$/,
+    );
+    expect(h?.text.length).toBeLessThanOrEqual(240);
+    // The display text is bounded; the key still tells messages apart past the boundary.
+    const other = parseFailures("eslint-json", eslintRun(`${long} (different tail)`), ["/work"]);
+    expect(keys(other)).not.toEqual(keys(head));
+  });
+
+  test("long multi-line messages: whitespace, CRLF, ANSI and roots do not change the key", () => {
+    const multi = `${prefix}\n\n  Found 2 errors:\n\tsrc/a.ts:12:5 at /work/src/a.ts\n${"y".repeat(400)}`;
+    const noisy = `\u001b[31m${prefix}\u001b[0m\r\n\r\n    Found 2  errors:\r\n src/a.ts:40:1 at /host/wt/src/a.ts \n${"y".repeat(400)}  `;
+    const a = parseFailures("eslint-json", eslintRun(multi), ["/work"]);
+    const b = parseFailures("eslint-json", eslintRun(noisy, "/host/wt"), ["/host/wt"]);
+    expect(keys(a)).toEqual(keys(b));
+    expect((a as FailureId[])[0]?.text).not.toMatch(/\n/);
+  });
+
+  test("volatile parts are masked: temp dirs and positions inside messages", () => {
+    expect(normalizeMessage("see /tmp/eslint-AbC12/x.js:3:9")).toBe("see <tmp>/x.js:<n>:<n>");
+    expect(normalizeMessage("at /private/var/folders/ab/cd/T/vitest-1/a.ts(4,2)")).toBe(
+      "at <tmp>/a.ts(<n>,<n>)",
+    );
+    // A root is only stripped where a path starts, never in the middle of another path.
+    expect(normalizeMessage("/home/u/work/a and /work/b", ["/work"])).toBe("/home/u/work/a and b");
+  });
+
+  test("tsc, node:test and vitest keys are stable across whitespace; test names keep digits", () => {
+    const t1 = parseFailures("tsc", fail("src/a.ts(1,2): error TS2322: Type  'a'   is bad."));
+    const t2 = parseFailures("tsc", fail("src/a.ts:9:9 - error TS2322: Type 'a' is bad. "));
+    expect(keys(t1)).toEqual(keys(t2));
+    expect(keys(t1)[0]).toMatch(/^tsc:src\/a\.ts:TS2322:[0-9a-f]{16}$/);
+    const n = parseFailures("node-test-tap", fail("not ok 1 - case 10:30\nnot ok 2 - case 11:45"));
+    expect(new Set(keys(n)).size).toBe(2);
+    expect(keys(n)[0]).toMatch(/^node-test:::[0-9a-f]{16}$/);
+    const v = (name: string) =>
+      fail(
+        JSON.stringify({
+          testResults: [
+            {
+              name: "/work/a.test.ts",
+              status: "failed",
+              assertionResults: [{ fullName: name, status: "failed" }],
+            },
+          ],
+        }),
+      );
+    const v1 = parseFailures("vitest-json", v("adds  numbers"), ["/work"]);
+    expect(keys(v1)).toEqual(keys(parseFailures("vitest-json", v("adds numbers "), ["/work"])));
+    expect(keys(v1)[0]).toMatch(/^vitest:a\.test\.ts::[0-9a-f]{16}$/);
+    expect((v1 as FailureId[])[0]?.text).toBe("a.test.ts > adds numbers");
   });
 });

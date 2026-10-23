@@ -7,7 +7,7 @@ import {
   newFailures,
 } from "./check-baseline.js";
 import { confirmByRetry } from "./check-flaky.js";
-import { resolveParser } from "./check-parsers.js";
+import { type Failure, failureText, resolveParser } from "./check-parsers.js";
 import { runCheck } from "./check-run.js";
 import { FactoryToolingError } from "./factory-error.js";
 import type { Receipt, Sandbox } from "./ports.js";
@@ -20,7 +20,7 @@ type BaseResult = BaselineRun | { error: string } | undefined;
 const retries = (check: CheckCommand) => check.kind === "test" && check.retryFlaky !== false;
 
 /** All new failures of a compare-mode run (uncapped), or undefined when not comparable. */
-function freshOf(run: BaselineRun, base: BaseResult): string[] | undefined {
+function freshOf(run: BaselineRun, base: BaseResult): Failure[] | undefined {
   if (run.code === 0 || run.failures === null || !base || "error" in base) return undefined;
   if (base.code === 0) return run.failures;
   return base.failures === null ? undefined : newFailures(run.failures, base.failures);
@@ -96,14 +96,14 @@ export async function applyBaseline(
             mode: "strict",
             parser,
             ok: run.code === 0,
-            newFailures: (run.failures ?? []).slice(0, MAX_LISTED),
+            newFailures: (run.failures ?? []).slice(0, MAX_LISTED).map(failureText),
             newCount: run.code === 0 ? 0 : Math.max(1, run.failures?.length ?? 1),
             preExisting: 0,
             note: run.code === 0 ? "passed" : "strict: any failure fails",
           }
         : compareToBase(parser, run, baseRun, base?.baseSha);
     let fresh = mode(i) === "compare" ? freshOf(run, baseRun) : undefined;
-    let flaky: string[] = [];
+    let flaky: Failure[] = [];
     if (!verdict.ok && fresh?.length && retries(check) && resetForRetry) {
       const retry = await resetForRetry(ctx)
         .then(() => runCheck(sandbox, ctx, check, { structured: true, label: "retry" }))
@@ -120,12 +120,12 @@ export async function applyBaseline(
       verdict = {
         ...verdict,
         ok: split.confirmed.length === 0,
-        newFailures: split.confirmed.slice(0, MAX_LISTED),
+        newFailures: split.confirmed.slice(0, MAX_LISTED).map(failureText),
         newCount: split.confirmed.length,
         note: split.confirmed.length
           ? `${split.confirmed.length} new vs base, reproduced on retry${split.note ? `; ${split.note}` : ""}`
           : `only pre-existing failures; ${split.note ?? "new ones passed on retry"}`,
-        ...(flaky.length ? { flaky: flaky.slice(0, MAX_LISTED) } : {}),
+        ...(flaky.length ? { flaky: flaky.slice(0, MAX_LISTED).map(failureText) } : {}),
       };
     }
     if (run.code !== 0 && port.evidence) {
@@ -139,9 +139,9 @@ export async function applyBaseline(
           mode: verdict.mode,
           ...(verdict.baseSha ? { baseSha: verdict.baseSha } : {}),
           note: verdict.note,
-          newFailures: fresh ?? all,
-          preExisting,
-          flaky,
+          newFailures: (fresh ?? all).map(failureText),
+          preExisting: preExisting.map(failureText),
+          flaky: flaky.map(failureText),
         })
         .catch(() => undefined);
       if (ref) verdict = { ...verdict, evidence: ref };

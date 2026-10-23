@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { REPORT_MOUNT } from "./ports.js";
 import type { CheckCommand, CheckParser } from "./types.js";
 
@@ -35,6 +36,71 @@ export function sanitizeFailure(text: string, max = MAX_IDENTITY): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, max);
+}
+
+/**
+ * One failure: `key` identifies it for the base comparison (built from the FULL normalized
+ * message, never truncated, so head and base keys match byte for byte); `text` is the bounded,
+ * prompt-safe display line. A bare string is its own key and text (tests, legacy callers).
+ */
+export interface FailureId {
+  key: string;
+  text: string;
+}
+export type Failure = FailureId | string;
+export const failureKey = (f: Failure): string => (typeof f === "string" ? f : f.key);
+export const failureText = (f: Failure): string => (typeof f === "string" ? f : f.text);
+
+const ANSI = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b[@-_]/g;
+const TMP =
+  /(?:\/private)?\/var\/folders\/[^\s/]+\/[^\s/]+\/[TC]\/[^\s/]+|(?:\/private)?\/tmp\/[^\s/]+/g;
+
+/**
+ * Deterministic message normalization for failure keys: line endings, ANSI escapes and control
+ * characters removed, known roots stripped, temp dirs replaced, every whitespace run collapsed
+ * to one space, trimmed. Never truncates. `positions` also masks `12:5` / `(12,5)` positions
+ * (diagnostic messages); test names keep their digits since they are the identity itself.
+ */
+export function normalizeMessage(
+  text: string,
+  roots: readonly string[] = [],
+  positions = true,
+): string {
+  let s = text.replace(/\r\n?/g, "\n").replace(ANSI, "");
+  for (const root of roots) {
+    const r = root.replace(/\/+$/, "");
+    if (!r) continue;
+    const esc = r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Only where a path starts (line start, whitespace, quote, bracket...), never mid-path.
+    s = s.replace(new RegExp(`(^|[\\s'"\`(\\[{<=:,])${esc}/`, "gm"), "$1");
+  }
+  s = s.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ").replace(TMP, "<tmp>");
+  if (positions) s = s.replace(/\b\d+:\d+\b/g, "<n>:<n>").replace(/\(\d+,\s*\d+\)/g, "(<n>,<n>)");
+  return s.replace(/\s+/g, " ").trim();
+}
+
+const sha16 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+/** Key parts longer than this are hashed (keys stay bounded; still exact). */
+const MAX_KEY_PART = 512;
+const keyPart = (s: string) => (s.length > MAX_KEY_PART ? `#${sha16(s)}` : s);
+
+/**
+ * A failure from its parts: key `${tool}:${relPath}:${ruleId}:${sha256(message)[0..16]}`,
+ * display `path: rule: message` (or `display(path, rule, message)`), sanitized and bounded.
+ */
+export function makeFailure(
+  tool: string,
+  path: string,
+  rule: string,
+  message: string,
+  roots: readonly string[] = [],
+  display?: (path: string, rule: string, message: string) => string,
+): FailureId {
+  const p = normalizeMessage(path, roots, false);
+  const r = normalizeMessage(rule, [], false);
+  const m = normalizeMessage(message, roots, tool === "eslint" || tool === "tsc");
+  const shown = display ? display(p, r, m) : [p, r, m].filter(Boolean).join(": ");
+  return { key: `${tool}:${keyPart(p)}:${keyPart(r)}:${sha16(m)}`, text: sanitizeFailure(shown) };
 }
 
 const base = (token: string) => token.split("/").pop() ?? token;
@@ -188,7 +254,7 @@ const obj = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 
 /** `null` = the output could not be parsed confidently (callers fail closed). */
-export type Failures = string[] | null;
+export type Failures = Failure[] | null;
 
 function eslint(text: string, roots: readonly string[]): Failures {
   const isReport = (v: unknown) =>
@@ -196,7 +262,7 @@ function eslint(text: string, roots: readonly string[]): Failures {
   const report = findJson(text, "[", isReport) as unknown[] | null | undefined;
   if (report === null) return null;
   if (report) {
-    const out: string[] = [];
+    const out: FailureId[] = [];
     for (const file of report) {
       const f = obj(file);
       const path = relPath(str(f.filePath), roots);
@@ -204,34 +270,38 @@ function eslint(text: string, roots: readonly string[]): Failures {
         const msg = obj(m);
         // severity 2 = error; warnings never fail eslint, so they are not failures.
         if (msg.severity !== 2 && msg.fatal !== true) continue;
-        out.push(`${path}: ${str(msg.ruleId) || "fatal"}: ${str(msg.message)}`);
+        out.push(makeFailure("eslint", path, str(msg.ruleId) || "fatal", str(msg.message), roots));
         if (out.length > MAX_FAILURES) return null;
       }
     }
     return out;
   }
   // Fallback: the default "stylish" format (a path line, then `  12:5  error  msg  rule`).
-  const out: string[] = [];
+  const out: FailureId[] = [];
   let file = "";
   for (const line of lines(text)) {
     if (/^(\/|\S+\.\w+$)/.test(line) && !line.includes("  ")) file = relPath(line.trim(), roots);
     const m = /^\s+\d+:\d+\s+error\s+(.+?)(?:\s{2,}(\S+))?\s*$/.exec(line);
-    if (m && file) out.push(`${file}: ${m[2] ?? "fatal"}: ${m[1]}`);
+    if (m && file) out.push(makeFailure("eslint", file, m[2] ?? "fatal", m[1] as string, roots));
     if (out.length > MAX_FAILURES) return null;
   }
   return out;
 }
 
 function tsc(text: string, roots: readonly string[]): Failures {
-  const out: string[] = [];
+  const out: FailureId[] = [];
   // `a.ts(12,5): error TS2322: msg`, pretty `a.ts:12:5 - error TS2322: msg`, or a global error.
   const re = /^(\S[^(:\n]*?)(?:\(\d+,\d+\):|:\d+:\d+ -) error (TS\d+): (.*)$/;
   for (const raw of lines(text)) {
     const line = raw.trim();
     const m = re.exec(line);
     const global = m ? undefined : /^error (TS\d+): (.*)$/.exec(line);
-    if (m) out.push(`${relPath(m[1] as string, roots)}: ${m[2]}: ${m[3]}`);
-    else if (global) out.push(`${global[1]}: ${global[2]}`);
+    if (m)
+      out.push(
+        makeFailure("tsc", relPath(m[1] as string, roots), m[2] as string, m[3] as string, roots),
+      );
+    else if (global)
+      out.push(makeFailure("tsc", "", global[1] as string, global[2] as string, roots));
     if (out.length > MAX_FAILURES) return null;
   }
   return out;
@@ -239,7 +309,7 @@ function tsc(text: string, roots: readonly string[]): Failures {
 
 /** node:test TAP (`not ok N - name`, nested `# Subtest:`) and the spec reporter (`✖ name`). */
 function nodeTest(text: string, roots: readonly string[]): Failures {
-  const out: string[] = [];
+  const out: FailureId[] = [];
   const stack: { indent: number; name: string }[] = [];
   const parents = (indent: number) => {
     while (stack.length && (stack.at(-1) as { indent: number }).indent >= indent) stack.pop();
@@ -247,7 +317,7 @@ function nodeTest(text: string, roots: readonly string[]): Failures {
   };
   const push = (indent: number, name: string) => {
     const path = [...parents(indent), relPath(name.trim(), roots)].join(" > ");
-    out.push(path);
+    out.push(makeFailure("node-test", "", "", path, roots));
   };
   for (const line of lines(text)) {
     if (/^\s*✖ failing tests:\s*$/.test(line)) break; // spec reporter repeats failures below
@@ -273,15 +343,18 @@ function nodeTest(text: string, roots: readonly string[]): Failures {
 function vitest(text: string, roots: readonly string[]): Failures {
   const report = findJson(text, "{", (v) => Array.isArray(obj(v).testResults));
   if (report === null || report === undefined) return null;
-  const out: string[] = [];
+  const out: FailureId[] = [];
+  const shown = (p: string, _r: string, m: string) => `${p} > ${m}`;
   for (const file of obj(report).testResults as unknown[]) {
     const f = obj(file);
     const path = relPath(str(f.name), roots);
     const cases = Array.isArray(f.assertionResults) ? f.assertionResults.map(obj) : [];
     const failed = cases.filter((c) => c.status === "failed");
-    for (const c of failed) out.push(`${path} > ${str(c.fullName) || str(c.title)}`);
+    for (const c of failed)
+      out.push(makeFailure("vitest", path, "", str(c.fullName) || str(c.title), roots, shown));
     // A file that failed to load has no failed assertions of its own.
-    if (f.status === "failed" && failed.length === 0) out.push(`${path} > (file failed)`);
+    if (f.status === "failed" && failed.length === 0)
+      out.push(makeFailure("vitest", path, "", "(file failed)", roots, shown));
     if (out.length > MAX_FAILURES) return null;
   }
   return out;
@@ -313,5 +386,5 @@ export function parseCheckOutput(
   if (raw.length > (fromFile ? MAX_REPORT_BYTES : MAX_PARSE_BYTES)) return null;
   const found = PARSE[parser](raw.replace(/\r\n?/g, "\n"), roots);
   if (!found || found.length === 0) return null;
-  return found.map((f) => sanitizeFailure(f));
+  return found;
 }

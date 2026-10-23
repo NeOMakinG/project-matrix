@@ -1,4 +1,10 @@
-import { type Failures, sanitizeFailure } from "./check-parsers.js";
+import {
+  type Failure,
+  type Failures,
+  failureKey,
+  failureText,
+  sanitizeFailure,
+} from "./check-parsers.js";
 import type { Receipt } from "./ports.js";
 import type { PhaseContext } from "./ports-internal.js";
 import type { BaselineMode, CheckCommand, CheckParser } from "./types.js";
@@ -61,14 +67,17 @@ export interface BaselineVerdict {
 
 export const MAX_LISTED = 50;
 
-/** Multiset difference: each branch failure consumes one identical base failure. */
-export function newFailures(branch: string[], base: string[]): string[] {
+/** Multiset difference by failure key: each branch failure consumes one base failure with its key. */
+export function newFailures<T extends Failure>(
+  branch: readonly T[],
+  base: readonly Failure[],
+): T[] {
   const left = new Map<string, number>();
-  for (const f of base) left.set(f, (left.get(f) ?? 0) + 1);
-  const fresh: string[] = [];
+  for (const f of base) left.set(failureKey(f), (left.get(failureKey(f)) ?? 0) + 1);
+  const fresh: T[] = [];
   for (const f of branch) {
-    const n = left.get(f) ?? 0;
-    if (n > 0) left.set(f, n - 1);
+    const n = left.get(failureKey(f)) ?? 0;
+    if (n > 0) left.set(failureKey(f), n - 1);
     else fresh.push(f);
   }
   return fresh;
@@ -86,7 +95,7 @@ export function compareToBase(
 ): BaselineVerdict {
   const v = (
     ok: boolean,
-    fresh: string[],
+    fresh: readonly Failure[],
     preExisting: number,
     note: string,
     count = fresh.length,
@@ -95,7 +104,7 @@ export function compareToBase(
     parser,
     ok,
     ...(baseSha ? { baseSha } : {}),
-    newFailures: fresh.slice(0, MAX_LISTED),
+    newFailures: fresh.slice(0, MAX_LISTED).map(failureText),
     newCount: count,
     preExisting,
     note,

@@ -7,11 +7,38 @@ import {
   compareToBase,
   newFailures,
 } from "./check-baseline.js";
+import { makeFailure } from "./check-parsers.js";
 import type { Receipt, SandboxExecSpec } from "./ports.js";
 import { createHarness } from "./testing/index.js";
 
 describe("compareToBase", () => {
   const base = { code: 1, failures: ["a: r: x", "a: r: x", "b: r: y"] };
+
+  test("keyed failures compare by key: a re-trimmed display text is still pre-existing", () => {
+    const msg = `${"m".repeat(239)} tail`;
+    const head = makeFailure("eslint", "a.ts", "r", msg);
+    const cachedBase = { ...makeFailure("eslint", "a.ts", "r", `${msg} `), text: "re-trimmed" };
+    expect(head.key).toBe(cachedBase.key);
+    const v = compareToBase(
+      "eslint-json",
+      { code: 1, failures: [head] },
+      {
+        code: 1,
+        failures: [cachedBase],
+      },
+    );
+    expect(v).toMatchObject({ ok: true, newCount: 0, preExisting: 1 });
+    const other = makeFailure("eslint", "a.ts", "r", `${msg} changed`);
+    const fresh = compareToBase(
+      "eslint-json",
+      { code: 1, failures: [other] },
+      {
+        code: 1,
+        failures: [cachedBase],
+      },
+    );
+    expect(fresh.newFailures).toEqual([other.text]);
+  });
 
   test("only failures absent on base fail (multiset: a duplicate of a base failure is new)", () => {
     expect(newFailures(["a: r: x", "a: r: x", "a: r: x", "c"], base.failures)).toEqual([
@@ -134,7 +161,10 @@ describe("checks phase with a baseline", () => {
       defaultMode: () => "compare",
       run: async (_ctx, checks) => {
         baseRuns.push(checks.length);
-        return { baseSha: "b".repeat(40), results: [{ code: 1, failures: ["a.ts: r: old"] }] };
+        return {
+          baseSha: "b".repeat(40),
+          results: [{ code: 1, failures: [makeFailure("eslint", "a.ts", "r", "old")] }],
+        };
       },
     };
     harness.deps.baseline = port;
@@ -233,7 +263,7 @@ describe("flaky retries and evidence", () => {
       defaultMode: () => "compare",
       run: async () => ({
         baseSha: "b".repeat(40),
-        results: [{ code: 1, failures: ["a.test.ts > old"] }],
+        results: [{ code: 1, failures: [makeFailure("vitest", "a.test.ts", "", "old")] }],
       }),
       evidence: async (_ctx, record) => (evidence.push(record), "evidence/x.json"),
     };

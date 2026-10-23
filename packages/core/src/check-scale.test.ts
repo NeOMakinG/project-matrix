@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { confirmByRetry, MAX_FLAKY } from "./check-flaky.js";
 import {
   checkInvocation,
+  failureText,
   MAX_PARSE_BYTES,
   MAX_REPORT_BYTES,
   parseCheckOutput,
@@ -87,7 +88,7 @@ describe("parseCheckOutput with a report file", () => {
       ["/work"],
     );
     expect(found).toHaveLength(19_000);
-    expect(found?.[0]).toMatch(/^a\.ts: r: m0 /);
+    expect(failureText(found?.[0] ?? "")).toMatch(/^a\.ts: r: m0 /);
   });
 
   test("missing report falls back to stdout; an unparseable report fails closed", () => {
@@ -104,7 +105,7 @@ describe("parseCheckOutput with a report file", () => {
   test("TAP report from the file, spec logs on stdout ignored", () => {
     const text = "TAP version 13\n# Subtest: a\nnot ok 1 - a\nok 2 - b\n1..2\n";
     const run = { code: 1, stdout: "✖ decoy", stderr: "", report: { text } };
-    expect(parseCheckOutput("node-test-tap", run)).toEqual(["a"]);
+    expect(parseCheckOutput("node-test-tap", run)?.map(failureText)).toEqual(["a"]);
   });
 });
 

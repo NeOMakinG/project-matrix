@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { PhaseContext, Sandbox, SandboxExecSpec } from "@matrix/core";
+import { failureText, type PhaseContext, type Sandbox, type SandboxExecSpec } from "@matrix/core";
 import { describe, expect, test } from "vitest";
 import { baselineChecks } from "./baseline-checks.js";
 
@@ -69,9 +69,10 @@ describe("baselineChecks port", () => {
     const check = { kind: "typecheck" as const, cmd: ["tsc", "--noEmit"] };
     const first = await port.run(ctx, [check]);
     expect(first.baseSha).toBe(r.base);
-    expect(first.results).toEqual([
-      { code: 2, failures: ["src/a.ts: TS2304: Cannot find name 'old'."] },
-    ]);
+    const [res] = first.results as { code: number; failures: { key: string; text: string }[] }[];
+    expect(res?.code).toBe(2);
+    expect(res?.failures.map(failureText)).toEqual(["src/a.ts: TS2304: Cannot find name 'old'."]);
+    expect(res?.failures[0]?.key).toMatch(/^tsc:src\/a\.ts:TS2304:[0-9a-f]{16}$/);
     expect(execs).toHaveLength(1);
     expect(execs[0]?.workdir).not.toBe(r.wt);
     expect(execs[0]?.network).toBe("none");
@@ -80,6 +81,20 @@ describe("baselineChecks port", () => {
     expect(await port.run(ctx, [check])).toEqual(first);
     expect(execs).toHaveLength(1);
     expect(readdirSync(join(r.dir, "state", "cache", "tj"))).toHaveLength(1);
+  });
+
+  test("a cached result in the old bare-string format is not reused: the base re-runs", async () => {
+    const r = repo();
+    const { port, ctx, execs } = harness(r);
+    const check = { kind: "typecheck" as const, cmd: ["tsc", "--noEmit"] };
+    const first = await port.run(ctx, [check]);
+    const dir = join(r.dir, "state", "cache", "tj");
+    const [file] = readdirSync(dir);
+    // A pre-v3 entry (truncated string identities) planted under the current cache key.
+    const legacy = { code: 2, failures: ["src/a.ts: TS2304: Cannot find name 'old'."] };
+    writeFileSync(join(dir, file as string), JSON.stringify(legacy));
+    expect(await port.run(ctx, [check])).toEqual(first);
+    expect(execs).toHaveLength(2);
   });
 
   test("agent commits never become the base, even after merging the base forward", async () => {
@@ -182,9 +197,8 @@ describe("baselineChecks port", () => {
       compareByDefault: () => true,
     });
     const check = { kind: "lint" as const, cmd: ["eslint", "."] };
-    expect((await port.run(ctx, [check])).results).toEqual([
-      { code: 1, failures: ["a.ts: r: old"] },
-    ]);
+    const [res] = (await port.run(ctx, [check])).results as { failures: string[] }[];
+    expect(res?.failures.map(failureText)).toEqual(["a.ts: r: old"]);
     expect(execs[0]?.report?.name).toMatch(/^report-[\w-]+\.json$/);
     expect(execs[0]?.report?.maxBytes).toBe(64 * 1024 * 1024);
     await port.run(ctx, [check]);
