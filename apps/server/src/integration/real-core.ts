@@ -47,6 +47,7 @@ import {
   detectChecks,
   resolveExistingRepo,
   validateEditablePaths,
+  validateSetup,
 } from "./existing-repo.js";
 import { type FinalizeJournal, finalizeProject } from "./finalize.js";
 import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
@@ -369,7 +370,11 @@ export class RealCore implements CorePort {
       const editablePaths = input.repo.editablePaths
         ? validateEditablePaths(input.repo.editablePaths)
         : await defaultEditablePaths(repo, git);
-      if (config.matrix?.repo) config.matrix.repo.editablePaths = editablePaths;
+      if (config.matrix?.repo) {
+        config.matrix.repo.editablePaths = editablePaths;
+        if (input.repo.setup) config.matrix.repo.setup = validateSetup(input.repo.setup);
+        if (input.repo.setupScripts) config.matrix.repo.setupScripts = true;
+      }
       if (this.o.fakeRuntime)
         config.models = {
           implement: { runner: "claude-code", model: "fake-implementer" },
@@ -411,8 +416,9 @@ export class RealCore implements CorePort {
             "a Matrix-created repo cannot switch tracker kind after creation",
           );
       }
-      if (patch.repo?.editablePaths && !external)
-        throw new CoreError("invalid_request", "editablePaths only applies to existing repos");
+      if (patch.repo && !external)
+        throw new CoreError("invalid_request", "repo settings only apply to existing repos");
+      const setup = patch.repo?.setup ? validateSetup(patch.repo.setup) : undefined;
       const editable = patch.repo?.editablePaths
         ? validateEditablePaths(patch.repo.editablePaths)
         : undefined;
@@ -420,6 +426,13 @@ export class RealCore implements CorePort {
       if (patch.tickets && config.matrix)
         config.matrix = { ...config.matrix, tickets: patch.tickets };
       if (editable && config.matrix?.repo) config.matrix.repo.editablePaths = editable;
+      if (config.matrix?.repo) {
+        // null resets to lockfile detection; [] disables setup.
+        if (patch.repo?.setup === null) delete config.matrix.repo.setup;
+        else if (setup) config.matrix.repo.setup = setup;
+        if (patch.repo?.setupScripts !== undefined)
+          config.matrix.repo.setupScripts = patch.repo.setupScripts;
+      }
       if (patch.checks)
         config.checks = patch.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] }));
       if (patch.models) {

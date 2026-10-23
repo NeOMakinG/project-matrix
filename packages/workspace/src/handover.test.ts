@@ -164,7 +164,8 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
       },
     });
   }, 30_000);
-  test.each(["src/new.ts", "unknown.bin", "node_modules/package/index.js"])(
+  // node_modules is the exception: installed dependencies are disposable (see the suite below).
+  test.each(["src/new.ts", "unknown.bin"])(
     "preserves ignored %s during handover and cleanup",
     async (path) => {
       const { prepared, port, head, options } = await fixture({ ignore: `${path}\n` });
@@ -577,5 +578,49 @@ describe("generic build directories are not disposable by default", () => {
       expect(scanned).toBe(false);
       expect(await port.headSha(prepared.workdir)).toBe(head);
     }, 60_000);
+  });
+});
+
+describe("installed dependencies (node_modules) without a BASE policy", () => {
+  test.each([true, false])(
+    "are never committed or fingerprinted and are wiped before checks (ignored=%s)",
+    async (ignored) => {
+      const { prepared, port, options } = await fixture({
+        ...(ignored ? { ignore: "node_modules/\n" } : {}),
+        packageRoots: ["app"],
+      });
+      const planted = ["app/node_modules/.bin/vitest", "src/node_modules/fake/index.js"];
+      for (const path of planted) {
+        await mkdir(join(prepared.workdir, path, ".."), { recursive: true });
+        await writeFile(join(prepared.workdir, path), "exit 0");
+      }
+      const before = await port.treeState(prepared.workdir);
+      await writeFile(join(prepared.workdir, "app/node_modules/.bin/vitest"), "changed");
+      expect(await port.treeState(prepared.workdir)).toBe(before);
+      await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+      const result = await port.commitImplementation(prepared.workdir, {
+        ...options,
+        scan: async (snapshot, binding) => {
+          expect(binding.objects.map((object) => object.path)).toEqual(["src/answer.ts"]);
+          for (const path of planted) expect(existsSync(join(snapshot, path))).toBe(false);
+          return options.scan();
+        },
+      });
+      expect(await port.cleanForChecks(prepared.workdir)).toBe(result.headSha);
+      expect(existsSync(join(prepared.workdir, "app/node_modules"))).toBe(false);
+      expect(existsSync(join(prepared.workdir, "src/node_modules"))).toBe(false);
+      expect(existsSync(join(prepared.workdir, "app/package.json"))).toBe(true);
+    },
+    30_000,
+  );
+
+  test("a symlinked node_modules only loses the link", async () => {
+    const { prepared, port } = await fixture({ ignore: "node_modules\n" });
+    const outside = await mkdtemp(join(tmpdir(), "matrix-outside-"));
+    await writeFile(join(outside, "keep"), "keep");
+    await symlink(outside, join(prepared.workdir, "node_modules"));
+    await port.cleanForChecks(prepared.workdir);
+    expect(existsSync(join(prepared.workdir, "node_modules"))).toBe(false);
+    expect(await readFile(join(outside, "keep"), "utf8")).toBe("keep");
   });
 });

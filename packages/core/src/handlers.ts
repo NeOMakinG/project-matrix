@@ -14,6 +14,7 @@ import {
   screenshotHash,
   spikePlanSchema,
 } from "./design.js";
+import { type DependencySetupPort, environmentFailure } from "./environment.js";
 import {
   HoldoutStore,
   holdoutReceipt,
@@ -74,6 +75,8 @@ export interface HandlerDeps {
   deploy?: DeployPort;
   verify?: VerifyPort;
   architecture?: (ctx: PhaseContext) => Promise<Receipt[]>;
+  /** Installs dependencies in the worktree right before checks (existing repos). */
+  setup?: DependencySetupPort;
 }
 
 function tail(text: string, lines = 20): string {
@@ -421,6 +424,15 @@ const implement =
         };
       }
     }
+    if (deps.setup) {
+      // Best effort: the implementer can run the project's tests with real dependencies. Checks
+      // wipe and reinstall them anyway, so a failure here only costs the agent its local tests.
+      const setup = await deps.setup(ctx, "implement").catch((error: unknown) => ({
+        ok: false,
+        summary: error instanceof Error ? error.message : "setup error",
+      }));
+      if (!setup.ok) ctx.emit(`dependency setup failed before implement: ${setup.summary}`, "log");
+    }
     const loopNote = ctx.workflow.lastError
       ? `This is iteration ${ctx.workflow.loops + 1}. Fix this first: ${ctx.workflow.lastError}`
       : "";
@@ -468,9 +480,31 @@ const checks =
         failureClass: "factory-tooling",
       };
     const receipts: Receipt[] = [];
+    const environment = (reason: string): PhaseOutcome => ({
+      ok: false,
+      blocked: true,
+      summary: `environment: ${reason} (fix the project setup; implement attempts untouched)`,
+      receipts,
+      runStatus: "ok",
+      failureClass: "environment",
+    });
     try {
+      if (deps.setup) {
+        const setup = await deps.setup(ctx, "checks").catch((error: unknown) => {
+          if (error instanceof FactoryToolingError) throw error;
+          return {
+            ok: false,
+            summary: error instanceof Error ? error.message.slice(0, 500) : "setup error",
+            receipts: [],
+          };
+        });
+        receipts.push(...setup.receipts);
+        if (!setup.ok) return environment(`dependency setup failed: ${setup.summary}`);
+      }
+      const broken: string[] = [];
       for (const check of ctx.project.checks) {
         ctx.emit(`running ${check.kind}: ${check.cmd.join(" ")}`, "tool");
+        const started = Date.now();
         const res = await deps.sandbox.exec(
           {
             workdir: ctx.workdir,
@@ -480,13 +514,17 @@ const checks =
           },
           ctx.signal,
         );
+        const output = `${res.stdout}\n${res.stderr}`;
+        const env = environmentFailure(res.code, output, Date.now() - started);
+        if (env) broken.push(`${check.kind}: ${env}`);
         receipts.push({
           kind: check.kind,
           ok: res.code === 0,
-          summary: `${check.kind} exit ${res.code}`,
-          data: { cmd: check.cmd, output: tail(`${res.stdout}\n${res.stderr}`) },
+          summary: `${check.kind} exit ${res.code}${env ? ` (environment: ${env})` : ""}`,
+          data: { cmd: check.cmd, output: tail(output) },
         });
       }
+      if (broken.length) return environment(broken.join("; "));
       if (deps.architecture) receipts.push(...(await deps.architecture(ctx)));
     } catch (error) {
       if (!(error instanceof FactoryToolingError)) throw error;

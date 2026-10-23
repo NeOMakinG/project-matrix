@@ -26,6 +26,7 @@ import {
   verifyWorktreeLink,
 } from "@matrix/sandbox";
 import { disposablePolicy } from "./artifact-policy.js";
+import { isDependencyPath, removeDependencyDirs } from "./dependency-dirs.js";
 import type { TrustedWorktrees } from "./trusted.js";
 
 const exec = promisify(execFile);
@@ -245,6 +246,16 @@ export class WorktreeGitPort implements GitPort {
    * Requires the committed tree before checks; preserves artifacts authorized by trusted BASE.
    */
   async cleanForChecks(workdir: string): Promise<string> {
+    // Installed dependencies are wiped first: setup reinstalls them from the committed lockfile, so
+    // nothing an agent planted under node_modules survives into checks.
+    const dependencies: string[] = [];
+    await this.#assertNoHiddenArtifacts(workdir, true, dependencies);
+    if (dependencies.length) {
+      const tracked = new Set(
+        (await this.#git(workdir, ["ls-tree", "-r", "--name-only", "-z", "HEAD"])).split("\0"),
+      );
+      await removeDependencyDirs(workdir, dependencies, tracked);
+    }
     const disposable = await this.#assertNoHiddenArtifacts(workdir);
     const others = await this.#git(workdir, ["ls-files", "--others", "-z"], true);
     if (others.split("\0").some((path) => path && !disposable.has(path)))
@@ -258,7 +269,15 @@ export class WorktreeGitPort implements GitPort {
     return this.headSha(workdir);
   }
 
-  async #assertNoHiddenArtifacts(workdir: string, refuseHidden = true): Promise<Set<string>> {
+  /**
+   * Untracked paths the commit gate and fingerprint ignore: trusted-BASE disposables plus installed
+   * dependencies (`node_modules`), which are collected into `dependencies` when given.
+   */
+  async #assertNoHiddenArtifacts(
+    workdir: string,
+    refuseHidden = true,
+    dependencies?: string[],
+  ): Promise<Set<string>> {
     const { baseSha } = await this.#trusted.lookup(workdir);
     if (!baseSha) throw new Error("trusted BASE required for artifact policy");
     const tree = await this.#git(workdir, ["ls-tree", "-z", baseSha, "--", "matrix.config.ts"]);
@@ -280,7 +299,12 @@ export class WorktreeGitPort implements GitPort {
     const all = await this.#git(workdir, ["ls-files", "--others", "-z"], true);
     const cached = await this.#git(workdir, ["ls-files", "--cached", "-z"]);
     for (const path of `${all}${cached}`.split("\0").filter(Boolean)) {
-      if (!tracked.has(path) && matches(path)) disposable.add(path);
+      if (tracked.has(path)) continue;
+      if (matches(path)) disposable.add(path);
+      else if (isDependencyPath(path)) {
+        disposable.add(path);
+        dependencies?.push(path);
+      }
     }
     const visible = new Set(
       (await this.#git(workdir, ["ls-files", "--others", "--exclude-standard", "-z"], true)).split(

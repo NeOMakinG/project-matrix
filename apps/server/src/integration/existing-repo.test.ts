@@ -9,6 +9,7 @@ import {
   parseRepoRoots,
   resolveExistingRepo,
   validateEditablePaths,
+  validateSetup,
   validBranch,
 } from "./existing-repo.js";
 import { git, makeRepo } from "./existing-repo.test-helpers.js";
@@ -132,6 +133,9 @@ test("editable paths default to tracked top-level dirs, never dot paths", async 
   const repo = makeRepo(root, "tj", {
     "package.json": "{}",
     Makefile: "x",
+    "README.md": "x",
+    "SPECS.md": "x",
+    ".notes.md": "x",
   });
   for (const dir of ["app/src/features", "docs", "designs", ".github/workflows", ".matrix/graph"]) {
     mkdirSync(join(repo, dir), { recursive: true });
@@ -140,6 +144,8 @@ test("editable paths default to tracked top-level dirs, never dot paths", async 
   git(repo, "add", "-A");
   git(repo, "commit", "-qm", "tree");
   expect(await defaultEditablePaths({ path: repo, baseBranch: "main" })).toEqual([
+    "README.md",
+    "SPECS.md",
     "app",
     "designs",
     "docs",
@@ -148,4 +154,22 @@ test("editable paths default to tracked top-level dirs, never dot paths", async 
   expect(validateEditablePaths(["app", "docs", "app"])).toEqual(["app", "docs"]);
   for (const bad of [[], [".github/workflows"], ["app/../.."], ["/abs"], ["app/.env"], ["a b"]])
     expect(() => validateEditablePaths(bad)).toThrow();
+});
+
+test("setup steps are argv with a relative non-dot cwd", () => {
+  expect(
+    validateSetup([
+      { cwd: "app", run: ["npm", "ci"] },
+      { cwd: ".", run: ["bun", "i"] },
+    ]),
+  ).toEqual([{ cwd: "app", run: ["npm", "ci"] }, { run: ["bun", "i"] }]);
+  expect(validateSetup([])).toEqual([]);
+  for (const bad of [
+    [{ cwd: "../x", run: ["npm", "ci"] }],
+    [{ cwd: ".github", run: ["npm", "ci"] }],
+    [{ cwd: "/abs", run: ["npm", "ci"] }],
+    [{ run: [] }],
+    [{ run: ["npm", "ci\nrm -rf /"] }],
+  ])
+    expect(() => validateSetup(bad)).toThrow();
 });

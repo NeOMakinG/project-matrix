@@ -109,7 +109,12 @@ export interface PhaseOutcome {
   costUsd?: number;
   /** Set when an irreversible action was refused because it now needs (re)approval. */
   requiresApproval?: boolean;
-  failureClass?: "factory-tooling";
+  /**
+   * `factory-tooling`: Matrix itself is broken. `environment`: the run environment cannot execute
+   * the checks (missing dependencies or binaries); both block for a human, neither consumes
+   * implement attempts.
+   */
+  failureClass?: "factory-tooling" | "environment";
 }
 
 export interface Limits {

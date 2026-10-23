@@ -63,6 +63,8 @@ export function projectRoutes(app: App, ops: Operations) {
                   baseBranch: body.repo.baseBranch,
                   remote: body.repo.remote,
                   ...(body.repo.editablePaths ? { editablePaths: body.repo.editablePaths } : {}),
+                  ...(body.repo.setup ? { setup: setupSteps(body.repo.setup) } : {}),
+                  ...(body.repo.setupScripts ? { setupScripts: true } : {}),
                 },
               }
             : {}),
@@ -86,7 +88,7 @@ export function projectRoutes(app: App, ops: Operations) {
       const body = c.req.valid("json");
       return c.json(
         await ops.updateProject(c.var.principal, c.req.valid("param").projectId, {
-          ...(body.repo?.editablePaths ? { repo: { editablePaths: body.repo.editablePaths } } : {}),
+          ...(body.repo ? { repo: repoPatch(body.repo) } : {}),
           ...(body.tickets ? { tickets: ticketSettings(body.tickets) } : {}),
           ...(body.checks ? { checks: body.checks } : {}),
           ...(body.models ? { models: modelPlan(body.models) } : {}),
@@ -362,6 +364,18 @@ export function projectRoutes(app: App, ops: Operations) {
         await ops.answerInit(c.var.principal, c.req.valid("param").id, c.req.valid("json").answers),
       ),
   );
+}
+
+function setupSteps(steps: Array<{ cwd?: string | undefined; run: string[] }>) {
+  return steps.map((s) => ({ ...(s.cwd === undefined ? {} : { cwd: s.cwd }), run: s.run }));
+}
+
+function repoPatch(r: NonNullable<z.infer<typeof S.UpdateProject>["repo"]>) {
+  return {
+    ...(r.editablePaths ? { editablePaths: r.editablePaths } : {}),
+    ...(r.setup !== undefined ? { setup: r.setup && setupSteps(r.setup) } : {}),
+    ...(r.setupScripts !== undefined ? { setupScripts: r.setupScripts } : {}),
+  };
 }
 
 function linearSettings(l: z.infer<typeof S.LinearTickets>) {
