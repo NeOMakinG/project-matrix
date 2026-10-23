@@ -20,47 +20,46 @@ const SAFE_ID = /^[A-Za-z0-9._-]+$/;
 export const QA_JUDGE_CRITERIA =
   "Every assertion in the full then clause must be demonstrated by host-executed evidence. Inspect probe source and actual output; exit zero, printed claims, simulations, or checking only part of the clause are insufficient. Absence claims require instrumentation installed before importing/exercising the software, covering the named surfaces (e.g. fs, net, console), and assertions of zero intercepted calls. A nonzero host exit cannot satisfy a scenario.";
 
-const NEGATED_VERB =
-  "(?:produce|perform|write|log|mutate|modify|access|emit|call|send|upload|save|store|fetch|request|delete|change|show|display|render|appear)\\w*";
-const ABSENCE = new RegExp(
-  [
-    "\\b(?:no|without|never|absence|unchanged|unmodified)\\b",
-    "\\bzero\\s+(?:[\\w./:-]+\\s+){0,4}(?:calls|writes|requests|effects)\\b",
-    "\\b(?:pure|purity)\\b",
-    `\\b(?:not|cannot|\\w+n't)\\s+(?:be(?:en)?\\s+|get\\s+)?${NEGATED_VERB}\\b`,
-    "\\b(?:not|\\w+n't)\\s+(?:be(?:en)?\\s+|get\\s+)?\\w+(?:ed|en)\\b",
-  ].join("|"),
-  "i",
-);
+/**
+ * Negations that make a behavioral absence claim. Matching errs on the side of an absence claim:
+ * a false positive only asks for instrumentation, a false negative lets a claim go unverified.
+ */
+const ABSENCE =
+  /\b(?:no|none|nothing|neither|nor|without|never|absence|unchanged|unmodified|pure|purity)\b|\bzero\s+(?:[\w./:-]+\s+){0,4}(?:calls|writes|requests|effects)\b|\b(?:not|cannot|\w+n't)\s+\w+/gi;
 
 /** Quoted strings are displayed copy, not claims: `shows "No photos yet"` asserts presence. */
 const QUOTED = /"[^"]*"|“[^”]*”|‘[^’]*’|`[^`]*`|(?<![\w])'[^']*'(?![\w])/g;
 
 /**
- * Words that introduce displayed content. Everything after them in the same clause is the
- * content being asserted present (an empty-state message may itself contain "no").
+ * What may sit right before a negation that starts displayed copy: a display verb, optionally
+ * naming the UI element ("shows an empty-state message no eligible photos, add some",
+ * "reads: no photos yet"). Anything else in between (an object, "with", "without") makes the
+ * negation a behavioral claim again ("renders the list with no network requests").
  */
-const DISPLAY =
-  /\b(?:show(?:s|n|ing)?|display(?:s|ed|ing)?|render(?:s|ed|ing)?|read(?:s|ing)|say(?:s|ing)|message|text|copy|label(?:led)?|title(?:d)?|heading|caption|placeholder|banner|toast|empty[- ]state)\b/i;
+const COPY_INTRO =
+  /\b(?:shows?|showing|displays?|displaying|renders?|rendering|reads?|reading|says?|saying)\s*:?\s+(?:(?:an?|the)\s+)?(?:(?:empty[- ]state|error|info|warning|success|toast|banner|message|text|copy|label|title|heading|caption|placeholder|notice|hint)\s+)*(?:(?:that\s+)?(?:says|reads)\s*:?\s+)?$/i;
+
+/** Behavior after a copy-introduced negation turns it back into a claim ("shows nothing is sent"). */
+const BEHAVIOR =
+  /\b(?:is|are|was|were|gets?|got|be|been)\s+(?:\w+ed|\w+en|made|sent|done|run|kept|left)\b|\b(?:happens?|occurs?|called|made|sent|uploaded|written|logged|stored|saved|fetched|requested)\b/i;
 
 /** Clause boundaries: sentence ends, semicolons, commas, and coordinating conjunctions. */
 const CLAUSE = /[.;,!?]+(?=\s|$)|[;\n]|\b(?:and|but|while|whereas|then)\b/i;
 
 /**
  * True when `text` claims something does NOT happen or is absent (needs instrumentation).
- * Assertions that a message is displayed are presence claims even when the copy is negative.
+ * Asserting that copy is displayed is a presence claim even when the copy is negative: quoted
+ * copy, or a negation directly introduced by a display verb, is not an absence claim.
  */
 export function hasAbsenceClaim(text: string): boolean {
   return text
     .replace(QUOTED, " ")
     .split(CLAUSE)
-    .some((clause) => {
-      const match = ABSENCE.exec(clause);
-      if (!match) return false;
-      const display = clause.search(DISPLAY);
-      // A negation inside the displayed content (after the display word) is copy, not a claim.
-      return display === -1 || match.index < display;
-    });
+    .some((clause) =>
+      [...clause.matchAll(ABSENCE)].some(
+        (m) => !COPY_INTRO.test(clause.slice(0, m.index)) || BEHAVIOR.test(clause.slice(m.index)),
+      ),
+    );
 }
 
 export function validateScenario(scenario: HoldoutScenario): void {
@@ -210,15 +209,16 @@ export function parseScenarioBatch(text: string): ScenarioBatch {
   const dropped: string[] = [];
   let firstError: unknown;
   list.forEach((raw, i) => {
-    const s = raw as Partial<HoldoutScenario>;
-    if (!s.given || !s.when || !s.then) throw new Error(`scenario ${i} is missing given/when/then`);
-    const scenario = {
-      id: s.id && SAFE_ID.test(s.id) ? s.id : `s${i + 1}`,
-      given: s.given,
-      when: s.when,
-      then: s.then,
-    };
+    const s = (raw ?? {}) as Partial<HoldoutScenario>;
     try {
+      if (!s.given || !s.when || !s.then)
+        throw new Error(`scenario ${i} is missing given/when/then`);
+      const scenario = {
+        id: s.id && SAFE_ID.test(s.id) ? s.id : `s${i + 1}`,
+        given: s.given,
+        when: s.when,
+        then: s.then,
+      };
       validateScenario(scenario);
       scenarios.push(scenario);
     } catch (error) {

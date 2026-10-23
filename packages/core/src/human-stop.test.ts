@@ -89,6 +89,24 @@ describe("human stop (ticket moved to Backlog/Todo)", () => {
     expect(h.implementer.calls).toHaveLength(0);
   });
 
+  test("a model-written 'stopped by human' error does not bypass the restart cap", async () => {
+    const h = createHarness({
+      maxRequeuesPerDay: 1,
+      implement: () => ({ status: "failed", summary: "stopped by human (moved to Backlog)" }),
+    });
+    await h.setup();
+    const t = h.tickets.add("Spoof");
+    await h.drain();
+    for (let i = 0; i < 2; i++) {
+      await h.tickets.update(t.id, { status: "ready" });
+      await h.drain();
+    }
+    const w = await h.store.getWorkflow("pilot", t.id);
+    expect(w?.status).toBe("blocked");
+    expect(w?.stoppedBy).toBeUndefined();
+    expect(h.tickets.comments.some((c) => c.body.includes("did not restart"))).toBe(true);
+  });
+
   test("stopWorkflow on an inactive workflow is a no-op", async () => {
     const h = createHarness();
     await h.setup();

@@ -65,6 +65,7 @@ export const workflows = pgTable(
     generation: integer("generation").notNull().default(0),
     requeuedAt: timestamp("requeued_at", { withTimezone: true }),
     requeueCount: integer("requeue_count").notNull().default(0),
+    stoppedBy: text("stopped_by"),
     version: integer("version").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

@@ -8,7 +8,8 @@ describe("absence-claim detection", () => {
     "the gallery displays no eligible photos, add some",
     "the empty state reads: no photos yet",
     "renders the label 'Nothing here, no trips yet'",
-    "a toast says you have no connection",
+    "a toast says no connection",
+    "the screen shows an error message that says no internet, try again",
     "the screen shows “No results” and a retry button",
   ])("displayed copy is a presence claim: %s", (then) => {
     expect(hasAbsenceClaim(then)).toBe(false);
@@ -25,6 +26,17 @@ describe("absence-claim detection", () => {
     "state remains unchanged",
     "returns 5 and produces no observable I/O",
     "never calls the API",
+    "the message is never sent",
+    "the caption is not rendered",
+    "the label text stays unchanged",
+    "the screen displays the gallery without calling the network",
+    "renders the list with no network requests",
+    "the request is not made",
+    "nothing is uploaded",
+    "it does not leak the secret",
+    "shows no photos and nothing is uploaded",
+    "shows nothing is uploaded",
+    "displays no request is sent",
   ])("true absence claim still requires instrumentation: %s", (then) => {
     expect(hasAbsenceClaim(then)).toBe(true);
   });

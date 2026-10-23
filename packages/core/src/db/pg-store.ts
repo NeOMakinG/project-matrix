@@ -52,6 +52,7 @@ function toWorkflow(r: typeof s.workflows.$inferSelect): WorkflowState {
     ...(r.generation ? { generation: r.generation } : {}),
     ...opt("requeuedAt", r.requeuedAt),
     ...(r.requeueCount ? { requeueCount: r.requeueCount } : {}),
+    ...(r.stoppedBy === "human" ? { stoppedBy: "human" as const } : {}),
   };
 }
 
@@ -301,6 +302,7 @@ export class PgStore implements Store {
         generation: state.generation ?? 0,
         requeuedAt: state.requeuedAt ?? null,
         requeueCount: state.requeueCount ?? 0,
+        stoppedBy: state.stoppedBy ?? null,
         version: state.version + 1,
         updatedAt: new Date(),
       })

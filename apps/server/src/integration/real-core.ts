@@ -661,8 +661,8 @@ export class RealCore implements CorePort {
     const w = await this.o.store.getWorkflow(record.projectId, record.ticketId);
     if (w?.currentRunId === id)
       await this.o.reconciler.stopWorkflow(record.projectId, record.ticketId, CANCEL_REASON);
-    // An orphaned run record (its workflow moved on) is simply closed.
-    else
+    // An orphaned run record (its workflow moved on) is aborted if still local, and closed.
+    else if (!this.o.reconciler.abortRun(id, CANCEL_REASON))
       await this.o.store.updateRun(id, {
         status: "cancelled",
         finishedAt: new Date(),

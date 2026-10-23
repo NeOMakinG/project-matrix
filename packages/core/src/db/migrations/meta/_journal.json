@@ -29,6 +29,13 @@
       "when": 1792672001796,
       "tag": "0003_workflow_requeue",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792750101573,
+      "tag": "0004_workflow_stopped_by",
+      "breakpoints": true
     }
   ]
 }

@@ -36,16 +36,18 @@ in the ticket's Run, and never touch the implementer's worktree. A scenario-prep
 failure reports a redacted, bounded cause (runner errors only; parse errors and failed-run
 summaries are never echoed because they can quote holdout text).
 
-Presence vs absence (lexical guardrail): a negation only makes an absence claim when it is
-a claim about behavior. Quoted copy (`shows "No eligible photos, add some"`) and content
-after a display word in the same clause (shows/displays/renders/reads/says/message/text/
-copy/label/title/banner/toast/empty state) assert that a message is present, even if the
-copy contains "no" or "not". "No network request is made", "the photo is not uploaded",
+Presence vs absence (lexical guardrail, erring towards absence): a negation (no, none,
+nothing, never, without, not/n't + word, unchanged, ...) is an absence claim unless it is
+displayed copy: inside quotes (`shows "No eligible photos, add some"`), or introduced directly
+by a display verb, optionally naming the element (`shows an empty-state message no eligible
+photos, add some`, `reads: no photos yet`), with no behavior verb after it in the clause
+("shows nothing is uploaded" is still an absence claim). "No network request is made", "the photo is not uploaded",
 "no error message is shown" and "does not show the paywall" remain absence claims and need
 instrumentation (stub/spy/snapshot plus an assertion). The probe planner applies the same
 detector.
 
 Batch tolerance: a scenario that fails validation is dropped from its batch (its fixed
 rejection reason is logged, never its text) as long as at least 3 valid scenarios remain
-(`MIN_SCENARIOS_AFTER_DROP`). Below that, the batch is rejected and regenerated under the
-normal one-retry rule. Malformed JSON, missing fields and duplicate ids still reject the batch.
+(`MIN_SCENARIOS_AFTER_DROP`); a scenario missing given/when/then is dropped the same way.
+Below that, the batch is rejected and regenerated under the normal one-retry rule. Malformed
+JSON, a bad scenario count and duplicate ids still reject the batch.
