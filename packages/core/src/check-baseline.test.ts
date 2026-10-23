@@ -1,12 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
   type BaselinePort,
+  type CheckEvidence,
   checksGateReason,
   checksStatusLine,
   compareToBase,
   newFailures,
 } from "./check-baseline.js";
-import type { Receipt } from "./ports.js";
+import type { Receipt, SandboxExecSpec } from "./ports.js";
 import { createHarness } from "./testing/index.js";
 
 describe("compareToBase", () => {
@@ -142,7 +143,8 @@ describe("checks phase with a baseline", () => {
       const ticket = harness.tickets.add("baseline");
       await runUntilIdle(harness);
       const looped = await harness.store.getWorkflow(harness.project.id, ticket.id);
-      expect(calls[0]).toEqual(["eslint", ".", "--format", "json"]);
+      expect(calls[0]?.slice(0, 5)).toEqual(["eslint", ".", "--format", "json", "-o"]);
+      expect(calls[0]?.[5]).toMatch(/^\/matrix-report\/report-[\w-]+\.json$/);
       expect(baseRuns).toEqual([1]);
       expect(prompts.at(-1)).toContain("a.ts: r: new-bug");
       expect(prompts.at(-1)).not.toContain("a.ts: r: old");
@@ -186,5 +188,119 @@ describe("checks phase with a baseline", () => {
       harness.reconciler.stop();
       await harness.reconciler.idle();
     }
+  });
+});
+
+const vitestReport = (...failed: string[]) =>
+  JSON.stringify({
+    testResults: [
+      {
+        name: "/work/a.test.ts",
+        status: failed.length ? "failed" : "passed",
+        assertionResults: failed.map((t) => ({ status: "failed", fullName: t })),
+      },
+    ],
+  });
+
+describe("flaky retries and evidence", () => {
+  async function gate(runsOut: string[][], check: Record<string, unknown> = {}, reset = true) {
+    const harness = createHarness({
+      project: {
+        maxAttempts: 5,
+        maxLoops: 3,
+        checks: [{ kind: "test", cmd: ["vitest", "run"], ...check }],
+      },
+    });
+    const queue = [...runsOut];
+    const specs: SandboxExecSpec[] = [];
+    harness.deps.sandbox = {
+      kind: "bwrap",
+      exec: async (spec) => {
+        specs.push(spec);
+        const failed = queue.length > 1 ? (queue.shift() as string[]) : (queue[0] ?? []);
+        return {
+          code: failed.length ? 1 : 0,
+          stdout: "logs",
+          stderr: "",
+          ...(spec.report ? { report: { text: vitestReport(...failed) } } : {}),
+        };
+      },
+    };
+    const evidence: CheckEvidence[] = [];
+    let resets = 0;
+    if (reset) harness.deps.resetForRetry = async () => void resets++;
+    harness.deps.baseline = {
+      defaultMode: () => "compare",
+      run: async () => ({
+        baseSha: "b".repeat(40),
+        results: [{ code: 1, failures: ["a.test.ts > old"] }],
+      }),
+      evidence: async (_ctx, record) => (evidence.push(record), "evidence/x.json"),
+    };
+    await harness.setup();
+    const ticket = harness.tickets.add("flaky");
+    await runUntilIdle(harness);
+    harness.reconciler.stop();
+    await harness.reconciler.idle();
+    const w = await harness.store.getWorkflow(harness.project.id, ticket.id);
+    return { specs, evidence, w, resets };
+  }
+
+  test("a new failure that passes on the retry is flaky, not a loop-back", async () => {
+    const { specs, evidence, w } = await gate([["old", "slow"], ["old"]]);
+    expect(specs.filter((s) => s.cmd[0] === "vitest")).toHaveLength(2);
+    expect(evidence[0]).toMatchObject({ flaky: ["a.test.ts > slow"], newFailures: [] });
+    expect(w?.phase).not.toBe("implement");
+  });
+
+  test("a failure that reproduces on the retry counts and is listed in evidence", async () => {
+    const { evidence, w } = await gate([["old", "bug"]]);
+    expect(evidence[0]).toMatchObject({
+      newFailures: ["a.test.ts > bug"],
+      preExisting: ["a.test.ts > old"],
+      flaky: [],
+    });
+    expect(w?.loops).toBeGreaterThanOrEqual(1);
+  });
+
+  test("the retry starts from a reset tree; without a reset port there is no retry", async () => {
+    const reset = await gate([["old", "slow"], ["old"]]);
+    expect(reset.resets).toBe(1);
+    const none = await gate([["old", "slow"], ["old"]], {}, false);
+    expect(none.specs.filter((s) => s.cmd[0] === "vitest")).toHaveLength(1);
+    expect(none.evidence[0]).toMatchObject({ newFailures: ["a.test.ts > slow"], flaky: [] });
+  });
+
+  test("a retry that fails differently excuses nothing", async () => {
+    const { evidence } = await gate([
+      ["old", "renamed-1"],
+      ["old", "renamed-2"],
+    ]);
+    expect(evidence[0]).toMatchObject({ newFailures: ["a.test.ts > renamed-1"], flaky: [] });
+  });
+
+  test("retryFlaky: false never re-runs", async () => {
+    const { specs } = await gate([["old", "slow"], ["old"]], { retryFlaky: false });
+    expect(specs.filter((s) => s.cmd[0] === "vitest")).toHaveLength(1);
+  });
+
+  test("checks resources reach the sandbox", async () => {
+    const harness = createHarness({
+      project: {
+        checks: [{ kind: "lint", cmd: ["eslint", "."] }],
+        resources: { checks: { cpus: 8, memoryGb: 16 } },
+      },
+    });
+    const specs: SandboxExecSpec[] = [];
+    harness.deps.sandbox = {
+      kind: "bwrap",
+      exec: async (spec) => (specs.push(spec), { code: 0, stdout: "", stderr: "" }),
+    };
+    await harness.setup();
+    harness.tickets.add("res");
+    await runUntilIdle(harness);
+    harness.reconciler.stop();
+    await harness.reconciler.idle();
+    expect(specs[0]?.resources).toEqual({ cpus: 8, memoryGb: 16 });
   });
 });

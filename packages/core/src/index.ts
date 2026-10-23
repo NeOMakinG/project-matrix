@@ -1,7 +1,10 @@
 export const name = "@matrix/core";
 export * from "./bus.js";
 export * from "./check-baseline.js";
+export * from "./check-flaky.js";
+export { checkMode, warmBaseline } from "./check-gate.js";
 export * from "./check-parsers.js";
+export * from "./check-run.js";
 export { MIGRATIONS_DIR, PgStore } from "./db/pg-store.js";
 export * from "./design.js";
 export * from "./environment.js";

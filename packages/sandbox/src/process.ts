@@ -10,6 +10,10 @@ export interface ProcessSpec {
   timeoutMs: number;
   /** Sandboxes mount the working directory read-only (review and judge runs). */
   readOnly?: boolean;
+  /** Container CPU/memory request (sandboxes clamp it to their host bounds; bwrap ignores it). */
+  resources?: { cpus?: number; memoryGb?: number };
+  /** Host-only directory a sandbox mounts read-write at REPORT_MOUNT (structured check reports). */
+  reportDir?: string;
 }
 
 export interface ProcessOutcome {

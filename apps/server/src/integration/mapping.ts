@@ -16,6 +16,7 @@ import {
   type Approval,
   type CheckSpec,
   CoreError,
+  type PhaseResourcesInput,
   type PhaseTimeoutsInput,
   type Project,
   type Run,
@@ -52,6 +53,9 @@ export const iso = (d: Date | string | undefined) =>
   d === undefined ? undefined : d instanceof Date ? d.toISOString() : d;
 
 const TIMEOUT_PHASES = ["spike", "design", "implement", "checks", "review", "qa"] as const;
+/** Per-run ceilings (the host clamps further with MATRIX_SANDBOX_MAX_*). */
+const MAX_SANDBOX_CPUS = 128;
+const MAX_SANDBOX_MEMORY_GB = 512;
 const MIN_TIMEOUT_MS = 5 * 60_000;
 const MAX_TIMEOUT_MS = 120 * 60_000;
 
@@ -64,6 +68,28 @@ function boundedMs(value: number, min: number, what: string): number {
   return value;
 }
 
+/** Re-checks a resource request for non-HTTP callers (same bounds as the HTTP schema). */
+function boundedResources(
+  r: { cpus?: number | undefined; memoryGb?: number | undefined },
+  what: string,
+): { cpus?: number; memoryGb?: number } {
+  const out: { cpus?: number; memoryGb?: number } = {};
+  if (r.cpus !== undefined) {
+    if (!Number.isFinite(r.cpus) || r.cpus < 0.5 || r.cpus > MAX_SANDBOX_CPUS)
+      throw new CoreError("invalid_request", `${what}.cpus must be 0.5-${MAX_SANDBOX_CPUS}`);
+    out.cpus = r.cpus;
+  }
+  if (r.memoryGb !== undefined) {
+    if (!Number.isInteger(r.memoryGb) || r.memoryGb < 1 || r.memoryGb > MAX_SANDBOX_MEMORY_GB)
+      throw new CoreError(
+        "invalid_request",
+        `${what}.memoryGb must be an integer 1-${MAX_SANDBOX_MEMORY_GB}`,
+      );
+    out.memoryGb = r.memoryGb;
+  }
+  return out;
+}
+
 /**
  * Applies run timeouts and implement guidance (create or PATCH). `undefined` keeps the current
  * value, `null` clears it; timeouts replace the previous overrides as a whole. Bounds are
@@ -71,8 +97,27 @@ function boundedMs(value: number, min: number, what: string): number {
  */
 export function applyRunSettings(
   config: StoredProject,
-  patch: Pick<UpdateProjectInput, "timeouts" | "idleTimeoutMs" | "implementGuidance">,
+  patch: Pick<
+    UpdateProjectInput,
+    "timeouts" | "idleTimeoutMs" | "implementGuidance" | "resources" | "baselineWarmup"
+  >,
 ): void {
+  if (patch.resources === null) delete config.resources;
+  else if (patch.resources) {
+    const resources: NonNullable<StoredProject["resources"]> = {};
+    for (const [phase, r] of Object.entries(patch.resources as PhaseResourcesInput)) {
+      if (r === undefined) continue;
+      if (!(TIMEOUT_PHASES as readonly string[]).includes(phase))
+        throw new CoreError("invalid_request", `resources.${phase} is not a configurable phase`);
+      resources[phase as Phase] = boundedResources(r, `resources.${phase}`);
+    }
+    if (Object.keys(resources).length) config.resources = resources;
+    else delete config.resources;
+  }
+  if (patch.baselineWarmup !== undefined) {
+    if (patch.baselineWarmup) config.baselineWarmup = true;
+    else delete config.baselineWarmup;
+  }
   if (patch.timeouts === null) delete config.timeouts;
   else if (patch.timeouts) {
     const timeouts: Partial<Record<Phase, number>> = {};
@@ -106,11 +151,14 @@ export function copyCheck(c: CheckSpec): CheckCommand {
     throw new CoreError("invalid_request", `unknown check parser ${String(c.parser).slice(0, 40)}`);
   if (c.baseline !== undefined && c.baseline !== "compare" && c.baseline !== "strict")
     throw new CoreError("invalid_request", "check baseline must be compare or strict");
+  if (c.retryFlaky !== undefined && typeof c.retryFlaky !== "boolean")
+    throw new CoreError("invalid_request", "check retryFlaky must be a boolean");
   return {
     kind: c.kind,
     cmd: [...c.cmd],
     ...(c.parser ? { parser: c.parser } : {}),
     ...(c.baseline ? { baseline: c.baseline } : {}),
+    ...(c.retryFlaky !== undefined ? { retryFlaky: c.retryFlaky } : {}),
   };
 }
 
@@ -144,6 +192,14 @@ export function toProject(config: StoredProject): Project {
     timeouts: Object.fromEntries(
       TIMEOUT_PHASES.map((phase) => [phase, phaseTimeoutMs(config, phase)]),
     ),
+    ...(config.resources
+      ? {
+          resources: Object.fromEntries(
+            Object.entries(config.resources).map(([phase, r]) => [phase, { ...r }]),
+          ),
+        }
+      : {}),
+    ...(config.baselineWarmup ? { baselineWarmup: true } : {}),
     ...(config.idleTimeoutMs !== undefined ? { idleTimeoutMs: config.idleTimeoutMs } : {}),
     ...(config.implementGuidance ? { implementGuidance: config.implementGuidance } : {}),
   };

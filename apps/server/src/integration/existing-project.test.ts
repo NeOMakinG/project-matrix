@@ -257,6 +257,43 @@ test("PATCH accepts size tiers: gateway-served, strict and independent from revi
   await factory.stop();
 });
 
+test("sandbox resources, base warm-up and flaky retries: set, PATCHed, bounded, cleared", async () => {
+  const { repo, factory, call } = await boot();
+  const created = await call("POST", "/v1/projects", {
+    name: "Resources",
+    repo: { path: repo, baseBranch: "main" },
+    tickets: { kind: "linear", linear },
+    resources: { checks: { cpus: 8, memoryGb: 16 } },
+    baselineWarmup: true,
+    checks: [{ kind: "test", cmd: ["npm", "test"], parser: "node-test-tap", retryFlaky: false }],
+  });
+  expect(created.status).toBe(200);
+  expect(created.body).toMatchObject({
+    resources: { checks: { cpus: 8, memoryGb: 16 } },
+    baselineWarmup: true,
+    checks: [{ retryFlaky: false }],
+  });
+  const id = String(created.body.id);
+  const patch = (body: unknown) => call("PATCH", `/v1/projects/${id}`, body);
+  const ok = await patch({ resources: { implement: { cpus: 4 } }, baselineWarmup: false });
+  expect(ok.status).toBe(200);
+  const stored = (await factory.store.getProject(id)) as StoredProject;
+  expect(stored.resources).toEqual({ implement: { cpus: 4 } });
+  expect(stored.baselineWarmup).toBeUndefined();
+  for (const bad of [
+    { resources: { checks: { cpus: 0 } } },
+    { resources: { checks: { cpus: 129 } } },
+    { resources: { checks: { memoryGb: 1.5 } } },
+    { resources: { checks: { memoryGb: 513 } } },
+    { resources: { merge: { cpus: 2 } } },
+    { resources: { checks: { disk: 2 } } },
+  ])
+    expect((await patch(bad)).status, JSON.stringify(bad)).toBe(400);
+  expect((await patch({ resources: null })).status).toBe(200);
+  expect(((await factory.store.getProject(id)) as StoredProject).resources).toBeUndefined();
+  await factory.stop();
+});
+
 test("run timeouts and implement guidance: set at registration, PATCHed, bounded, cleared", async () => {
   const { repo, factory, call } = await boot();
   const min = 60_000;

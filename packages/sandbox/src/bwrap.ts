@@ -1,5 +1,10 @@
 import { randomBytes } from "node:crypto";
-import type { Sandbox, SandboxExecResult, SandboxExecSpec } from "@matrix/core";
+import {
+  REPORT_MOUNT,
+  type Sandbox,
+  type SandboxExecResult,
+  type SandboxExecSpec,
+} from "@matrix/core";
 import type { CredentialBroker, Grant } from "./broker.js";
 import { registerReadOnlyExecutor } from "./executor-isolation.js";
 import {
@@ -13,6 +18,7 @@ import {
 } from "./launch.js";
 import type { RunPolicy } from "./podman.js";
 import { hostExecutor, type LineExecutor, type ProcessSpec } from "./process.js";
+import { readReport, reportDir } from "./report-file.js";
 
 export interface BwrapSandboxOptions {
   broker: CredentialBroker;
@@ -52,6 +58,8 @@ export class BwrapSandbox implements Sandbox {
     for (const dir of this.#o.readOnlyBinds ?? []) args.push("--ro-bind", dir, dir);
     args.push("--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/home");
     args.push(spec.readOnly ? "--ro-bind" : "--bind", spec.cwd, spec.cwd);
+    // No cgroup limits here: `spec.resources` is a Podman-only setting.
+    if (spec.reportDir) args.push("--bind", spec.reportDir, REPORT_MOUNT);
     const bridged = grant.network !== "none" && grant.socketDir !== undefined;
     if (bridged && grant.socketDir) {
       args.push("--bind", grant.socketDir, CONTAINER_SOCKET_DIR);
@@ -107,20 +115,34 @@ export class BwrapSandbox implements Sandbox {
     spec: SandboxExecSpec,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<SandboxExecResult> {
-    const out: string[] = [];
-    const outcome = await this.lineExecutor({
-      runId: `exec-${randomBytes(6).toString("hex")}`,
-      network: spec.network,
-      ...(spec.allowHosts ? { allowHosts: spec.allowHosts } : {}),
-    })(
-      { cmd: spec.cmd, cwd: spec.workdir, env: spec.env ?? {}, timeoutMs: spec.timeoutMs },
-      (line) => out.push(line),
-      signal,
-    );
-    return {
-      code: outcome.timedOut ? 124 : outcome.exitCode,
-      stdout: out.join("\n"),
-      stderr: outcome.stderrTail,
-    };
+    const report = spec.report ? await reportDir(spec.report.name) : undefined;
+    try {
+      const out: string[] = [];
+      const outcome = await this.lineExecutor({
+        runId: `exec-${randomBytes(6).toString("hex")}`,
+        network: spec.network,
+        ...(spec.allowHosts ? { allowHosts: spec.allowHosts } : {}),
+      })(
+        {
+          cmd: spec.cmd,
+          cwd: spec.workdir,
+          env: spec.env ?? {},
+          timeoutMs: spec.timeoutMs,
+          ...(report ? { reportDir: report.dir } : {}),
+        },
+        (line) => out.push(line),
+        signal,
+      );
+      return {
+        code: outcome.timedOut ? 124 : outcome.exitCode,
+        stdout: out.join("\n"),
+        stderr: outcome.stderrTail,
+        ...(report && spec.report
+          ? { report: await readReport(report.dir, spec.report.name, spec.report.maxBytes) }
+          : {}),
+      };
+    } finally {
+      await report?.cleanup();
+    }
   }
 }

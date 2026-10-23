@@ -1,21 +1,20 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   type BaselinePort,
   type BaselineRun,
   type CheckCommand,
+  type CheckEvidence,
   checkArgv,
   type DependencySetupPort,
   environmentFailure,
   MAX_FAILURES,
-  MAX_PARSE_BYTES,
   type PhaseContext,
-  parseCheckOutput,
-  phaseTimeoutMs,
   resolveParser,
+  runCheck,
   type Sandbox,
   sanitizeFailure,
 } from "@matrix/core";
@@ -36,6 +35,8 @@ export interface BaselineChecksOptions {
   compareByDefault(ctx: PhaseContext): boolean;
 }
 
+/** Bump when the way base results are produced or parsed changes. */
+const CACHE_VERSION = 2;
 const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const LOCKFILE =
   /(^|\/)(package\.json|package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
@@ -84,71 +85,96 @@ export function baselineChecks(opts: BaselineChecksOptions): BaselinePort {
     void tail.then(() => locks.get(key) === tail && locks.delete(key));
     return next;
   };
+  const resultsAt = async (
+    ctx: PhaseContext,
+    gitDir: string,
+    baseSha: string,
+    checks: CheckCommand[],
+  ): Promise<(BaselineRun | { error: string })[]> => {
+    const tree = await git(gitDir, ["ls-tree", "-r", baseSha]);
+    const lockHash = createHash("sha256")
+      .update(
+        tree
+          .split("\n")
+          .filter((l) => LOCKFILE.test(l) && !l.includes("node_modules/"))
+          .join("\n"),
+      )
+      .digest("hex");
+    const dir = join(opts.root, "cache", safeSegment(ctx.project.id));
+    // Stable argv (no per-run report token) + parser + lockfiles. CACHE_VERSION retires results
+    // parsed from stdout before report files existed (e.g. a 13 MB eslint line cached as null).
+    const keyOf = (c: CheckCommand) =>
+      createHash("sha256")
+        .update(
+          JSON.stringify([
+            CACHE_VERSION,
+            ctx.project.id,
+            baseSha,
+            checkArgv(c),
+            resolveParser(c),
+            lockHash,
+          ]),
+        )
+        .digest("hex");
+    const cached = async (c: CheckCommand) =>
+      validRun(
+        JSON.parse(await readFile(join(dir, `${keyOf(c)}.json`), "utf8").catch(() => "null")),
+      );
+    return serialized(`${ctx.project.id}\u0000${baseSha}`, async () => {
+      const results: (BaselineRun | { error: string })[] = [];
+      const missing: number[] = [];
+      for (const [i, c] of checks.entries()) {
+        const hit = await cached(c).catch(() => undefined);
+        if (hit) results[i] = hit;
+        else missing.push(i);
+      }
+      if (!missing.length) return results;
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const todo = missing.map((i) => checks[i] as CheckCommand);
+      const fresh = await runOnBase(opts, ctx, gitDir, baseSha, todo);
+      for (const [j, i] of missing.entries()) {
+        const r = fresh[j] as BaselineRun | { error: string };
+        results[i] = r;
+        // Unusable results (no baseline, unparseable output) are retried next time, never cached.
+        if ("error" in r || (r.code !== 0 && r.failures === null)) continue;
+        const file = join(dir, `${keyOf(checks[i] as CheckCommand)}.json`);
+        const tmp = `${file}.${randomBytes(4).toString("hex")}.tmp`;
+        await writeFile(tmp, JSON.stringify(r), { mode: 0o600 });
+        await rename(tmp, file);
+      }
+      return results;
+    });
+  };
+  const baseRef = async (ctx: PhaseContext) => {
+    const gitDir = await commonDir(ctx.project.repoPath);
+    const branch = ctx.project.baseBranch;
+    await git(gitDir, ["check-ref-format", "--branch", branch]);
+    return { gitDir, ref: `refs/heads/${branch}` };
+  };
   return {
     defaultMode: (ctx) => (opts.compareByDefault(ctx) ? "compare" : "strict"),
     async run(ctx, checks) {
-      const gitDir = await commonDir(ctx.project.repoPath);
-      const branch = ctx.project.baseBranch;
-      await git(gitDir, ["check-ref-format", "--branch", branch]);
+      const { gitDir, ref } = await baseRef(ctx);
       const head = await opts.headSha(ctx.workdir);
       if (!SHA.test(head)) throw new Error("invalid run HEAD");
-      const baseSha = await git(gitDir, ["merge-base", `refs/heads/${branch}`, head]);
+      const baseSha = await git(gitDir, ["merge-base", ref, head]);
       if (!SHA.test(baseSha)) throw new Error("no merge-base with the base branch");
       // The base ref pointing at the run's own HEAD means it moved onto agent work: no baseline.
       if (baseSha === head)
         throw new Error("base branch points at the run HEAD; refusing baseline");
-      const tree = await git(gitDir, ["ls-tree", "-r", baseSha]);
-      const lockHash = createHash("sha256")
-        .update(
-          tree
-            .split("\n")
-            .filter((l) => LOCKFILE.test(l) && !l.includes("node_modules/"))
-            .join("\n"),
-        )
-        .digest("hex");
-      const dir = join(opts.root, "cache", safeSegment(ctx.project.id));
-      const timeoutMs = phaseTimeoutMs(ctx.project, "checks");
-      const keyOf = (c: CheckCommand) =>
-        createHash("sha256")
-          .update(
-            JSON.stringify([ctx.project.id, baseSha, checkArgv(c), resolveParser(c), lockHash]),
-          )
-          .digest("hex");
-      const cached = async (c: CheckCommand) =>
-        validRun(
-          JSON.parse(await readFile(join(dir, `${keyOf(c)}.json`), "utf8").catch(() => "null")),
-        );
-      return serialized(`${ctx.project.id}\u0000${baseSha}`, async () => {
-        const results: (BaselineRun | { error: string })[] = [];
-        const missing: number[] = [];
-        for (const [i, c] of checks.entries()) {
-          const hit = await cached(c).catch(() => undefined);
-          if (hit) results[i] = hit;
-          else missing.push(i);
-        }
-        if (missing.length) {
-          await mkdir(dir, { recursive: true, mode: 0o700 });
-          const fresh = await runOnBase(
-            opts,
-            ctx,
-            gitDir,
-            baseSha,
-            missing.map((i) => checks[i] as CheckCommand),
-            timeoutMs,
-          );
-          for (const [j, i] of missing.entries()) {
-            const r = fresh[j] as BaselineRun | { error: string };
-            results[i] = r;
-            if ("error" in r) continue;
-            const file = join(dir, `${keyOf(checks[i] as CheckCommand)}.json`);
-            const tmp = `${file}.${randomBytes(4).toString("hex")}.tmp`;
-            await writeFile(tmp, JSON.stringify(r), { mode: 0o600 });
-            await rename(tmp, file);
-          }
-        }
-        return { baseSha, results };
-      });
+      return { baseSha, results: await resultsAt(ctx, gitDir, baseSha, checks) };
     },
+    /** Ticket start: the run branch forks from the base tip, so that is the future merge-base. */
+    async warm(ctx, checks) {
+      try {
+        const { gitDir, ref } = await baseRef(ctx);
+        const baseSha = await git(gitDir, ["rev-parse", "--verify", `${ref}^{commit}`]);
+        if (SHA.test(baseSha)) await resultsAt(ctx, gitDir, baseSha, checks);
+      } catch {
+        // best effort: the checks phase runs the base itself
+      }
+    },
+    evidence: (ctx, record) => writeEvidence(opts.root, ctx, record),
   };
 }
 
@@ -159,7 +185,6 @@ async function runOnBase(
   gitDir: string,
   baseSha: string,
   checks: CheckCommand[],
-  timeoutMs: number,
 ): Promise<(BaselineRun | { error: string })[]> {
   const parent = join(opts.root, "worktrees", safeSegment(ctx.project.id));
   await mkdir(parent, { recursive: true, mode: 0o700 });
@@ -179,32 +204,21 @@ async function runOnBase(
       }
     }
     const out: (BaselineRun | { error: string })[] = [];
+    const roots = [workdir, await realpath(workdir).catch(() => workdir), "/work"];
     for (const check of checks) {
-      const cmd = checkArgv(check);
-      ctx.emit(`baseline ${check.kind}: ${cmd.join(" ")}`, "tool");
-      const started = Date.now();
-      const res = await opts.sandbox.exec(
-        { workdir, cmd, network: "none", timeoutMs, maxOutputBytes: MAX_PARSE_BYTES },
-        ctx.signal,
-      );
-      const env = environmentFailure(
-        res.code,
-        `${res.stdout}\n${res.stderr}`,
-        Date.now() - started,
-      );
+      const { res, run, ms } = await runCheck(opts.sandbox, baseCtx, check, {
+        structured: true,
+        workdir,
+        roots,
+        label: "baseline",
+      });
+      const env = environmentFailure(res.code, `${res.stdout}\n${res.stderr}`, ms);
       // A base run that could not really run (or timed out) is no baseline; never cached.
       if (env || res.code === 124) {
         out.push({ error: `base ${check.kind}: ${env ?? "timed out"}` });
         continue;
       }
-      out.push({
-        code: res.code,
-        failures: parseCheckOutput(resolveParser(check), res, [
-          workdir,
-          await realpath(workdir).catch(() => workdir),
-          "/work",
-        ]),
-      });
+      out.push(run);
     }
     return out;
   } finally {
@@ -213,4 +227,39 @@ async function runOnBase(
       await git(gitDir, ["worktree", "prune"]).catch(() => undefined);
     });
   }
+}
+
+/**
+ * Full failure lists of one gated check, host-side (never in a worktree):
+ * `<root>/evidence/<project>/<ticket>/<run>-<index>-<kind>.json`. Returns the root-relative path.
+ */
+async function writeEvidence(
+  root: string,
+  ctx: PhaseContext,
+  record: CheckEvidence,
+): Promise<string> {
+  const list = (v: string[]) => v.slice(0, MAX_FAILURES).map((f) => sanitizeFailure(f));
+  const rel = join(
+    "evidence",
+    safeSegment(ctx.project.id),
+    safeSegment(ctx.ticket.id),
+    `${safeSegment(ctx.runId)}-${Math.floor(record.index)}-${safeSegment(record.kind)}.json`,
+  );
+  const file = join(root, rel);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const body = {
+    at: new Date().toISOString(),
+    kind: record.kind,
+    parser: record.parser,
+    mode: record.mode,
+    ...(record.baseSha ? { baseSha: record.baseSha } : {}),
+    note: sanitizeFailure(record.note, 400),
+    newFailures: list(record.newFailures),
+    flaky: list(record.flaky),
+    preExisting: list(record.preExisting),
+  };
+  const tmp = `${file}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(body, null, 1)}\n`, { mode: 0o600 });
+  await rename(tmp, file);
+  return rel;
 }

@@ -49,12 +49,18 @@ export function renderStatus(
   orca?: OrcaStatusRef,
   pullRequest?: StatusLink,
   checks?: string,
+  newFailures?: readonly string[],
 ): string {
   const lines = [
     `**Matrix** · phase ${code(w.phase)} · ${code(w.status)}`,
     `- Attempt ${w.attempt} · review loops ${w.loops}`,
   ];
   if (checks) lines.push(`- Checks: ${code(singleLine(redact(checks), 200))}`);
+  // Listed on their own so the 300-char last error never truncates them away.
+  if (newFailures?.length) {
+    lines.push(`- New failures (first ${newFailures.length}, untrusted tool output):`);
+    for (const f of newFailures.slice(0, 20)) lines.push(`  - ${code(singleLine(redact(f), 200))}`);
+  }
   if (w.lastError) lines.push(`- Last error: ${code(singleLine(redact(w.lastError), 300))}`);
   if (orca)
     lines.push(

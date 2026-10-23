@@ -231,6 +231,64 @@ describe("tracker status rendering", () => {
     );
   });
 
+  test("lists the first 20 new failures on their own lines, sanitized; cleared once they pass", async () => {
+    const { fake, linear, bus, sync } = setup();
+    const t = await linear.create({ title: "T", body: "" });
+    bus.publish({
+      type: "run.started",
+      runId: "r8",
+      projectId: "p1",
+      ticketId: t.id,
+      phase: "checks",
+    });
+    bus.publish({
+      type: "workflow.changed",
+      workflow: wf(t.id, { phase: "checks", lastError: "e".repeat(400) }),
+    });
+    await sync.flush();
+    const names = Array.from({ length: 25 }, (_, i) => `a.test.ts > case ${i} \`x\`\n# h`);
+    const finish = (runId: string, newFailures: string[]) =>
+      bus.publish({
+        type: "run.finished",
+        runId,
+        status: "ok",
+        summary: "",
+        receipts: [
+          {
+            kind: "test",
+            ok: newFailures.length === 0,
+            summary: "",
+            data: {
+              baseline: {
+                newFailures,
+                newCount: newFailures.length,
+                preExisting: 3,
+                note: "x",
+                ok: newFailures.length === 0,
+              },
+            },
+          },
+        ],
+      });
+    finish("r8", names);
+    await sync.flush();
+    const body = [...fake.comments.values()][0]?.body ?? "";
+    expect(body).toContain("- New failures (first 20, untrusted tool output):");
+    expect(body).toContain("  - `test: a.test.ts > case 0 'x' # h`");
+    expect(body).toContain("case 19");
+    expect(body).not.toContain("case 20");
+    bus.publish({
+      type: "run.started",
+      runId: "r7",
+      projectId: "p1",
+      ticketId: t.id,
+      phase: "checks",
+    });
+    finish("r7", []);
+    await sync.flush();
+    expect([...fake.comments.values()][0]?.body).not.toContain("New failures");
+  });
+
   test("TrackerHealth keeps newest-first failures per project and logs JSON", () => {
     const bus = new EventBus();
     const logs: string[] = [];

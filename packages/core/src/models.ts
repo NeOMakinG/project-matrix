@@ -1,10 +1,19 @@
 import type { Ticket } from "@matrix/tickets";
 import type { Phase } from "./ports.js";
-import type { PhaseModel, ProjectConfig } from "./types.js";
+import type { PhaseModel, ProjectConfig, SandboxResourceRequest } from "./types.js";
 
 /** Wall-clock limit of one run of `phase`: the project's per-phase override or `runTimeoutMs`. */
 export function phaseTimeoutMs(config: ProjectConfig, phase: Phase): number {
   return config.timeouts?.[phase] ?? config.runTimeoutMs;
+}
+
+/** Sandbox resources requested for a phase's containers (undefined: host default). */
+export function phaseResources(
+  config: ProjectConfig,
+  phase: Phase,
+): SandboxResourceRequest | undefined {
+  const r = config.resources?.[phase];
+  return r && (r.cpus !== undefined || r.memoryGb !== undefined) ? { ...r } : undefined;
 }
 
 /** Runner idle limit the factory assumes when the project sets none (matches the CLI runner). */

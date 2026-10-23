@@ -1,3 +1,4 @@
+import { REPORT_MOUNT } from "./ports.js";
 import type { CheckCommand, CheckParser } from "./types.js";
 
 /**
@@ -73,6 +74,68 @@ export function checkArgv(check: CheckCommand): string[] {
     return [...check.cmd, ...extra];
   // A shell or wrapper we cannot extend safely: the command must emit the format itself.
   return [...check.cmd];
+}
+
+/** Largest structured report file the host reads back from a check (eslint JSON can be 10+ MB). */
+export const MAX_REPORT_BYTES = 64 * 1024 * 1024;
+
+/** What a check actually runs: argv, extra env, and the report file it writes (if any). */
+export interface CheckInvocation {
+  cmd: string[];
+  env?: Record<string, string>;
+  report?: { name: string; maxBytes: number };
+}
+
+const forwardable = (cmd: string[]) => {
+  const runner = cmd.map(base)[0];
+  if (runner === "npm") return cmd.includes("run") || cmd.includes("test");
+  return (runner === "pnpm" || runner === "yarn" || runner === "bun") && cmd.length > 1;
+};
+
+/** Appends flags to a direct binary or a package-manager script (`npm run x -- flags`). */
+function append(cmd: string[], tool: string, extra: string[]): string[] | undefined {
+  if (cmd.map(base).includes(tool)) return [...cmd, ...extra];
+  if (!forwardable(cmd)) return undefined;
+  const npm = base(cmd[0] ?? "") === "npm";
+  return [...cmd, ...(npm && !cmd.includes("--") ? ["--"] : []), ...extra];
+}
+
+/**
+ * The invocation for a check with a structured parser: the report goes to a file under
+ * REPORT_MOUNT (read back host-side with a byte cap) instead of one huge stdout line, so stdout
+ * stays human logs. `token` (random per run) names the report file. A command that already
+ * picks its own reporter/output, or a wrapper we cannot extend, keeps the stdout path.
+ */
+export function checkInvocation(check: CheckCommand, token: string): CheckInvocation {
+  const parser = resolveParser(check);
+  const cmd = check.cmd;
+  if (!/^[A-Za-z0-9-]{1,40}$/.test(token)) throw new Error("invalid report token");
+  const name = `report-${token}.${parser === "node-test-tap" ? "tap" : "json"}`;
+  const report = { name, maxBytes: MAX_REPORT_BYTES };
+  const path = `${REPORT_MOUNT}/${name}`;
+  if (parser === "eslint-json" && !hasFlag(cmd, ["-o", "--output-file"])) {
+    const json = !hasFlag(cmd, ["--format", "-f"]);
+    const argv = json ? append(cmd, "eslint", ["--format", "json", "-o", path]) : undefined;
+    if (argv) return { cmd: argv, report };
+  }
+  const ownOutput = cmd.some((t) => t.startsWith("--outputFile"));
+  if (parser === "vitest-json" && !ownOutput && !hasFlag(cmd, ["--reporter"])) {
+    const extra = ["--reporter=default", "--reporter=json", `--outputFile.json=${path}`];
+    const argv = append(cmd, "vitest", extra);
+    if (argv) return { cmd: argv, report };
+  }
+  if (parser === "node-test-tap" && !hasFlag(cmd, ["--test-reporter"])) {
+    // NODE_OPTIONS reaches `node --test` through npm/pnpm scripts too; argv after the test
+    // patterns would be ignored. TAP goes to the file, the spec reporter keeps stdout readable.
+    const opts = [
+      "--test-reporter=tap",
+      `--test-reporter-destination=${path}`,
+      "--test-reporter=spec",
+      "--test-reporter-destination=stdout",
+    ];
+    return { cmd: [...cmd], env: { NODE_OPTIONS: opts.join(" ") }, report };
+  }
+  return { cmd: checkArgv(check) };
 }
 
 /** Relative path for absolute paths under a known root (host worktree or container mount). */
@@ -228,18 +291,27 @@ const PARSE = { "eslint-json": eslint, tsc, "node-test-tap": nodeTest, "vitest-j
 
 /**
  * Failure identities of one run (sanitized), `[]` for a passing run, or null when a failing run's
- * output yields nothing recognizable (or is too large) and so cannot be compared.
+ * output yields nothing recognizable (or is too large) and so cannot be compared. A report file
+ * the check wrote (see `checkInvocation`) is parsed instead of stdout; when it is missing (the
+ * wrapper did not forward the flags) stdout is the fallback. A report that exists but cannot be
+ * parsed fails closed rather than falling back to logs.
  */
 export function parseCheckOutput(
   parser: CheckParser,
-  run: { code: number; stdout: string; stderr: string },
+  run: {
+    code: number;
+    stdout: string;
+    stderr: string;
+    report?: { text: string } | { error: string } | undefined;
+  },
   roots: readonly string[] = [],
 ): Failures {
   if (run.code === 0) return [];
   if (parser === "exit-code") return null;
-  const text = `${run.stdout}\n${run.stderr}`.replace(/\r\n?/g, "\n");
-  if (text.length > MAX_PARSE_BYTES) return null;
-  const found = PARSE[parser](text, roots);
+  const fromFile = run.report && "text" in run.report && parser !== "tsc";
+  const raw = fromFile ? (run.report as { text: string }).text : `${run.stdout}\n${run.stderr}`;
+  if (raw.length > (fromFile ? MAX_REPORT_BYTES : MAX_PARSE_BYTES)) return null;
+  const found = PARSE[parser](raw.replace(/\r\n?/g, "\n"), roots);
   if (!found || found.length === 0) return null;
   return found.map((f) => sanitizeFailure(f));
 }

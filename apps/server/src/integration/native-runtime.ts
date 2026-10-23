@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { availableParallelism, freemem, loadavg } from "node:os";
+import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import {
@@ -51,9 +51,32 @@ import { scanSourceSnapshot } from "./source-scan.js";
 
 const exec = promisify(execFile);
 
-function assertHostCapacity(): void {
-  if (freemem() < 4 * 1024 ** 3 || (loadavg()[0] ?? Infinity) >= availableParallelism())
+/** Refuses a heavy task when the host lacks the free memory it asks for (>= 4 GB) or is loaded. */
+function assertHostCapacity(memoryGb = 4): void {
+  const need = Math.max(4, memoryGb) * 1024 ** 3;
+  if (freemem() < need || (loadavg()[0] ?? Infinity) >= availableParallelism())
     throw new Error("host resource check refused a heavy Matrix task");
+}
+
+const envNumber = (name: string): number | undefined => {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number`);
+  return n;
+};
+
+/**
+ * Host ceiling for per-project sandbox resources: MATRIX_SANDBOX_MAX_CPUS (default: all cores)
+ * and MATRIX_SANDBOX_MAX_MEMORY_GB (default: half the RAM). Requests above it are clamped.
+ */
+export function sandboxResourceCeiling(): { cpus: number; memoryGb: number } {
+  return {
+    cpus: envNumber("MATRIX_SANDBOX_MAX_CPUS") ?? availableParallelism(),
+    memoryGb:
+      envNumber("MATRIX_SANDBOX_MAX_MEMORY_GB") ??
+      Math.max(4, Math.floor(totalmem() / 1024 ** 3 / 2)),
+  };
 }
 
 export interface NativeRuntimeOptions {
@@ -146,7 +169,7 @@ function sandboxedRunner(
       opts.stateOwner?.assertOwned();
       // Any model the gateway serves (Claude, GPT, GLM, ...); never an id it does not list.
       await served.assert(req.model);
-      assertHostCapacity();
+      assertHostCapacity(Math.min(req.resources?.memoryGb ?? 4, sandboxResourceCeiling().memoryGb));
       await validateImageCapabilities(
         sandbox,
         req.workdir,
@@ -172,6 +195,7 @@ function sandboxedRunner(
           projectId: req.projectId,
           ticketId: req.ticketId,
           network: "gateway",
+          ...(req.resources ? { resources: req.resources } : {}),
           ...(viaOrca ? { launcher: viaOrca.launcher } : {}),
         }),
         skipPermissions: true,
@@ -298,17 +322,19 @@ function localMerge(opts: NativeRuntimeOptions, gatewayKey: () => Promise<string
 
 export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: CredentialBroker } {
   const broker = new CredentialBroker({ gatewayUrl: opts.gatewayUrl, gatewayKey: opts.gatewayKey });
+  const ceiling = sandboxResourceCeiling();
   const sandbox = new PodmanSandbox({
     broker,
     image: opts.image,
     resources: { memory: "4g", cpus: 2 },
+    maxResources: ceiling,
     ...(opts.podmanBinary ? { podmanBinary: opts.podmanBinary } : {}),
   });
   const trusted = new TrustedWorktrees(join(opts.dataDir, "worktrees.json"));
   const checkedSandbox: Sandbox = {
     kind: "podman",
     exec: (spec, signal) => {
-      assertHostCapacity();
+      assertHostCapacity(Math.min(spec.resources?.memoryGb ?? 4, ceiling.memoryGb));
       return (async () => {
         const abort = signal ?? new AbortController().signal;
         try {
@@ -431,6 +457,14 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       runners,
       sandbox: checkedSandbox,
       setup,
+      // Flaky-test retries start from the same clean committed tree the checks ran on.
+      resetForRetry: async (ctx) => {
+        const head = await git.headSha(ctx.workdir);
+        if ((await git.cleanForChecks(ctx.workdir)) !== head)
+          throw new Error("run tree moved before the retry");
+        const deps = await setup?.(ctx, "checks");
+        if (deps && !deps.ok) throw new Error(`retry setup failed: ${deps.summary.slice(0, 200)}`);
+      },
       // Failing compare-mode checks are re-gated against the same checks on the base commit.
       baseline: baselineChecks({
         sandbox: checkedSandbox,

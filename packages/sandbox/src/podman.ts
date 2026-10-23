@@ -2,7 +2,14 @@ import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { NetworkPolicy, Sandbox, SandboxExecResult, SandboxExecSpec } from "@matrix/core";
+import {
+  type NetworkPolicy,
+  REPORT_MOUNT,
+  type Sandbox,
+  type SandboxExecResult,
+  type SandboxExecSpec,
+  type SandboxResourceRequest,
+} from "@matrix/core";
 import type { CredentialBroker, Grant } from "./broker.js";
 import { registerReadOnlyExecutor } from "./executor-isolation.js";
 import {
@@ -16,6 +23,7 @@ import {
   withBridge,
 } from "./launch.js";
 import { hostExecutor, type LineExecutor, type ProcessSpec, runToCompletion } from "./process.js";
+import { readReport, reportDir } from "./report-file.js";
 
 export interface SandboxResources {
   memory: string;
@@ -34,6 +42,8 @@ export interface PodmanSandboxOptions {
   bridgeAsset?: string;
   /** Extra read-only mounts as host:container pairs (toolchains, caches). */
   readOnlyMounts?: Array<{ host: string; container: string }>;
+  /** Host ceiling for per-run resource requests (MATRIX_SANDBOX_MAX_CPUS / _MAX_MEMORY_GB). */
+  maxResources?: SandboxResourceRequest;
 }
 
 export interface RunPolicy {
@@ -48,6 +58,8 @@ export interface RunPolicy {
    * launch goes through it; cleanup and the container's isolation stay with this sandbox.
    */
   launcher?: LineExecutor;
+  /** Container CPU/memory for this run (project per-phase setting), clamped to `maxResources`. */
+  resources?: SandboxResourceRequest;
 }
 
 export function containerName(runId: string): string {
@@ -55,6 +67,25 @@ export function containerName(runId: string): string {
 }
 
 const DEFAULT_RESOURCES: SandboxResources = { memory: "4g", cpus: 2, pids: 512, tmpSize: "2g" };
+
+const positive = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+
+/**
+ * Defaults overridden by a per-run request, each value clamped to the host ceiling. Invalid
+ * values (non-finite, <= 0) are ignored, so a bad request can only fall back to the default.
+ */
+export function effectiveResources(
+  defaults: SandboxResources,
+  request: SandboxResourceRequest | undefined,
+  max: SandboxResourceRequest = {},
+): SandboxResources {
+  const clamp = (v: number, ceiling: unknown) => (positive(ceiling) ? Math.min(v, ceiling) : v);
+  const out = { ...defaults };
+  if (positive(request?.cpus)) out.cpus = Math.max(0.1, clamp(request.cpus, max.cpus));
+  if (positive(request?.memoryGb))
+    out.memory = `${Math.max(1, Math.floor(clamp(request.memoryGb, max.memoryGb)))}g`;
+  return out;
+}
 
 /** One rootless Podman container per run; the worktree is the only writable host path. */
 export class PodmanSandbox implements Sandbox {
@@ -76,7 +107,7 @@ export class PodmanSandbox implements Sandbox {
     labels: Record<string, string> = {},
   ): string[] {
     const inner = this.#o.containerWorkdir ?? "/work";
-    const r = this.#resources;
+    const r = effectiveResources(this.#resources, spec.resources, this.#o.maxResources);
     const args = [
       this.#o.podmanBinary ?? "podman",
       "run",
@@ -100,6 +131,7 @@ export class PodmanSandbox implements Sandbox {
       `--workdir=${inner}`,
     ];
     for (const m of this.#o.readOnlyMounts ?? []) args.push(`--volume=${m.host}:${m.container}:ro`);
+    if (spec.reportDir) args.push(`--volume=${spec.reportDir}:${REPORT_MOUNT}:rw`);
     const bridged = grant.network !== "none" && grant.socketDir !== undefined;
     if (bridged) {
       args.push(`--volume=${grant.socketDir}:${CONTAINER_SOCKET_DIR}:rw`);
@@ -146,7 +178,9 @@ export class PodmanSandbox implements Sandbox {
         const labels: Record<string, string> = {};
         if (policy.projectId) labels.project = policy.projectId;
         if (policy.ticketId) labels.ticket = policy.ticketId;
-        const argv = this.argv(spec, grant, envFile, policy.runId, labels);
+        const sized =
+          policy.resources && !spec.resources ? { ...spec, resources: policy.resources } : spec;
+        const argv = this.argv(sized, grant, envFile, policy.runId, labels);
         await this.#o.broker.assertNoSecrets(argv);
         return await (policy.launcher ?? exec)(
           {
@@ -223,40 +257,51 @@ export class PodmanSandbox implements Sandbox {
     spec: SandboxExecSpec,
     signal: AbortSignal = new AbortController().signal,
   ): Promise<SandboxExecResult> {
-    const runId = `exec-${randomBytes(6).toString("hex")}`;
-    const out: string[] = [];
-    let bytes = 0;
-    let exceeded = false;
-    const outcome = await this.lineExecutor({
-      runId,
-      network: spec.network,
-      ...(spec.allowHosts ? { allowHosts: spec.allowHosts } : {}),
-    })(
-      {
-        cmd: spec.cmd,
-        cwd: spec.workdir,
-        env: spec.env ?? {},
-        timeoutMs: spec.timeoutMs,
-        ...(spec.readOnly === undefined ? {} : { readOnly: spec.readOnly }),
-      },
-      (line) => {
-        const size = Buffer.byteLength(line) + 1;
-        if (exceeded || (spec.maxOutputBytes !== undefined && bytes + size > spec.maxOutputBytes)) {
-          exceeded = true;
-          return;
-        }
-        bytes += size;
-        out.push(line);
-      },
-      signal,
-    );
-    return {
-      code: outcome.timedOut ? 124 : outcome.exitCode,
-      stdout: exceeded ? "[output exceeded capture limit; suppressed]" : out.join("\n"),
-      stderr:
-        spec.maxOutputBytes !== undefined && Buffer.byteLength(outcome.stderrTail) >= 8 * 1024
-          ? "[stderr exceeded capture limit; suppressed]"
-          : outcome.stderrTail,
-    };
+    const report = spec.report ? await reportDir(spec.report.name) : undefined;
+    try {
+      const out: string[] = [];
+      let bytes = 0;
+      let exceeded = false;
+      const outcome = await this.lineExecutor({
+        runId: `exec-${randomBytes(6).toString("hex")}`,
+        network: spec.network,
+        ...(spec.allowHosts ? { allowHosts: spec.allowHosts } : {}),
+      })(
+        {
+          cmd: spec.cmd,
+          cwd: spec.workdir,
+          env: spec.env ?? {},
+          timeoutMs: spec.timeoutMs,
+          ...(spec.readOnly === undefined ? {} : { readOnly: spec.readOnly }),
+          ...(spec.resources ? { resources: spec.resources } : {}),
+          ...(report ? { reportDir: report.dir } : {}),
+        },
+        (line) => {
+          const size = Buffer.byteLength(line) + 1;
+          const over = spec.maxOutputBytes !== undefined && bytes + size > spec.maxOutputBytes;
+          if (exceeded || over) {
+            exceeded = true;
+            return;
+          }
+          bytes += size;
+          out.push(line);
+        },
+        signal,
+      );
+      return {
+        code: outcome.timedOut ? 124 : outcome.exitCode,
+        stdout: exceeded ? "[output exceeded capture limit; suppressed]" : out.join("\n"),
+        stderr:
+          spec.maxOutputBytes !== undefined && Buffer.byteLength(outcome.stderrTail) >= 8 * 1024
+            ? "[stderr exceeded capture limit; suppressed]"
+            : outcome.stderrTail,
+        // Read only after the container is gone (lineExecutor removes it before returning).
+        ...(report && spec.report
+          ? { report: await readReport(report.dir, spec.report.name, spec.report.maxBytes) }
+          : {}),
+      };
+    } finally {
+      await report?.cleanup();
+    }
   }
 }

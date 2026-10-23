@@ -58,9 +58,18 @@ export const Project = z
           cmd: z.array(z.string()),
           parser: z.string().optional(),
           baseline: z.enum(["compare", "strict"]).optional(),
+          retryFlaky: z.boolean().optional(),
         }),
       )
       .optional(),
+    resources: z
+      .record(
+        z.string(),
+        z.object({ cpus: z.number().optional(), memoryGb: z.number().optional() }),
+      )
+      .optional()
+      .openapi({ description: "Per-phase sandbox CPU/memory overrides (host default otherwise)" }),
+    baselineWarmup: z.boolean().optional(),
     timeouts: z
       .record(z.string(), z.number())
       .optional()
@@ -86,6 +95,10 @@ const ChecksSettings = z
         baseline: z.enum(["compare", "strict"]).optional().openapi({
           description:
             "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare.",
+        }),
+        retryFlaky: z.boolean().optional().openapi({
+          description:
+            "Test checks (compare mode): re-run once before a new failure counts; failures passing on the retry are reported as flaky (max 3 per check, more count as real). Default true.",
         }),
       })
       .strict(),
@@ -135,6 +148,33 @@ export const PhaseTimeouts = z
     description:
       "Wall-clock limit per run of a phase, in ms (5-120 min). Phases left out use the default (30 min). On PATCH the object replaces the previous overrides; null clears them all.",
   });
+
+export const MAX_SANDBOX_CPUS = 128;
+export const MAX_SANDBOX_MEMORY_GB = 512;
+const Resources = z
+  .object({
+    cpus: z.number().min(0.5).max(MAX_SANDBOX_CPUS).optional(),
+    memoryGb: z.number().int().min(1).max(MAX_SANDBOX_MEMORY_GB).optional(),
+  })
+  .strict();
+
+export const PhaseResources = z
+  .object(
+    Object.fromEntries(TIMEOUT_PHASES.map((phase) => [phase, Resources.optional()])) as Record<
+      (typeof TIMEOUT_PHASES)[number],
+      z.ZodOptional<typeof Resources>
+    >,
+  )
+  .strict()
+  .openapi("PhaseResources", {
+    description:
+      "Sandbox CPU/memory per phase, e.g. {checks:{cpus:8,memoryGb:16}}. Unset: host default (2 CPUs, 4 GB). Clamped to the host's MATRIX_SANDBOX_MAX_CPUS / MATRIX_SANDBOX_MAX_MEMORY_GB. On PATCH the object replaces the previous overrides; null clears them.",
+  });
+
+const BaselineWarmup = z.boolean().openapi({
+  description:
+    "Precompute base-commit check results when a ticket starts (in parallel with implement), so the checks phase finds them cached. Default false.",
+});
 
 const IdleTimeoutMs = z.number().int().min(60_000).max(MAX_TIMEOUT_MS).openapi({
   description:
@@ -283,6 +323,8 @@ export const UpdateProject = z
     }),
     models: ModelPlan.optional(),
     timeouts: PhaseTimeouts.nullable().optional(),
+    resources: PhaseResources.nullable().optional(),
+    baselineWarmup: BaselineWarmup.optional(),
     idleTimeoutMs: IdleTimeoutMs.nullable()
       .optional()
       .openapi({ description: "null resets to the default" }),
@@ -322,6 +364,8 @@ export const CreateProject = z
     }),
     models: ModelPlan.optional(),
     timeouts: PhaseTimeouts.optional(),
+    resources: PhaseResources.optional(),
+    baselineWarmup: BaselineWarmup.optional(),
     idleTimeoutMs: IdleTimeoutMs.optional(),
     implementGuidance: ImplementGuidance.optional(),
   })
