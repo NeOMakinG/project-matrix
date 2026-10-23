@@ -128,8 +128,12 @@ MATRIX_LINEAR_LIVE=1 LINEAR_API_KEY=... bunx vitest run packages/tickets/src/ada
 - **Human stop:** moving an issue to a not-started column (Backlog, Todo, Triage; not Ready)
   while its workflow is queued or running stops it: the active run is cancelled (container killed
   / Orca terminal interrupted and closed), the workflow blocks with `stopped by human (moved to
-  Backlog)`, and the issue stays where the human put it. In app mode the issue history tells a
-  human's move from Matrix's own; with a personal key (or no usable history) any such move counts. Moving it to **Ready** later
+  Backlog)`, and the issue stays where the human put it. Matrix records (host-side) the column it
+  last moved each issue into: a column that differs from it is a human's move, even before
+  Linear's eventually consistent history shows it (seconds of lag; moves right after creation may
+  never appear). In app mode a human actor in history also counts. Matrix never moves an issue
+  out of a column a human parked it in on a phase start; with no record at all, any such move
+  counts as a stop. Moving it to **Ready** later
   restarts it in the same phase and does not count against `maxRequeuesPerDay`. The same stop is
   available over the API: `POST /v1/runs/{id}/cancel`, `POST /v1/projects/{id}/tickets/{ticketId}/cancel`
   and `POST /v1/projects/{id}/cancel` (every active workflow of the project).

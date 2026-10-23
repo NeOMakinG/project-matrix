@@ -153,7 +153,10 @@ export class LinearTicketStore implements TicketStore {
     if (!this.#host) return;
     const block = findLegacyBlock(issue.description);
     if (!block) return;
-    if (!this.#host.get(issue.id)) this.#host.set(issue.id, safeMeta(block.meta));
+    // Host data wins; only a host entry with nothing but Matrix's last column adopts the block.
+    const host = this.#host.get(issue.id);
+    if (!host || Object.keys(host).every((k) => k === "lastState"))
+      this.#host.set(issue.id, { ...safeMeta(block.meta), ...host });
     if (this.#stripTried.has(issue.id)) return;
     try {
       const fresh = await this.#client.request<{ issue: Q.LinearIssue | null }>(Q.GET_ISSUE, {
@@ -295,16 +298,27 @@ export class LinearTicketStore implements TicketStore {
     const candidates = issues.filter((i) => wanted.has(i.identifier) && this.#inStopColumn(i));
     const out: StopRequest[] = [];
     for (const i of candidates)
-      if (!(this.appMode && (await this.#movedByMatrix(i))))
-        out.push({ id: i.identifier, column: i.state.name });
+      if (!(await this.#movedByMatrix(i))) out.push({ id: i.identifier, column: i.state.name });
     return out;
   }
 
   /**
-   * Who made the latest move into the issue's current column, per issue history: `matrix` (its
-   * app user), `other`, or undefined when history cannot tell. Only meaningful in app mode.
+   * Who made the latest move into the issue's current column: `matrix`, `other`, or undefined
+   * when nothing can tell. Linear's history is eventually consistent (a move can take many seconds
+   * to appear, moves right after creation may never appear), so it is combined with the column
+   * Matrix last wrote (host-side): a recorded human move wins; else a current column that differs
+   * from Matrix's last write is a human's; else Matrix's own write. History only counts in app
+   * mode (a personal key shares the human's identity).
    */
   async #lastMoveBy(issue: Q.LinearIssue): Promise<"matrix" | "other" | undefined> {
+    const history = this.appMode ? await this.#historyMoveBy(issue) : undefined;
+    if (history === "other") return "other";
+    const written = this.#host?.get(issue.id)?.lastState;
+    if (written !== undefined) return norm(written) === norm(issue.state.name) ? "matrix" : "other";
+    return history;
+  }
+
+  async #historyMoveBy(issue: Q.LinearIssue): Promise<"matrix" | "other" | undefined> {
     try {
       const data = await this.#client.request<{
         issue: { history: { nodes: Q.LinearHistoryNode[] } } | null;
@@ -318,6 +332,18 @@ export class LinearTicketStore implements TicketStore {
     } catch {
       return undefined;
     }
+  }
+
+  /** Records the column Matrix just moved the issue into (host mode). */
+  #wrote(issueUuid: string, stateName: string): void {
+    if (!this.#host) return;
+    const meta = this.#host.get(issueUuid) ?? {};
+    this.#host.set(issueUuid, { ...meta, lastState: stateName });
+  }
+
+  async #stateName(stateId: string): Promise<string | undefined> {
+    for (const s of (await this.#loadTeam()).states.values()) if (s.id === stateId) return s.name;
+    return undefined;
   }
 
   async #movedByMatrix(issue: Q.LinearIssue): Promise<boolean> {
@@ -338,10 +364,8 @@ export class LinearTicketStore implements TicketStore {
    */
   async #humanHold(issue: Q.LinearIssue): Promise<boolean> {
     if (!this.#inStopColumn(issue)) return false;
-    if (this.appMode) {
-      const by = await this.#lastMoveBy(issue);
-      if (by) return by === "other";
-    }
+    const by = await this.#lastMoveBy(issue);
+    if (by) return by === "other";
     return this.#meta(issue).phase !== undefined;
   }
 
@@ -422,6 +446,7 @@ export class LinearTicketStore implements TicketStore {
     });
     const issue = data.issueCreate.issue;
     if (!data.issueCreate.success || !issue) throw new LinearApiError("Linear issueCreate failed");
+    this.#wrote(issue.id, this.#names.open);
     for (const dep of input.deps ?? []) await this.link(dep, issue.identifier, "blocks");
     return (await this.get(issue.identifier)) ?? this.#ticket(issue);
   }
@@ -470,7 +495,12 @@ export class LinearTicketStore implements TicketStore {
       }>(Q.UPDATE_ISSUE, { id: issue.id, input });
       if (!data.issueUpdate.success) throw new LinearApiError(`Linear issueUpdate ${id} failed`);
     }
-    if (this.#host) this.#host.set(issue.id, safeMeta(meta as Record<string, unknown>));
+    if (this.#host) {
+      const moved =
+        typeof input.stateId === "string" ? await this.#stateName(input.stateId) : undefined;
+      const lastState = moved ?? this.#host.get(issue.id)?.lastState;
+      this.#host.set(issue.id, safeMeta({ ...meta, ...(lastState ? { lastState } : {}) }));
+    }
     if (patch.deps !== undefined) await this.#syncDeps(issue, patch.deps);
     const updated = await this.get(id);
     if (!updated) throw new Error(`ticket ${id} vanished after update`);
@@ -533,6 +563,7 @@ export class LinearTicketStore implements TicketStore {
       input: { stateId },
     });
     if (!data.issueUpdate.success) throw new LinearApiError(`Linear move of ${id} failed`);
+    this.#wrote(issue.id, column);
   }
 
   /**

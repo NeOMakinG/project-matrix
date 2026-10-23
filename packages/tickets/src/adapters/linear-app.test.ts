@@ -176,7 +176,12 @@ describe("legacy meta migration", () => {
     expect(got?.status).toBe("blocked");
     expect(got?.phase).toBe("qa");
     expect(issue.description).toBe(human.trimEnd());
-    expect(meta.get(issue.id)).toEqual({ phase: "qa", blocked: true, blockedIn: "Ready" });
+    expect(meta.get(issue.id)).toEqual({
+      phase: "qa",
+      blocked: true,
+      blockedIn: "Ready",
+      lastState: "Todo",
+    });
   });
 
   test("a block with foreign keys or broken JSON is left untouched", async () => {
@@ -192,7 +197,7 @@ describe("legacy meta migration", () => {
       issue.description = description;
       await store.get(t.id);
       expect(issue.description).toBe(description);
-      expect(meta.get(issue.id)).toBeUndefined();
+      expect(meta.get(issue.id)?.phase).toBeUndefined();
     }
   });
 
@@ -237,11 +242,34 @@ describe("human stop via issue history", () => {
     expect(await store.stopRequests([a.id, b.id])).toEqual([{ id: b.id, column: "Todo" }]);
   });
 
-  test("no usable history falls back to treating the move as a stop", async () => {
+  test("history lagging: a human move not yet in history still counts", async () => {
     const { fake, store } = make();
-    const a = await store.create({ title: "A", body: "b" });
+    const t = await store.create({ title: "T", body: "b" });
+    await store.update(t.id, { status: "in_progress", phase: "implement" });
+    const issue = fake.issues.get(t.id);
+    if (!issue) throw new Error("no issue");
+    // The human's move to Backlog has not reached Linear's history yet.
+    issue.state = fake.states.find((s) => s.name === "Backlog") ?? issue.state;
+    expect(fake.history.get(issue.id)?.at(-1)?.to).toBe("Implement");
+    await store.setPhase(t.id, { phase: "review", status: "running" });
+    await store.update(t.id, { status: "review", phase: "review" });
+    expect(issue.state.name).toBe("Backlog");
+    expect(await store.stopRequests([t.id])).toEqual([{ id: t.id, column: "Backlog" }]);
+  });
+
+  test("Matrix's own move missing from history (right after creation) is not a stop", async () => {
+    const { fake, store } = make();
+    const t = await store.create({ title: "T", body: "b" });
     fake.history.clear();
-    expect(await store.stopRequests([a.id])).toEqual([{ id: a.id, column: "Todo" }]);
+    expect(await store.stopRequests([t.id])).toEqual([]);
+  });
+
+  test("no history and no host record falls back to treating the move as a stop", async () => {
+    const { fake, store, meta } = make();
+    const t = await store.create({ title: "T", body: "b" });
+    fake.history.clear();
+    meta.set(fake.issues.get(t.id)?.id as string, {});
+    expect(await store.stopRequests([t.id])).toEqual([{ id: t.id, column: "Todo" }]);
   });
 });
 

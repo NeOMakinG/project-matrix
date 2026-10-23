@@ -90,6 +90,8 @@ export interface LinearMeta extends MatrixMeta {
   blockedIn?: string;
   /** Comment ids of Matrix's live comments, by key (see `upsertComment`). */
   comments?: Record<string, string>;
+  /** Column Matrix itself last moved the issue into (host-side only; history lags). */
+  lastState?: string;
 }
 
 const COMMENT_KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -114,6 +116,8 @@ export function safeMeta(meta: Record<string, unknown>): LinearMeta {
     safe.blockedIn = blockedIn;
   const comments = safeComments(meta.comments);
   if (comments) safe.comments = comments;
+  if (typeof meta.lastState === "string" && meta.lastState.length <= 80)
+    safe.lastState = meta.lastState;
   return safe;
 }
 
@@ -126,7 +130,7 @@ export function readBody(description: string | null): { text: string; meta: Line
 
 /** Legacy mode only (no host meta store): text plus the hidden block. */
 export function writeBody(text: string, meta: LinearMeta): string {
-  const clean = safeMeta(meta as Record<string, unknown>);
+  const { lastState: _host, ...clean } = safeMeta(meta as Record<string, unknown>);
   return joinBody(text, clean);
 }
 
