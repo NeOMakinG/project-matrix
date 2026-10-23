@@ -52,6 +52,7 @@ import {
 import { type FinalizeJournal, finalizeProject } from "./finalize.js";
 import {
   applyRunSettings,
+  copyCheck,
   newProjectConfig,
   type StoredProject,
   toApproval,
@@ -327,7 +328,7 @@ export class RealCore implements CorePort {
         implement: { runner: "claude-code", model: "fake-implementer" },
         review: { runner: "codex", model: "fake-reviewer" },
       };
-    if (input.checks) config.checks = input.checks;
+    if (input.checks) config.checks = input.checks.map(copyCheck);
     applyRunSettings(config, input);
     if (input.models) applyModelPlan(config, input.models);
     await this.assertServedModels(config, input.models);
@@ -377,7 +378,7 @@ export class RealCore implements CorePort {
       config.baseBranch = repo.baseBranch;
       // Matrix stops at merge: the human merges the draft PR on GitHub.
       config.lastPhase = "merge";
-      config.checks = input.checks ?? (await detectChecks(repo, git));
+      config.checks = input.checks?.map(copyCheck) ?? (await detectChecks(repo, git));
       const editablePaths = input.repo.editablePaths
         ? validateEditablePaths(input.repo.editablePaths)
         : await defaultEditablePaths(repo, git);
@@ -445,8 +446,7 @@ export class RealCore implements CorePort {
         if (patch.repo?.setupScripts !== undefined)
           config.matrix.repo.setupScripts = patch.repo.setupScripts;
       }
-      if (patch.checks)
-        config.checks = patch.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] }));
+      if (patch.checks) config.checks = patch.checks.map(copyCheck);
       applyRunSettings(config, patch);
       if (patch.models) {
         applyModelPlan(config, patch.models);

@@ -35,6 +35,7 @@ import {
   WorktreeGitPort,
 } from "@matrix/workspace";
 import type { PrivateStateOwner } from "../state-owner.js";
+import { baselineChecks } from "./baseline-checks.js";
 import { dependencySetup } from "./deps-setup.js";
 import { derivedGraphHandover } from "./derived-graph.js";
 import { servedModels } from "./gateway-models.js";
@@ -365,6 +366,19 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       cacheKey: createHash("sha256").update(opts.gatewayUrl).digest("hex"),
     },
   );
+  // Existing repos only: dependencies installed (or restored from the host cache) before checks.
+  const setup = dependencySetup({
+    sandbox: checkedSandbox,
+    cacheRoot: join(opts.dataDir, "deps-cache"),
+    policy: (ctx) => {
+      const repo = (ctx.project as StoredProject).matrix?.repo;
+      if (!repo) return undefined;
+      return {
+        ...(repo.setup ? { steps: repo.setup } : {}),
+        ...(repo.setupScripts ? { scripts: true } : {}),
+      };
+    },
+  });
   const runners = Object.fromEntries(
     NATIVE_RUNNERS.map((id) => [
       id,
@@ -416,18 +430,14 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       },
       runners,
       sandbox: checkedSandbox,
-      // Existing repos only: dependencies installed (or restored from the host cache) before checks.
-      setup: dependencySetup({
+      setup,
+      // Failing compare-mode checks are re-gated against the same checks on the base commit.
+      baseline: baselineChecks({
         sandbox: checkedSandbox,
-        cacheRoot: join(opts.dataDir, "deps-cache"),
-        policy: (ctx) => {
-          const repo = (ctx.project as StoredProject).matrix?.repo;
-          if (!repo) return undefined;
-          return {
-            ...(repo.setup ? { steps: repo.setup } : {}),
-            ...(repo.setupScripts ? { scripts: true } : {}),
-          };
-        },
+        setup,
+        root: join(opts.dataDir, "baseline"),
+        headSha: (workdir) => git.headSha(workdir),
+        compareByDefault: (ctx) => Boolean((ctx.project as StoredProject).matrix?.repo),
       }),
       qa: scenarioQaDriver({
         ...(opts.gitleaksBinary ? { gitleaksBinary: opts.gitleaksBinary } : {}),

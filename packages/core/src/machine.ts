@@ -1,3 +1,4 @@
+import { checksGateReason } from "./check-baseline.js";
 import { designEvidence } from "./design.js";
 import { isTrustedHoldout } from "./holdout.js";
 import { type AutonomyMode, PHASES, type Phase, type Receipt } from "./ports.js";
@@ -59,9 +60,9 @@ export function gate(phase: Phase, outcome: PhaseOutcome, config: ProjectConfig)
     case "checks": {
       const checks = r.filter((x) => CHECK_KINDS.has(x.kind));
       if (checks.length === 0) return { pass: false, reason: "no check receipts" };
-      const failed = checks.filter((x) => !x.ok).map((x) => x.kind);
+      const failed = checks.filter((x) => !x.ok);
       return failed.length
-        ? { pass: false, reason: `checks failed: ${failed.join(", ")}` }
+        ? { pass: false, reason: checksGateReason(failed) }
         : { pass: true, reason: "all checks passed" };
     }
     case "review": {

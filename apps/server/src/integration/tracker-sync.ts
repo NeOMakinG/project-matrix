@@ -1,4 +1,4 @@
-import type { BusEvent, EventBus, WorkflowState } from "@matrix/core";
+import { type BusEvent, checksStatusLine, type EventBus, type WorkflowState } from "@matrix/core";
 import type { TicketStore } from "@matrix/tickets";
 import {
   type OrcaStatusRef,
@@ -26,6 +26,8 @@ interface Entry {
   links: StatusLink[];
   orca?: OrcaStatusRef | undefined;
   pullRequest?: StatusLink | undefined;
+  /** Latest checks summary vs the base commit ("0 new failures (273 pre-existing ...)"). */
+  checks?: string | undefined;
   timer?: ReturnType<typeof setTimeout> | undefined;
   running?: Promise<void> | undefined;
   dirty: boolean;
@@ -132,6 +134,11 @@ export class TrackerSync {
       const entry = key ? this.#entries.get(key) : undefined;
       if (!entry) return;
       let changed = false;
+      const checks = checksStatusLine(event.receipts);
+      if (checks && checks !== entry.checks) {
+        entry.checks = checks;
+        changed = true;
+      }
       for (const r of event.receipts) {
         const orca = orcaRef(r.data);
         if (orca && (orca.run !== entry.orca?.run || orca.dispatch !== entry.orca?.dispatch)) {
@@ -205,7 +212,7 @@ export class TrackerSync {
         this.#failed(entry, "setPhase", error);
       }
     }
-    const body = renderStatus(w, entry.links, entry.orca, entry.pullRequest);
+    const body = renderStatus(w, entry.links, entry.orca, entry.pullRequest, entry.checks);
     if (store.upsertComment && entry.sentBody !== body) {
       try {
         await store.upsertComment(

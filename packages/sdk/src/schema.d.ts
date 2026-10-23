@@ -4261,6 +4261,9 @@ export interface components {
       checks?: {
         kind: string;
         cmd: string[];
+        parser?: string;
+        /** @enum {string} */
+        baseline?: "compare" | "strict";
       }[];
       /** @description Effective wall-clock limit per run of each phase, in ms */
       timeouts?: {
@@ -4300,6 +4303,16 @@ export interface components {
         /** @enum {string} */
         kind: "typecheck" | "lint" | "test" | "adr-check";
         cmd: string[];
+        /**
+         * @description Output parser for the base comparison (eslint-json appends --format json to eslint / `npm run`; vitest-json appends --reporter=json). Unset: detected from the argv, tsc for typecheck, else exit-code.
+         * @enum {string}
+         */
+        parser?: "eslint-json" | "tsc" | "node-test-tap" | "vitest-json" | "exit-code";
+        /**
+         * @description compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise.
+         * @enum {string}
+         */
+        baseline?: "compare" | "strict";
       }[];
       repo?: components["schemas"]["ExistingRepo"];
       models?: components["schemas"]["ModelPlan"];
@@ -4394,6 +4407,16 @@ export interface components {
         /** @enum {string} */
         kind: "typecheck" | "lint" | "test" | "adr-check";
         cmd: string[];
+        /**
+         * @description Output parser for the base comparison (eslint-json appends --format json to eslint / `npm run`; vitest-json appends --reporter=json). Unset: detected from the argv, tsc for typecheck, else exit-code.
+         * @enum {string}
+         */
+        parser?: "eslint-json" | "tsc" | "node-test-tap" | "vitest-json" | "exit-code";
+        /**
+         * @description compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise.
+         * @enum {string}
+         */
+        baseline?: "compare" | "strict";
       }[];
       models?: components["schemas"]["ModelPlan"];
       timeouts?: components["schemas"]["PhaseTimeouts"] & (Record<string, never> | null);

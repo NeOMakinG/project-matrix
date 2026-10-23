@@ -48,6 +48,10 @@ export type RunnerKind = "claude-code" | "codex" | "opencode";
 export interface CheckSpec {
   kind: "typecheck" | "lint" | "test" | "adr-check";
   cmd: string[];
+  /** Output parser for the base comparison; unset = detected from the argv, else exit-code. */
+  parser?: "eslint-json" | "tsc" | "node-test-tap" | "vitest-json" | "exit-code" | undefined;
+  /** compare: only failures absent on the base commit fail; unset = compare for existing repos. */
+  baseline?: "compare" | "strict" | undefined;
 }
 export interface ModelPlanInput {
   spike?: { runner: RunnerKind; model: string };

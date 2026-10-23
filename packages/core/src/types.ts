@@ -45,9 +45,18 @@ export const REVIEW_LANES = [
 ] as const;
 export type ReviewLane = (typeof REVIEW_LANES)[number];
 
+/** How a check's output is turned into failure identities for the base comparison. */
+export type CheckParser = "eslint-json" | "tsc" | "node-test-tap" | "vitest-json" | "exit-code";
+/** `compare`: only failures absent on the base commit fail the check. `strict`: any failure. */
+export type BaselineMode = "compare" | "strict";
+
 export interface CheckCommand {
   kind: "typecheck" | "lint" | "test" | "adr-check";
   cmd: string[];
+  /** Unset: detected from the argv (eslint, vitest, tsc, node --test), else exit-code. */
+  parser?: CheckParser;
+  /** Unset: the baseline port's default (compare for existing repos, strict otherwise). */
+  baseline?: BaselineMode;
 }
 
 export interface ProjectConfig {
