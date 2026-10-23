@@ -51,7 +51,16 @@ export const Project = z
       )
       .optional()
       .openapi({ description: "Effective model per model-driven phase" }),
-    checks: z.array(z.object({ kind: z.string(), cmd: z.array(z.string()) })).optional(),
+    checks: z
+      .array(
+        z.object({
+          kind: z.string(),
+          cmd: z.array(z.string()),
+          parser: z.string().optional(),
+          baseline: z.enum(["compare", "strict"]).optional(),
+        }),
+      )
+      .optional(),
     timeouts: z
       .record(z.string(), z.number())
       .optional()
@@ -60,6 +69,28 @@ export const Project = z
     implementGuidance: z.string().optional(),
   })
   .openapi("Project");
+
+const ChecksSettings = z
+  .array(
+    z
+      .object({
+        kind: z.enum(["typecheck", "lint", "test", "adr-check"]),
+        cmd: z.array(z.string().min(1).max(200)).min(1).max(20),
+        parser: z
+          .enum(["eslint-json", "tsc", "node-test-tap", "vitest-json", "exit-code"])
+          .optional()
+          .openapi({
+            description:
+              "Output parser for the base comparison (eslint-json appends --format json to eslint / `npm run`; vitest-json appends --reporter=json). Unset: detected from the argv, tsc for typecheck, else exit-code.",
+          }),
+        baseline: z.enum(["compare", "strict"]).optional().openapi({
+          description:
+            "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare.",
+        }),
+      })
+      .strict(),
+  )
+  .max(20);
 
 export const PhaseModel = z
   .object({
@@ -234,15 +265,6 @@ const TicketsSettings = z
     path: ["linear"],
   });
 
-const ChecksSettings = z
-  .array(
-    z.object({
-      kind: z.enum(["typecheck", "lint", "test", "adr-check"]),
-      cmd: z.array(z.string().min(1).max(200)).min(1).max(20),
-    }),
-  )
-  .max(20);
-
 export const UpdateProject = z
   .object({
     repo: z
@@ -292,16 +314,9 @@ export const CreateProject = z
       })
       .optional()
       .openapi({ description: "Ticket tracker; beads by default" }),
-    checks: z
-      .array(
-        z.object({
-          kind: z.enum(["typecheck", "lint", "test", "adr-check"]),
-          cmd: z.array(z.string().min(1).max(200)).min(1).max(20),
-        }),
-      )
-      .max(20)
-      .optional()
-      .openapi({ description: "Check commands run in the sandbox (argv, no shell)" }),
+    checks: ChecksSettings.optional().openapi({
+      description: "Check commands run in the sandbox (argv, no shell)",
+    }),
     repo: ExistingRepo.optional().openapi({
       description: "Register an existing host repo instead of creating an empty one",
     }),

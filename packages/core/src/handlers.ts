@@ -1,4 +1,12 @@
 import {
+  type BaselinePort,
+  type BaselineRun,
+  type BaselineVerdict,
+  checksStatusLine,
+  compareToBase,
+} from "./check-baseline.js";
+import { checkArgv, MAX_PARSE_BYTES, parseCheckOutput, resolveParser } from "./check-parsers.js";
+import {
   canonicalFigmaFile,
   classifyDesignScope,
   contentHash,
@@ -46,7 +54,7 @@ import type {
 import { formatQaEvidence, persistedQaReceipt, scenarioEvidence } from "./qa-evidence.js";
 import { lanePrompt, parseFindings, pickReviewer, reviewReceipt } from "./review.js";
 import type { Store } from "./store.js";
-import type { PhaseModel, PhaseOutcome, ProjectConfig } from "./types.js";
+import type { CheckCommand, PhaseModel, PhaseOutcome, ProjectConfig } from "./types.js";
 import { ticketContext } from "./untrusted.js";
 
 export type PhaseHandler = (ctx: PhaseContext) => Promise<PhaseOutcome>;
@@ -77,6 +85,8 @@ export interface HandlerDeps {
   architecture?: (ctx: PhaseContext) => Promise<Receipt[]>;
   /** Installs dependencies in the worktree right before checks (existing repos). */
   setup?: DependencySetupPort;
+  /** Base-commit check results: failures already on base do not fail compare-mode checks. */
+  baseline?: BaselinePort;
 }
 
 function tail(text: string, lines = 20): string {
@@ -528,29 +538,39 @@ const checks =
         if (!setup.ok) return environment(`dependency setup failed: ${setup.summary}`);
       }
       const broken: string[] = [];
+      const runs: BaselineRun[] = [];
       for (const check of ctx.project.checks) {
-        ctx.emit(`running ${check.kind}: ${check.cmd.join(" ")}`, "tool");
+        const cmd = deps.baseline ? checkArgv(check) : check.cmd;
+        ctx.emit(`running ${check.kind}: ${cmd.join(" ")}`, "tool");
         const started = Date.now();
         const res = await deps.sandbox.exec(
           {
             workdir: ctx.workdir,
-            cmd: check.cmd,
+            cmd,
             network: "none",
             timeoutMs: phaseTimeoutMs(ctx.project, "checks"),
+            maxOutputBytes: MAX_PARSE_BYTES,
           },
           ctx.signal,
         );
         const output = `${res.stdout}\n${res.stderr}`;
         const env = environmentFailure(res.code, output, Date.now() - started);
         if (env) broken.push(`${check.kind}: ${env}`);
+        runs.push({
+          code: res.code,
+          failures: deps.baseline
+            ? parseCheckOutput(resolveParser(check), res, [ctx.workdir, "/work"])
+            : null,
+        });
         receipts.push({
           kind: check.kind,
           ok: res.code === 0,
           summary: `${check.kind} exit ${res.code}${env ? ` (environment: ${env})` : ""}`,
-          data: { cmd: check.cmd, output: tail(output) },
+          data: { cmd, output: tail(output).slice(-4000) },
         });
       }
       if (broken.length) return environment(broken.join("; "));
+      if (deps.baseline) await applyBaseline(deps.baseline, ctx, runs, receipts);
       if (deps.architecture) receipts.push(...(await deps.architecture(ctx)));
     } catch (error) {
       if (!(error instanceof FactoryToolingError)) throw error;
@@ -563,8 +583,69 @@ const checks =
       };
     }
     const ok = receipts.every((r) => r.ok);
-    return { ok, summary: ok ? "checks passed" : "checks failed", receipts, runStatus: "ok" };
+    const line = checksStatusLine(receipts);
+    const summary = `${ok ? "checks passed" : "checks failed"}${line ? `: ${line}` : ""}`;
+    return { ok, summary, receipts, runStatus: "ok" };
   };
+
+/**
+ * Re-gates each failed compare-mode check against the base commit (only failing checks need a
+ * baseline). Receipts keep their slot; `ok` and `data.baseline` carry the verdict.
+ */
+async function applyBaseline(
+  port: BaselinePort,
+  ctx: PhaseContext,
+  runs: BaselineRun[],
+  receipts: Receipt[],
+): Promise<void> {
+  const checks = ctx.project.checks;
+  const offset = receipts.length - checks.length;
+  // An exit-code-only check cannot tell new failures from old ones: compare only on explicit opt-in.
+  const mode = (i: number) =>
+    checks[i]?.baseline ??
+    (resolveParser(checks[i] as CheckCommand) === "exit-code" ? "strict" : port.defaultMode(ctx));
+  const wanted = checks.flatMap((c, i) => (mode(i) === "compare" && runs[i]?.code ? [i] : []));
+  let base: Awaited<ReturnType<BaselinePort["run"]>> | undefined;
+  let error = "";
+  if (wanted.length) {
+    ctx.emit(`baseline: running ${wanted.length} failing check(s) on the base commit`, "tool");
+    try {
+      base = await port.run(
+        ctx,
+        wanted.map((i) => checks[i] as CheckCommand),
+      );
+    } catch (e) {
+      if (e instanceof FactoryToolingError) throw e;
+      error = e instanceof Error ? e.message.slice(0, 200) : "baseline error";
+    }
+  }
+  checks.forEach((check, i) => {
+    const run = runs[i] as BaselineRun;
+    const receipt = receipts[offset + i] as Receipt;
+    const parser = resolveParser(check);
+    const at = wanted.indexOf(i);
+    const verdict: BaselineVerdict =
+      mode(i) === "strict"
+        ? {
+            mode: "strict",
+            parser,
+            ok: run.code === 0,
+            newFailures: (run.failures ?? []).slice(0, 50),
+            newCount: run.code === 0 ? 0 : Math.max(1, run.failures?.length ?? 1),
+            preExisting: 0,
+            note: run.code === 0 ? "passed" : "strict: any failure fails",
+          }
+        : compareToBase(
+            parser,
+            run,
+            at < 0 ? undefined : (base?.results[at] ?? { error: error || "no baseline result" }),
+            base?.baseSha,
+          );
+    receipt.ok = verdict.ok;
+    receipt.summary = `${receipt.summary} · ${verdict.newCount} new${verdict.preExisting > 0 ? `, ${verdict.preExisting} pre-existing` : ""} (${verdict.mode})`;
+    receipt.data = { ...(receipt.data as object), baseline: verdict };
+  });
+}
 
 const review =
   (deps: HandlerDeps): PhaseHandler =>

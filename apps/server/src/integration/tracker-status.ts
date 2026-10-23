@@ -48,11 +48,13 @@ export function renderStatus(
   links: readonly StatusLink[],
   orca?: OrcaStatusRef,
   pullRequest?: StatusLink,
+  checks?: string,
 ): string {
   const lines = [
     `**Matrix** · phase ${code(w.phase)} · ${code(w.status)}`,
     `- Attempt ${w.attempt} · review loops ${w.loops}`,
   ];
+  if (checks) lines.push(`- Checks: ${code(singleLine(redact(checks), 200))}`);
   if (w.lastError) lines.push(`- Last error: ${code(singleLine(redact(w.lastError), 300))}`);
   if (orca)
     lines.push(

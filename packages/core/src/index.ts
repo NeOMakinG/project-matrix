@@ -1,5 +1,7 @@
 export const name = "@matrix/core";
 export * from "./bus.js";
+export * from "./check-baseline.js";
+export * from "./check-parsers.js";
 export { MIGRATIONS_DIR, PgStore } from "./db/pg-store.js";
 export * from "./design.js";
 export * from "./environment.js";

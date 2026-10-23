@@ -200,6 +200,37 @@ describe("tracker status rendering", () => {
     expect(safeLink("p[r]", "https://x.test/a")).toEqual({ label: "pr", url: "https://x.test/a" });
   });
 
+  test("checks line summarizes new vs pre-existing failures from run receipts", async () => {
+    const { fake, linear, bus, sync } = setup();
+    const t = await linear.create({ title: "T", body: "" });
+    bus.publish({
+      type: "run.started",
+      runId: "r9",
+      projectId: "p1",
+      ticketId: t.id,
+      phase: "checks",
+    });
+    bus.publish({ type: "workflow.changed", workflow: wf(t.id, { phase: "checks" }) });
+    await sync.flush();
+    const verdict = (preExisting: number) => ({
+      baseline: { newFailures: [], newCount: 0, preExisting, note: "x" },
+    });
+    bus.publish({
+      type: "run.finished",
+      runId: "r9",
+      status: "ok",
+      summary: "",
+      receipts: [
+        { kind: "lint", ok: true, summary: "", data: verdict(273) },
+        { kind: "test", ok: true, summary: "", data: verdict(19) },
+      ],
+    });
+    await sync.flush();
+    expect([...fake.comments.values()][0]?.body).toContain(
+      "- Checks: `0 new failures (273 pre-existing lint errors, 19 pre-existing test failures)`",
+    );
+  });
+
   test("TrackerHealth keeps newest-first failures per project and logs JSON", () => {
     const bus = new EventBus();
     const logs: string[] = [];

@@ -316,3 +316,35 @@ test("run timeouts and implement guidance: set at registration, PATCHed, bounded
   ).toBe(400);
   await factory.stop();
 });
+
+test("checks take a parser and baseline mode via PATCH; unknown values are rejected", async () => {
+  const { repo, factory, call } = await boot();
+  const created = await call("POST", "/v1/projects", {
+    name: "Baseline",
+    repo: { path: repo, baseBranch: "main" },
+    tickets: { kind: "linear", linear },
+  });
+  expect(created.status).toBe(200);
+  const id = String(created.body.id);
+  const patch = (body: unknown) => call("PATCH", `/v1/projects/${id}`, body);
+  const checks = [
+    {
+      kind: "lint",
+      cmd: ["npm", "--prefix", "app", "run", "lint"],
+      parser: "eslint-json",
+      baseline: "compare",
+    },
+    { kind: "test", cmd: ["npm", "test"], baseline: "strict" },
+  ];
+  const ok = await patch({ checks });
+  expect(ok.status).toBe(200);
+  expect(ok.body.checks).toEqual(checks);
+  expect(((await factory.store.getProject(id)) as StoredProject).checks).toEqual(checks);
+  for (const bad of [
+    { checks: [{ kind: "lint", cmd: ["x"], parser: "eval" }] },
+    { checks: [{ kind: "lint", cmd: ["x"], baseline: "loose" }] },
+    { checks: [{ kind: "lint", cmd: ["x"], extra: 1 }] },
+  ])
+    expect((await patch(bad)).status, JSON.stringify(bad)).toBe(400);
+  await factory.stop();
+});

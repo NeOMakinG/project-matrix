@@ -3,6 +3,8 @@ import {
   type ApprovalRecord,
   type AutonomyMode,
   autonomyFor,
+  CHECK_PARSERS,
+  type CheckCommand,
   PHASES,
   type Phase,
   type ProjectConfig,
@@ -12,6 +14,7 @@ import {
 } from "@matrix/core";
 import {
   type Approval,
+  type CheckSpec,
   CoreError,
   type PhaseTimeoutsInput,
   type Project,
@@ -95,6 +98,22 @@ export function applyRunSettings(
   }
 }
 
+const PARSERS: readonly string[] = CHECK_PARSERS;
+
+/** Validated copy of a check (non-HTTP callers included): argv, kind, parser, baseline mode. */
+export function copyCheck(c: CheckSpec): CheckCommand {
+  if (c.parser !== undefined && !PARSERS.includes(c.parser))
+    throw new CoreError("invalid_request", `unknown check parser ${String(c.parser).slice(0, 40)}`);
+  if (c.baseline !== undefined && c.baseline !== "compare" && c.baseline !== "strict")
+    throw new CoreError("invalid_request", "check baseline must be compare or strict");
+  return {
+    kind: c.kind,
+    cmd: [...c.cmd],
+    ...(c.parser ? { parser: c.parser } : {}),
+    ...(c.baseline ? { baseline: c.baseline } : {}),
+  };
+}
+
 export function toProject(config: StoredProject): Project {
   const autonomy = {} as Record<Phase, AutonomyMode>;
   for (const phase of PHASES) autonomy[phase] = autonomyFor(config, phase);
@@ -121,7 +140,7 @@ export function toProject(config: StoredProject): Project {
         }
       : {}),
     models: modelView(config),
-    checks: config.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] })),
+    checks: config.checks.map(copyCheck),
     timeouts: Object.fromEntries(
       TIMEOUT_PHASES.map((phase) => [phase, phaseTimeoutMs(config, phase)]),
     ),

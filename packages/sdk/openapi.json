@@ -172,6 +172,13 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "parser": {
+                  "type": "string"
+                },
+                "baseline": {
+                  "type": "string",
+                  "enum": ["compare", "strict"]
                 }
               },
               "required": ["kind", "cmd"]
@@ -272,9 +279,20 @@
                   },
                   "minItems": 1,
                   "maxItems": 20
+                },
+                "parser": {
+                  "type": "string",
+                  "enum": ["eslint-json", "tsc", "node-test-tap", "vitest-json", "exit-code"],
+                  "description": "Output parser for the base comparison (eslint-json appends --format json to eslint / `npm run`; vitest-json appends --reporter=json). Unset: detected from the argv, tsc for typecheck, else exit-code."
+                },
+                "baseline": {
+                  "type": "string",
+                  "enum": ["compare", "strict"],
+                  "description": "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare."
                 }
               },
-              "required": ["kind", "cmd"]
+              "required": ["kind", "cmd"],
+              "additionalProperties": false
             },
             "maxItems": 20,
             "description": "Check commands run in the sandbox (argv, no shell)"
@@ -599,9 +617,20 @@
                   },
                   "minItems": 1,
                   "maxItems": 20
+                },
+                "parser": {
+                  "type": "string",
+                  "enum": ["eslint-json", "tsc", "node-test-tap", "vitest-json", "exit-code"],
+                  "description": "Output parser for the base comparison (eslint-json appends --format json to eslint / `npm run`; vitest-json appends --reporter=json). Unset: detected from the argv, tsc for typecheck, else exit-code."
+                },
+                "baseline": {
+                  "type": "string",
+                  "enum": ["compare", "strict"],
+                  "description": "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare."
                 }
               },
-              "required": ["kind", "cmd"]
+              "required": ["kind", "cmd"],
+              "additionalProperties": false
             },
             "maxItems": 20,
             "description": "Check commands run in the sandbox (argv, no shell)"
