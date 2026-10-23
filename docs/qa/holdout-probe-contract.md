@@ -51,3 +51,15 @@ rejection reason is logged, never its text) as long as at least 3 valid scenario
 (`MIN_SCENARIOS_AFTER_DROP`); a scenario missing given/when/then is dropped the same way.
 Below that, the batch is rejected and regenerated under the normal one-retry rule. Malformed
 JSON, a bad scenario count and duplicate ids still reject the batch.
+
+Committed snapshot: probes run on a copy of the committed tree. Binary assets (images, media,
+models, fonts, archives) and any file above 4 MiB are materialized as empty placeholder files,
+so imports still resolve while the snapshot stays within memory limits; the planner is told how
+many placeholders exist. A QA preparation failure surfaces its Matrix-authored cause (redacted,
+bounded) through `FactoryToolingError.operatorCause`; driver messages without it stay generic.
+
+Review lanes: review sandboxes have no git metadata by design. The host computes base,
+merge-base and head SHAs, the changed files, the diff, ADRs/architecture docs and the derived
+code graph, and passes them in the lane prompt. Lanes report environment limitations as
+`toolingNotes`; findings that are plainly about the review environment (no code location, no
+changed file named) are reclassified as tooling notes host-side and never block.

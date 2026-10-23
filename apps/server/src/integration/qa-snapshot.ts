@@ -9,8 +9,20 @@ import type { PrivateStateOwner } from "../state-owner.js";
 
 const execute = promisify(execFile);
 
+/** Committed files above this size are materialized as empty placeholders (path kept). */
+export const QA_SNAPSHOT_MAX_FILE_BYTES = 4 * 1024 ** 2;
+/** Media/model/font assets probes never need as bytes: placeholders keep imports resolvable. */
+const BINARY_ASSET =
+  /\.(?:png|jpe?g|gif|webp|avif|heic|bmp|ico|tiff?|mp4|webm|mov|m4v|avi|mp3|wav|m4a|aac|ogg|flac|onnx|tflite|mlmodel|bin|pt|pth|safetensors|otf|ttf|woff2?|eot|pdf|zip|gz|tgz|xz|7z|jar|aar|apk|aab|ipa|so|dylib|a|db|sqlite|db-wal|db-shm)$/i;
+
+export function qaSnapshotPlaceholder(path: string, size: number): boolean {
+  return size > QA_SNAPSHOT_MAX_FILE_BYTES || BINARY_ASSET.test(path);
+}
+
 export interface QaSnapshot {
   headSha: string;
+  /** Committed files materialized empty (binary assets or above the per-file cap). */
+  placeholders?: number;
   directory: string;
   materialize(directory: string): void;
 }
@@ -44,26 +56,39 @@ export async function committedQaSnapshot(
       });
       check();
       return result.stdout;
-    } catch {
+    } catch (error) {
       check();
+      const code = (error as { code?: unknown }).code;
+      const reason =
+        code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
+          ? "output exceeded the snapshot buffer"
+          : (error as { killed?: boolean }).killed
+            ? "timed out"
+            : typeof code === "number"
+              ? `git exit ${code}`
+              : "git unavailable";
       throw new FactoryToolingError(
-        `QA committed snapshot ${args[0]} failed; verify trusted workspace metadata`,
+        `QA committed snapshot ${args[0]} failed (${reason}); verify trusted workspace metadata`,
       );
     }
   };
-  const tree = (await read("ls-tree", "-r", "-z", headSha)).toString("utf8");
+  const tree = (await read("ls-tree", "-r", "-z", "-l", headSha)).toString("utf8");
   const files: { path: string; mode: number; content: Buffer }[] = [];
   let bytes = 0;
+  let placeholders = 0;
   for (const record of tree.split("\0").filter(Boolean)) {
     const tab = record.indexOf("\t");
-    const [mode, type, sha] = record.slice(0, tab).split(" ");
+    const [mode, type, sha, sizeText] = record.slice(0, tab).split(/ +/);
     const path = record.slice(tab + 1);
+    const size = Number(sizeText);
     if (
       tab < 0 ||
       !/^(100644|100755)$/.test(mode ?? "") ||
       type !== "blob" ||
       !sha ||
       !/^[a-f0-9]{40,64}$/.test(sha) ||
+      !Number.isSafeInteger(size) ||
+      size < 0 ||
       isAbsolute(path) ||
       path.includes("\\") ||
       path.split("/").some((part) => !part || part === "." || part === ".." || part === ".git")
@@ -71,7 +96,11 @@ export async function committedQaSnapshot(
       throw new FactoryToolingError(
         "QA snapshot refuses unsafe paths or non-regular committed files",
       );
-    const content = await read("cat-file", "blob", sha);
+    // Large and binary assets (models, media, fonts) are never read: an empty file keeps the path
+    // importable while the snapshot stays within memory and size limits.
+    const placeholder = qaSnapshotPlaceholder(path, size);
+    if (placeholder) placeholders += 1;
+    const content = placeholder ? Buffer.alloc(0) : await read("cat-file", "blob", sha);
     bytes += content.length;
     if (bytes > 128 * 1024 ** 2 || files.length >= 100_000)
       throw new FactoryToolingError("QA committed snapshot exceeds resource limits");
@@ -102,5 +131,5 @@ export async function committedQaSnapshot(
   const directory = await ctx.scratchDir();
   check();
   materialize(directory);
-  return { headSha, directory, materialize };
+  return { headSha, directory, materialize, placeholders };
 }

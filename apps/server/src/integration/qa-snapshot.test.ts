@@ -89,7 +89,7 @@ async function fixture() {
   });
   const git = new WorktreeGitPort({ trusted });
   vi.spyOn(git, "cleanForChecks").mockResolvedValue("a".repeat(40));
-  fake.tree = `100644 blob ${"b".repeat(40)}\tsrc/add.ts\0`;
+  fake.tree = `100644 blob ${"b".repeat(40)}      26\tsrc/add.ts\0`;
   fake.blobs.set("b".repeat(40), Buffer.from("export const answer = 42;\n"));
   return { root, context, git, trusted, scratch };
 }
@@ -98,18 +98,18 @@ test("snapshot materializes only committed blobs, preserves binary bytes and exc
   const setup = await fixture();
   try {
     const bytes = Buffer.from([0, 255, 13, 10]);
-    fake.tree += `100644 blob ${"c".repeat(40)}\tassets/image.bin\0`;
+    fake.tree += `100644 blob ${"c".repeat(40)}       4\tassets/image.dat\0`;
     fake.blobs.set("c".repeat(40), bytes);
     const snapshot = await committedQaSnapshot(setup.context, setup.git, setup.trusted);
     expect(snapshot.headSha).toBe("a".repeat(40));
     expect(await readFile(join(snapshot.directory, "src/add.ts"), "utf8")).toBe(
       "export const answer = 42;\n",
     );
-    expect(await readFile(join(snapshot.directory, "assets/image.bin"))).toEqual(bytes);
+    expect(await readFile(join(snapshot.directory, "assets/image.dat"))).toEqual(bytes);
     expect((await readdir(snapshot.directory)).sort()).toEqual(["assets", "src"]);
     const next = await setup.context.scratchDir();
     snapshot.materialize(next);
-    expect(await readFile(join(next, "assets/image.bin"))).toEqual(bytes);
+    expect(await readFile(join(next, "assets/image.dat"))).toEqual(bytes);
     expect(() => snapshot.materialize(setup.context.workdir)).toThrow("outside and not contain");
   } finally {
     await rm(setup.root, { recursive: true, force: true });
@@ -123,7 +123,7 @@ test.each(["symlink", "traversal", "git metadata"])(
     try {
       const path =
         kind === "traversal" ? "../outside" : kind === "git metadata" ? ".git/config" : "src/link";
-      fake.tree = `${kind === "symlink" ? "120000" : "100644"} blob ${"b".repeat(40)}\t${path}\0`;
+      fake.tree = `${kind === "symlink" ? "120000" : "100644"} blob ${"b".repeat(40)} 26\t${path}\0`;
       await expect(committedQaSnapshot(setup.context, setup.git, setup.trusted)).rejects.toThrow(
         "unsafe paths or non-regular",
       );
@@ -167,6 +167,37 @@ test("guardian-only replacement during a committed blob read prevents snapshot p
     resume();
     await owner.close();
     await replacement?.close();
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test("large and binary committed assets become empty placeholders and are never read (mock Git)", async () => {
+  const setup = await fixture();
+  try {
+    // A 49 MB model (NEO-8) used to overflow the 16 MB read buffer and fail QA preparation.
+    fake.tree += `100644 blob ${"d".repeat(40)} 49634121\tapp/assets/model.onnx\0`;
+    fake.tree += `100644 blob ${"e".repeat(40)}     2048\tapp/assets/icon.png\0`;
+    fake.tree += `100644 blob ${"f".repeat(40)}  5000000\tapp/data/huge.json\0`;
+    const snapshot = await committedQaSnapshot(setup.context, setup.git, setup.trusted);
+    expect(snapshot.placeholders).toBe(3);
+    for (const path of ["app/assets/model.onnx", "app/assets/icon.png", "app/data/huge.json"])
+      expect((await readFile(join(snapshot.directory, path))).length).toBe(0);
+    expect(await readFile(join(snapshot.directory, "src/add.ts"), "utf8")).toBe(
+      "export const answer = 42;\n",
+    );
+  } finally {
+    await rm(setup.root, { recursive: true, force: true });
+  }
+});
+
+test("a failed committed read names a bounded reason (mock Git)", async () => {
+  const setup = await fixture();
+  try {
+    fake.tree += `100644 blob ${"9".repeat(40)}       10\tsrc/missing.ts\0`;
+    await expect(committedQaSnapshot(setup.context, setup.git, setup.trusted)).rejects.toThrow(
+      "QA committed snapshot cat-file failed (git unavailable)",
+    );
+  } finally {
     await rm(setup.root, { recursive: true, force: true });
   }
 });

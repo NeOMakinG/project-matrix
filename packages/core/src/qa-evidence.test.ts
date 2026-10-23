@@ -105,3 +105,25 @@ test("planner failure blocks with generic ticket feedback, never model text", as
     privateText,
   );
 });
+
+test("a driver-vouched operator cause is surfaced redacted; the message alone never is", async () => {
+  const harness = createHarness();
+  harness.deps.qa = {
+    run: async () => {
+      const error = new FactoryToolingError("PRIVATE scenario text");
+      error.operatorCause = `QA committed snapshot cat-file failed (output exceeded the snapshot buffer) token=${"x".repeat(40)}`;
+      throw error;
+    },
+  };
+  await harness.setup();
+  const ticket = harness.tickets.add("addition");
+  await harness.drain();
+  const qaRun = (await harness.store.listRuns({ ticketId: ticket.id })).find(
+    (run) => run.phase === "qa",
+  );
+  expect(qaRun?.summary).toContain("output exceeded the snapshot buffer");
+  expect(qaRun?.summary).toContain("[REDACTED]");
+  expect(JSON.stringify({ c: harness.tickets.comments, e: harness.events })).not.toContain(
+    "PRIVATE scenario text",
+  );
+});

@@ -450,6 +450,8 @@ test("SHA change after probe planning aborts before any host execution", async (
     const outcome = await createDefaultHandlers(setup.harness.deps).qa(setup.context);
     expect(outcome.ok).toBe(false);
     expect(outcome.summary).toContain("QA probe preparation failed");
+    // The real cause is surfaced (Matrix-authored, redacted), not just a generic failure.
+    expect(outcome.summary).toContain("committed SHA changed during isolated probes");
     expect(setup.executions).toEqual([]);
   } finally {
     await rm(setup.root, { recursive: true, force: true });
