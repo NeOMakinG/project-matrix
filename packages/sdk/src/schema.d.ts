@@ -270,7 +270,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** Update a project's tracker, checks, per-phase model plan, run timeouts or implement guidance (host-side config) */
+    /** Update a project's tracker, checks, per-phase model plan, run timeouts, sandbox resources or implement guidance (host-side config) */
     patch: {
       parameters: {
         query?: never;
@@ -4264,7 +4264,16 @@ export interface components {
         parser?: string;
         /** @enum {string} */
         baseline?: "compare" | "strict";
+        retryFlaky?: boolean;
       }[];
+      /** @description Per-phase sandbox CPU/memory overrides (host default otherwise) */
+      resources?: {
+        [key: string]: {
+          cpus?: number;
+          memoryGb?: number;
+        };
+      };
+      baselineWarmup?: boolean;
       /** @description Effective wall-clock limit per run of each phase, in ms */
       timeouts?: {
         [key: string]: number;
@@ -4313,10 +4322,15 @@ export interface components {
          * @enum {string}
          */
         baseline?: "compare" | "strict";
+        /** @description Test checks (compare mode): re-run once before a new failure counts; failures passing on the retry are reported as flaky (max 3 per check, more count as real). Default true. */
+        retryFlaky?: boolean;
       }[];
       repo?: components["schemas"]["ExistingRepo"];
       models?: components["schemas"]["ModelPlan"];
       timeouts?: components["schemas"]["PhaseTimeouts"];
+      resources?: components["schemas"]["PhaseResources"];
+      /** @description Precompute base-commit check results when a ticket starts (in parallel with implement), so the checks phase finds them cached. Default false. */
+      baselineWarmup?: boolean;
       /** @description A model run with no output for this long stops as 'runner idle', in ms (1-120 min). Default 10 min. */
       idleTimeoutMs?: number;
       /** @description Operator-written guidance appended to the implement prompt as trusted project configuration (e.g. which test command to use for targeted runs). */
@@ -4382,6 +4396,33 @@ export interface components {
       review?: number;
       qa?: number;
     };
+    /** @description Sandbox CPU/memory per phase, e.g. {checks:{cpus:8,memoryGb:16}}. Unset: host default (2 CPUs, 4 GB). Clamped to the host's MATRIX_SANDBOX_MAX_CPUS / MATRIX_SANDBOX_MAX_MEMORY_GB. On PATCH the object replaces the previous overrides; null clears them. */
+    PhaseResources: {
+      spike?: {
+        cpus?: number;
+        memoryGb?: number;
+      };
+      design?: {
+        cpus?: number;
+        memoryGb?: number;
+      };
+      implement?: {
+        cpus?: number;
+        memoryGb?: number;
+      };
+      checks?: {
+        cpus?: number;
+        memoryGb?: number;
+      };
+      review?: {
+        cpus?: number;
+        memoryGb?: number;
+      };
+      qa?: {
+        cpus?: number;
+        memoryGb?: number;
+      };
+    };
     UpdateProject: {
       repo?: {
         /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
@@ -4417,9 +4458,14 @@ export interface components {
          * @enum {string}
          */
         baseline?: "compare" | "strict";
+        /** @description Test checks (compare mode): re-run once before a new failure counts; failures passing on the retry are reported as flaky (max 3 per check, more count as real). Default true. */
+        retryFlaky?: boolean;
       }[];
       models?: components["schemas"]["ModelPlan"];
       timeouts?: components["schemas"]["PhaseTimeouts"] & (Record<string, never> | null);
+      resources?: components["schemas"]["PhaseResources"] & (Record<string, never> | null);
+      /** @description Precompute base-commit check results when a ticket starts (in parallel with implement), so the checks phase finds them cached. Default false. */
+      baselineWarmup?: boolean;
       /** @description null resets to the default */
       idleTimeoutMs?: number | null;
       /** @description null removes it */

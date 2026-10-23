@@ -122,10 +122,31 @@ export class MemoryCore implements CorePort {
             ),
           }
         : {}),
+      ...(patch.resources
+        ? {
+            resources: Object.fromEntries(
+              Object.entries(patch.resources).flatMap(([k, r]) =>
+                r
+                  ? [
+                      [
+                        k,
+                        {
+                          ...(r.cpus !== undefined ? { cpus: r.cpus } : {}),
+                          ...(r.memoryGb !== undefined ? { memoryGb: r.memoryGb } : {}),
+                        },
+                      ],
+                    ]
+                  : [],
+              ),
+            ),
+          }
+        : {}),
+      ...(patch.baselineWarmup !== undefined ? { baselineWarmup: patch.baselineWarmup } : {}),
       ...(typeof patch.idleTimeoutMs === "number" ? { idleTimeoutMs: patch.idleTimeoutMs } : {}),
       ...(patch.implementGuidance ? { implementGuidance: patch.implementGuidance } : {}),
     };
     if (patch.timeouts === null) delete updated.timeouts;
+    if (patch.resources === null) delete updated.resources;
     if (patch.idleTimeoutMs === null) delete updated.idleTimeoutMs;
     if (patch.implementGuidance === null) delete updated.implementGuidance;
     this.projects.set(projectId, updated);

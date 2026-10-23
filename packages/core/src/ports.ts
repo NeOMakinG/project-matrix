@@ -1,3 +1,5 @@
+import type { SandboxResourceRequest } from "./types.js";
+
 export const PHASES = [
   "spike",
   "design",
@@ -53,6 +55,8 @@ export interface RunRequest {
   timeoutMs: number;
   /** No output for this long stops the run as idle; overrides the runner's default. */
   idleTimeoutMs?: number;
+  /** Container CPU/memory for this run (project per-phase setting; host clamps it). */
+  resources?: SandboxResourceRequest;
 }
 
 export type RunEventKind = "log" | "tool" | "file" | "cost" | "error" | "done";
@@ -101,12 +105,25 @@ export interface SandboxExecSpec {
   timeoutMs: number;
   maxOutputBytes?: number;
   readOnly?: boolean;
+  /** Container CPU/memory (project per-phase setting; the sandbox clamps it to host bounds). */
+  resources?: SandboxResourceRequest;
+  /**
+   * Structured report the command writes to `REPORT_MOUNT/<name>` (eslint -o, vitest
+   * --outputFile, node:test reporter destination). The sandbox mounts a fresh host-only directory
+   * there, then reads the file host-side (regular file only, no symlink, at most `maxBytes`).
+   */
+  report?: { name: string; maxBytes: number };
 }
+
+/** Where the host-only report directory of `SandboxExecSpec.report` appears inside the sandbox. */
+export const REPORT_MOUNT = "/matrix-report";
 
 export interface SandboxExecResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Contents of the requested report file, or why it is unusable (missing, too big, not a file). */
+  report?: { text: string } | { error: string };
 }
 
 export interface Sandbox {

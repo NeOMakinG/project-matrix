@@ -70,6 +70,8 @@ export function projectRoutes(app: App, ops: Operations) {
             : {}),
           ...(body.models ? { models: modelPlan(body.models) } : {}),
           ...(body.timeouts ? { timeouts: body.timeouts } : {}),
+          ...(body.resources ? { resources: body.resources } : {}),
+          ...(body.baselineWarmup !== undefined ? { baselineWarmup: body.baselineWarmup } : {}),
           ...(body.idleTimeoutMs !== undefined ? { idleTimeoutMs: body.idleTimeoutMs } : {}),
           ...(body.implementGuidance !== undefined
             ? { implementGuidance: body.implementGuidance }
@@ -85,7 +87,7 @@ export function projectRoutes(app: App, ops: Operations) {
       path: "/v1/projects/{projectId}",
       tag: "projects",
       summary:
-        "Update a project's tracker, checks, per-phase model plan, run timeouts or implement guidance (host-side config)",
+        "Update a project's tracker, checks, per-phase model plan, run timeouts, sandbox resources or implement guidance (host-side config)",
       params: ProjectParam,
       body: S.UpdateProject,
       response: S.Project,
@@ -99,6 +101,8 @@ export function projectRoutes(app: App, ops: Operations) {
           ...(body.checks ? { checks: body.checks } : {}),
           ...(body.models ? { models: modelPlan(body.models) } : {}),
           ...(body.timeouts !== undefined ? { timeouts: body.timeouts } : {}),
+          ...(body.resources !== undefined ? { resources: body.resources } : {}),
+          ...(body.baselineWarmup !== undefined ? { baselineWarmup: body.baselineWarmup } : {}),
           ...(body.idleTimeoutMs !== undefined ? { idleTimeoutMs: body.idleTimeoutMs } : {}),
           ...(body.implementGuidance !== undefined
             ? { implementGuidance: body.implementGuidance }

@@ -20,6 +20,26 @@ export interface BaselinePort {
     ctx: PhaseContext,
     checks: CheckCommand[],
   ): Promise<{ baseSha: string; results: (BaselineRun | { error: string })[] }>;
+  /**
+   * Precomputes (and caches) base results for these checks, e.g. when a ticket starts so the
+   * checks phase never waits on the base run. Best effort: never throws.
+   */
+  warm?(ctx: PhaseContext, checks: CheckCommand[]): Promise<void>;
+  /** Stores the full failure lists host-side; returns a reference for the receipt. */
+  evidence?(ctx: PhaseContext, record: CheckEvidence): Promise<string | undefined>;
+}
+
+/** Full (sanitized, uncapped up to MAX_FAILURES) failure lists of one gated check. */
+export interface CheckEvidence {
+  kind: string;
+  index: number;
+  parser: CheckParser;
+  mode: BaselineMode;
+  baseSha?: string;
+  note: string;
+  newFailures: string[];
+  preExisting: string[];
+  flaky: string[];
 }
 
 export interface BaselineVerdict {
@@ -33,9 +53,13 @@ export interface BaselineVerdict {
   /** Failures present on base too; -1 when unknown (exit-code mode, both failing). */
   preExisting: number;
   note: string;
+  /** New on this branch but passed on a retry (sanitized, at most MAX_LISTED); not failing. */
+  flaky?: string[];
+  /** Host-side evidence reference with the full lists. */
+  evidence?: string;
 }
 
-const MAX_LISTED = 50;
+export const MAX_LISTED = 50;
 
 /** Multiset difference: each branch failure consumes one identical base failure. */
 export function newFailures(branch: string[], base: string[]): string[] {
@@ -118,8 +142,28 @@ export function verdictOf(receipt: Receipt): BaselineVerdict | undefined {
   if (!b || typeof b !== "object") return undefined;
   if (typeof b.newCount !== "number" || typeof b.preExisting !== "number") return undefined;
   if (!Array.isArray(b.newFailures)) return undefined;
-  const newFailures = b.newFailures.filter((f): f is string => typeof f === "string");
-  return { ...(b as BaselineVerdict), newFailures };
+  const strings = (v: unknown[]) => v.filter((f): f is string => typeof f === "string");
+  const newFailures = strings(b.newFailures);
+  const { flaky: rawFlaky, ...rest } = b as BaselineVerdict;
+  const flaky = Array.isArray(rawFlaky) ? strings(rawFlaky) : undefined;
+  return { ...rest, newFailures, ...(flaky?.length ? { flaky } : {}) };
+}
+
+/**
+ * First `max` new failure identities across receipts, sanitized for a tracker comment (the
+ * receipts hold untrusted tool output), prefixed with the check kind.
+ */
+export function newFailureNames(receipts: readonly Receipt[], max = 20): string[] {
+  const out: string[] = [];
+  for (const r of receipts) {
+    const v = verdictOf(r);
+    if (!v || v.ok) continue;
+    for (const f of v.newFailures) {
+      if (out.length >= max) return out;
+      out.push(`${sanitizeFailure(r.kind, 20)}: ${sanitizeFailure(f, 180)}`);
+    }
+  }
+  return out;
 }
 
 const UNIT: Record<string, [string, string]> = {
@@ -167,6 +211,7 @@ export function checksStatusLine(receipts: readonly Receipt[]): string | undefin
     if (v.preExisting > 0)
       pre.push(`${Math.floor(v.preExisting)} pre-existing ${unit(r.kind, v.preExisting)}`);
     else if (v.preExisting < 0) pre.push(`${r.kind} failing on base`);
+    if (v.flaky?.length) pre.push(`${v.flaky.length} flaky ${unit(r.kind, v.flaky.length)}`);
   }
   if (!any) return undefined;
   return `${fresh} new failure${fresh === 1 ? "" : "s"}${pre.length ? ` (${pre.join(", ")})` : ""}`;

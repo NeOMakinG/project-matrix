@@ -179,10 +179,31 @@
                 "baseline": {
                   "type": "string",
                   "enum": ["compare", "strict"]
+                },
+                "retryFlaky": {
+                  "type": "boolean"
                 }
               },
               "required": ["kind", "cmd"]
             }
+          },
+          "resources": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "cpus": {
+                  "type": "number"
+                },
+                "memoryGb": {
+                  "type": "number"
+                }
+              }
+            },
+            "description": "Per-phase sandbox CPU/memory overrides (host default otherwise)"
+          },
+          "baselineWarmup": {
+            "type": "boolean"
           },
           "timeouts": {
             "type": "object",
@@ -289,6 +310,10 @@
                   "type": "string",
                   "enum": ["compare", "strict"],
                   "description": "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare."
+                },
+                "retryFlaky": {
+                  "type": "boolean",
+                  "description": "Test checks (compare mode): re-run once before a new failure counts; failures passing on the retry are reported as flaky (max 3 per check, more count as real). Default true."
                 }
               },
               "required": ["kind", "cmd"],
@@ -305,6 +330,13 @@
           },
           "timeouts": {
             "$ref": "#/components/schemas/PhaseTimeouts"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/PhaseResources"
+          },
+          "baselineWarmup": {
+            "type": "boolean",
+            "description": "Precompute base-commit check results when a ticket starts (in parallel with implement), so the checks phase finds them cached. Default false."
           },
           "idleTimeoutMs": {
             "type": "integer",
@@ -530,6 +562,109 @@
         "additionalProperties": false,
         "description": "Wall-clock limit per run of a phase, in ms (5-120 min). Phases left out use the default (30 min). On PATCH the object replaces the previous overrides; null clears them all."
       },
+      "PhaseResources": {
+        "type": "object",
+        "properties": {
+          "spike": {
+            "type": "object",
+            "properties": {
+              "cpus": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 128
+              },
+              "memoryGb": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              }
+            },
+            "additionalProperties": false
+          },
+          "design": {
+            "type": "object",
+            "properties": {
+              "cpus": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 128
+              },
+              "memoryGb": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              }
+            },
+            "additionalProperties": false
+          },
+          "implement": {
+            "type": "object",
+            "properties": {
+              "cpus": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 128
+              },
+              "memoryGb": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              }
+            },
+            "additionalProperties": false
+          },
+          "checks": {
+            "type": "object",
+            "properties": {
+              "cpus": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 128
+              },
+              "memoryGb": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              }
+            },
+            "additionalProperties": false
+          },
+          "review": {
+            "type": "object",
+            "properties": {
+              "cpus": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 128
+              },
+              "memoryGb": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              }
+            },
+            "additionalProperties": false
+          },
+          "qa": {
+            "type": "object",
+            "properties": {
+              "cpus": {
+                "type": "number",
+                "minimum": 0.5,
+                "maximum": 128
+              },
+              "memoryGb": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 512
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false,
+        "description": "Sandbox CPU/memory per phase, e.g. {checks:{cpus:8,memoryGb:16}}. Unset: host default (2 CPUs, 4 GB). Clamped to the host's MATRIX_SANDBOX_MAX_CPUS / MATRIX_SANDBOX_MAX_MEMORY_GB. On PATCH the object replaces the previous overrides; null clears them."
+      },
       "UpdateProject": {
         "type": "object",
         "properties": {
@@ -627,6 +762,10 @@
                   "type": "string",
                   "enum": ["compare", "strict"],
                   "description": "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare."
+                },
+                "retryFlaky": {
+                  "type": "boolean",
+                  "description": "Test checks (compare mode): re-run once before a new failure counts; failures passing on the retry are reported as flaky (max 3 per check, more count as real). Default true."
                 }
               },
               "required": ["kind", "cmd"],
@@ -647,6 +786,20 @@
                 "type": ["object", "null"]
               }
             ]
+          },
+          "resources": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PhaseResources"
+              },
+              {
+                "type": ["object", "null"]
+              }
+            ]
+          },
+          "baselineWarmup": {
+            "type": "boolean",
+            "description": "Precompute base-commit check results when a ticket starts (in parallel with implement), so the checks phase finds them cached. Default false."
           },
           "idleTimeoutMs": {
             "type": ["integer", "null"],
@@ -2298,7 +2451,7 @@
     "/v1/projects/{projectId}": {
       "patch": {
         "tags": ["projects"],
-        "summary": "Update a project's tracker, checks, per-phase model plan, run timeouts or implement guidance (host-side config)",
+        "summary": "Update a project's tracker, checks, per-phase model plan, run timeouts, sandbox resources or implement guidance (host-side config)",
         "security": [
           {
             "bearer": []

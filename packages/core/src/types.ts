@@ -57,6 +57,17 @@ export interface CheckCommand {
   parser?: CheckParser;
   /** Unset: the baseline port's default (compare for existing repos); exit-code checks: strict. */
   baseline?: BaselineMode;
+  /**
+   * Test checks only (default true): a new failure must fail again on one re-run of the check to
+   * count; failures that pass on the retry are reported as flaky (at most MAX_FLAKY per check).
+   */
+  retryFlaky?: boolean;
+}
+
+/** Sandbox CPU/memory for one phase's containers; unset fields use the host default (2 CPUs, 4 GB). */
+export interface SandboxResourceRequest {
+  cpus?: number;
+  memoryGb?: number;
 }
 
 export interface ProjectConfig {
@@ -84,6 +95,13 @@ export interface ProjectConfig {
   runTimeoutMs: number;
   /** Per-phase overrides of `runTimeoutMs` (ms); phases left out use `runTimeoutMs`. */
   timeouts?: Partial<Record<Phase, number>>;
+  /**
+   * Per-phase sandbox resources (checks and agent runs), clamped by the host's max bounds
+   * (MATRIX_SANDBOX_MAX_CPUS / MATRIX_SANDBOX_MAX_MEMORY_GB). Unset: host default.
+   */
+  resources?: Partial<Record<Phase, SandboxResourceRequest>>;
+  /** Precompute base check results when a ticket starts (in parallel with implement). */
+  baselineWarmup?: boolean;
   /** Model runs with no output for this long stop as "runner idle" (ms). Unset: runner default. */
   idleTimeoutMs?: number;
   /** Operator-written implement guidance (trusted project config), appended to the prompt. */

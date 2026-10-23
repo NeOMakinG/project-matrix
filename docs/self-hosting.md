@@ -284,13 +284,49 @@ no tech-watch digests. The project config lives in the Matrix database.
   `timeouts` replaces the previous overrides as a whole; `null` resets any of the three.
   Example, a 60 min implement for a large test suite:
   `PATCH /v1/projects/{id}` `{"timeouts": {"implement": 3600000}}`.
+- **Sandbox resources**: containers default to 2 CPUs / 4 GB. Override per phase with
+  `resources: {checks: {cpus: 8, memoryGb: 16}}` (same phases as `timeouts`; `cpus` 0.5-128,
+  `memoryGb` integer 1-512); the host clamps every request to `MATRIX_SANDBOX_MAX_CPUS`
+  (default: all cores) and `MATRIX_SANDBOX_MAX_MEMORY_GB` (default: half the RAM), and refuses
+  to start a task when less free memory than the request is available. `checks` covers the
+  checks, their base-commit runs and flaky retries; model phases apply to the agent container.
+  PATCH replaces the overrides; `null` clears them. Podman only (bwrap has no cgroup limits).
+- **Baseline checks** (existing repos compare by default): a failing check is re-run on the
+  merge-base and only failures absent there fail it.
+  - *Report files*: checks with a structured parser write their report to a file instead of
+    stdout (one 13 MB JSON line would exceed the 4 MiB stdout line limit). Matrix injects
+    `--format json -o /matrix-report/<f>` for eslint, `--reporter=default --reporter=json
+    --outputFile.json=/matrix-report/<f>` for vitest, and
+    `NODE_OPTIONS=--test-reporter=tap --test-reporter-destination=/matrix-report/<f>
+    --test-reporter=spec --test-reporter-destination=stdout` for node:test (so it also works
+    through `npm test`). `/matrix-report` is a fresh host-only directory per run; the host reads
+    the file after the container is gone (regular single-link file only, no symlink/FIFO, at
+    most 64 MiB) and deletes it. Commands that pick their own reporter/output, `tsc`, and shell
+    wrappers keep parsing stdout; a missing report falls back to stdout, an unparseable one
+    fails closed. The report is untrusted like stdout.
+  - *Flaky tests*: before a new failure of a `test` check counts, the check is re-run once on
+    the run branch (whole check: node:test identities carry no file to target). Only failures
+    that fail again count; the others are reported as flaky (receipt, status comment). More
+    than 3 vanishing failures in one check, a timed-out or unparseable retry, all count as real.
+    `retryFlaky: false` on a check disables it. The retry starts from the same clean committed
+    tree (untracked files wiped, dependencies reinstalled), so a first run cannot leave state
+    that makes it pass, and a retry that fails with different new failures excuses nothing.
+    Known limit: base runs are not retried, so a test that flaked on the base commit counts as
+    pre-existing for that base SHA (delete `$MATRIX_DATA_DIR/baseline/cache/<project>` to redo).
+  - *Visibility*: full new / pre-existing / flaky lists go to
+    `$MATRIX_DATA_DIR/baseline/evidence/<project>/<ticket>/<run>-<n>-<kind>.json` (0600); the
+    Linear status comment lists the first 20 new failures on their own lines.
+  - *Cache and warm-up*: base results are cached per (project, base SHA, argv, parser, lockfile
+    hash), so the base runs once per base commit, not per attempt. `baselineWarmup: true`
+    starts the base runs in the background when implement starts (the run branch still sits on
+    the base tip), so the checks phase finds them cached.
 - **Implement guidance**: the implement prompt lists the project's check commands and asks the
   agent to run only targeted tests for the files it changed, since the checks phase runs the
   full commands afterwards. `implementGuidance` (up to 4000 chars, operator-written, trusted)
   is appended to that prompt, e.g. the exact command for a single test file.
 - **Later changes**: `PATCH /v1/projects/{id}` with any of `repo.editablePaths`, `repo.setup`,
-  `repo.setupScripts`, `tickets`, `checks`, `models`, `timeouts`, `idleTimeoutMs`,
-  `implementGuidance`.
+  `repo.setupScripts`, `tickets`, `checks`, `models`, `timeouts`, `resources`,
+  `baselineWarmup`, `idleTimeoutMs`, `implementGuidance`.
 
 ### How a run ends
 

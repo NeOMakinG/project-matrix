@@ -39,6 +39,9 @@ export interface Project {
   checks?: CheckSpec[];
   /** Effective wall-clock limit per run of each phase (ms). */
   timeouts?: Record<string, number>;
+  /** Per-phase sandbox CPU/memory overrides. */
+  resources?: Record<string, { cpus?: number; memoryGb?: number }>;
+  baselineWarmup?: boolean;
   idleTimeoutMs?: number;
   implementGuidance?: string;
 }
@@ -52,6 +55,8 @@ export interface CheckSpec {
   parser?: "eslint-json" | "tsc" | "node-test-tap" | "vitest-json" | "exit-code" | undefined;
   /** compare: only failures absent on the base commit fail; unset = compare for existing repos. */
   baseline?: "compare" | "strict" | undefined;
+  /** Test checks: re-run once before a new failure counts (default true). */
+  retryFlaky?: boolean | undefined;
 }
 export interface ModelPlanInput {
   spike?: { runner: RunnerKind; model: string };
@@ -90,9 +95,17 @@ export interface CreateProjectInput {
   };
   models?: ModelPlanInput;
   timeouts?: PhaseTimeoutsInput;
+  resources?: PhaseResourcesInput;
+  baselineWarmup?: boolean;
   idleTimeoutMs?: number;
   implementGuidance?: string;
 }
+/** Per-phase sandbox resources (validated at the HTTP edge, re-checked in mapping). */
+export type PhaseResourcesInput = {
+  [phase in "spike" | "design" | "implement" | "checks" | "review" | "qa"]?:
+    | { cpus?: number | undefined; memoryGb?: number | undefined }
+    | undefined;
+};
 /** Per-phase run wall clock in ms (validated 5-120 min at the HTTP edge). */
 export type PhaseTimeoutsInput = {
   [phase in "spike" | "design" | "implement" | "checks" | "review" | "qa"]?: number | undefined;
@@ -105,6 +118,9 @@ export interface UpdateProjectInput {
   models?: ModelPlanInput;
   /** Replaces the per-phase overrides; null clears them. */
   timeouts?: PhaseTimeoutsInput | null;
+  /** Replaces the per-phase overrides; null clears them. */
+  resources?: PhaseResourcesInput | null;
+  baselineWarmup?: boolean;
   /** null resets to the runner default. */
   idleTimeoutMs?: number | null;
   /** null removes it. */
