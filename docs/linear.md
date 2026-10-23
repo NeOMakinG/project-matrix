@@ -90,6 +90,14 @@ MATRIX_LINEAR_LIVE=1 LINEAR_API_KEY=... bunx vitest run packages/tickets/src/ada
   **Ready** (or, if it was blocked while in Ready, remove the label) to restart it in the same
   phase with fresh attempt/loop budgets; Matrix removes the label on restart. At most 3 restarts
   per ticket per UTC day (`maxRequeuesPerDay`), so a flapping board cannot loop the factory.
+- **Human stop:** moving an issue to a not-started column (Backlog, Todo, Triage; not Ready)
+  while its workflow is queued or running stops it: the active run is cancelled (container killed
+  / Orca terminal interrupted and closed), the workflow blocks with `stopped by human (moved to
+  Backlog)`, and the issue stays where the human put it. Matrix never writes those columns itself
+  while a workflow is active, so such a move is always a human's. Moving it to **Ready** later
+  restarts it in the same phase and does not count against `maxRequeuesPerDay`. The same stop is
+  available over the API: `POST /v1/runs/{id}/cancel`, `POST /v1/projects/{id}/tickets/{ticketId}/cancel`
+  and `POST /v1/projects/{id}/cancel` (every active workflow of the project).
 - **Own comments:** every comment Matrix posts carries a hidden `<!-- matrix:bot -->` marker. A
   comment counts as Matrix's only with that marker AND the API key's own identity, so a personal
   key does not hide the human's comments, and a pasted marker does not hide a human's either.

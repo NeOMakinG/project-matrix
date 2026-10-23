@@ -196,6 +196,13 @@ export function createCliRunner(
       else if (outcome.exitCode !== 0 || parsed.isError) status = "failed";
       else status = "ok";
       let summary = parsed.summary;
+      const interruption = status === "failed" ? interruptionOf(outcome) : undefined;
+      if (interruption)
+        // The real cause leads (it becomes the workflow's last error); the model's last message
+        // is kept below it as context only.
+        summary = truncate(
+          `run interrupted: ${definition.id} ${interruption}${parsed.summary ? `\nlast model message (context): ${parsed.summary}` : ""}`,
+        );
       if (status !== "ok" && outcome.stderrTail.trim()) {
         summary = truncate(`${summary}\n${outcome.stderrTail.trim()}`.trim());
       }
@@ -216,6 +223,22 @@ export function createCliRunner(
       };
     },
   };
+}
+
+const SIGNALS: Record<number, string> = { 1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM" };
+
+/**
+ * Why a process did not end on its own, or undefined for an ordinary exit. Container runtimes
+ * report a killed or stopped container as 128 + signal (137 = SIGKILL, 143 = SIGTERM).
+ */
+export function interruptionOf(outcome: {
+  exitCode: number;
+  interrupted?: string;
+}): string | undefined {
+  if (outcome.interrupted) return outcome.interrupted;
+  const signal = SIGNALS[outcome.exitCode - 128];
+  if (signal) return `exited ${outcome.exitCode} (${signal}: container stopped or killed)`;
+  return undefined;
 }
 
 export function safeJson(line: string): Record<string, unknown> | null {

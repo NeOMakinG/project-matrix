@@ -9,6 +9,7 @@ import {
   type RunEvent,
 } from "@matrix/core";
 import type { NewTicket, Ticket, TicketPatch, TicketQuery } from "@matrix/tickets";
+import type { CancelResult } from "./core-port.js";
 import {
   type Actor,
   type Adr,
@@ -33,6 +34,7 @@ import {
 } from "./core-port.js";
 
 const now = () => new Date().toISOString();
+const CANCEL_REASON = "stopped by human (cancelled via API)";
 
 function defaultAutonomy(): Record<Phase, AutonomyMode> {
   const autonomy = {} as Record<Phase, AutonomyMode>;
@@ -246,6 +248,30 @@ export class MemoryCore implements CorePort {
       throw new CoreError("invalid_state", `run already ${run.state}`);
     }
     return this.transition(id, "cancelled");
+  }
+
+  async cancelTicket(projectId: string, ticketId: string): Promise<CancelResult> {
+    this.project(projectId);
+    const active = [...this.runs.values()].filter(
+      (r) =>
+        r.projectId === projectId &&
+        r.ticketId === ticketId &&
+        ["queued", "running", "paused"].includes(r.state),
+    );
+    for (const run of active) this.transition(run.id, "cancelled");
+    return { projectId, ticketId, stopped: active.length > 0, reason: CANCEL_REASON };
+  }
+
+  async cancelProject(projectId: string): Promise<CancelResult[]> {
+    const ids = new Set(
+      [...this.runs.values()]
+        .filter(
+          (r) => r.projectId === projectId && ["queued", "running", "paused"].includes(r.state),
+        )
+        .map((r) => r.ticketId),
+    );
+    this.project(projectId);
+    return Promise.all([...ids].map((ticketId) => this.cancelTicket(projectId, ticketId)));
   }
 
   async listReceipts(runId: string) {

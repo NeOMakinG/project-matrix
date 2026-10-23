@@ -4,6 +4,7 @@ import {
   MATRIX_COMMENT_MARKER,
   NEEDS_HUMAN_LABEL,
   type NewTicket,
+  type StopRequest,
   type Ticket,
   type TicketComment,
   type TicketPatch,
@@ -48,6 +49,8 @@ export interface LinearStoreOptions extends LinearClientOptions {
 const norm = (s: string) => s.trim().toLowerCase();
 /** Coarse statuses the reconciler sets at phase start; with a phase they map to its column. */
 const PHASED = new Set<TicketStatus>(["in_progress", "review", "qa"]);
+/** Linear state types of columns before work starts (Backlog, Todo, Triage). */
+const NOT_STARTED_TYPES = new Set(["backlog", "unstarted", "triage"]);
 
 interface Team {
   id: string;
@@ -180,6 +183,22 @@ export class LinearTicketStore implements TicketStore {
       .filter((i) => openBlockers(i).length === 0)
       .map((i) => ({ ...toTicket(i, this.#names), status: "ready" as const }));
   }
+
+  /** One query per call (by issue number, in not-started columns), however many ids. */
+  async stopRequests(ids: string[]): Promise<StopRequest[]> {
+    const numbers = ids.filter((id) => this.#idOk(id)).map((id) => Number(id.split("-")[1]));
+    if (!numbers.length) return [];
+    const wanted = new Set(ids);
+    const issues = await this.#issues({
+      number: { in: numbers },
+      state: { type: { in: [...NOT_STARTED_TYPES] } },
+    });
+    return issues
+      .filter((i) => wanted.has(i.identifier) && NOT_STARTED_TYPES.has(i.state.type))
+      .filter((i) => norm(i.state.name) !== norm(this.#names.ready))
+      .map((i) => ({ id: i.identifier, column: i.state.name }));
+  }
+
   /**
    * A Matrix-blocked issue is eligible again once a human acts on it: moved to Ready from the
    * column it was blocked in, or (when blocked while in Ready) the needs-human label was removed.

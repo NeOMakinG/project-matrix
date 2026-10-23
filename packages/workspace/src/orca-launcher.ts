@@ -203,6 +203,11 @@ async function follow(
       outcome === "lost"
         ? `${stderrTail}\nOrca worker finished (${message?.payload.outcome ?? "unknown"}) without an exit file`.trim()
         : stderrTail,
+    ...(outcome === "lost"
+      ? {
+          interrupted: `Orca worker finished (${message?.payload.outcome ?? "unknown"}) without an exit file`,
+        }
+      : {}),
     outcome,
   };
 }

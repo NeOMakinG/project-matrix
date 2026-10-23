@@ -82,6 +82,18 @@ export interface TicketStore {
    * comments this Matrix instance authored (tracker identity AND Matrix's hidden marker).
    */
   listComments?(id: string): Promise<TicketComment[]>;
+  /**
+   * Optional: which of `ids` a human moved back to a not-started column (Backlog, Todo, Triage;
+   * never Ready). Matrix never writes those columns while a workflow runs, so for an active
+   * workflow this is a human stop request. Returns the column each one sits in.
+   */
+  stopRequests?(ids: string[]): Promise<StopRequest[]>;
+}
+
+export interface StopRequest {
+  id: string;
+  /** Tracker column the ticket was moved to, e.g. "Backlog". */
+  column: string;
 }
 
 export interface TicketComment {

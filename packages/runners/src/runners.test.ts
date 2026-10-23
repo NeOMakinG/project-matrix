@@ -93,7 +93,7 @@ const req: RunRequest = {
 function fakeExecutor(
   lines: string[],
   exitCode = 0,
-  extra: Partial<{ timedOut: boolean; cancelled: boolean }> = {},
+  extra: Partial<{ timedOut: boolean; cancelled: boolean; interrupted: string }> = {},
 ) {
   const calls: ProcessSpec[] = [];
   const executor: LineExecutor = async (spec, onLine) => {
@@ -230,6 +230,36 @@ describe("claude-code runner", () => {
         )
       ).status,
     ).toBe("cancelled");
+  });
+
+  test.each([
+    [137, {}, "run interrupted: claude-code exited 137 (SIGKILL: container stopped or killed)"],
+    [143, {}, "run interrupted: claude-code exited 143 (SIGTERM: container stopped or killed)"],
+    [
+      -1,
+      { interrupted: "process killed by SIGKILL" },
+      "run interrupted: claude-code process killed by SIGKILL",
+    ],
+  ] as const)("a killed run (exit %s) reports the real error first", async (code, extra, cause) => {
+    // The model got as far as its last assistant message, then the container was killed.
+    const { executor } = fakeExecutor(claudeLines.slice(0, 3), code, extra);
+    const result = await claudeCodeRunner({ gateway, executor }).run(
+      req,
+      () => {},
+      new AbortController().signal,
+    );
+    expect(result.status).toBe("failed");
+    expect(result.summary.split("\n")[0]).toBe(cause);
+  });
+
+  test("an ordinary failure keeps the model's message as the summary", async () => {
+    const { executor } = fakeExecutor(claudeLines.slice(0, 3), 1);
+    const result = await claudeCodeRunner({ gateway, executor }).run(
+      req,
+      () => {},
+      new AbortController().signal,
+    );
+    expect(result.summary).not.toMatch(/run interrupted/);
   });
 
   test("writes a transcript receipt with sha256", async () => {

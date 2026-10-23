@@ -20,10 +20,47 @@ const SAFE_ID = /^[A-Za-z0-9._-]+$/;
 export const QA_JUDGE_CRITERIA =
   "Every assertion in the full then clause must be demonstrated by host-executed evidence. Inspect probe source and actual output; exit zero, printed claims, simulations, or checking only part of the clause are insufficient. Absence claims require instrumentation installed before importing/exercising the software, covering the named surfaces (e.g. fs, net, console), and assertions of zero intercepted calls. A nonzero host exit cannot satisfy a scenario.";
 
+const NEGATED_VERB =
+  "(?:produce|perform|write|log|mutate|modify|access|emit|call|send|upload|save|store|fetch|request|delete|change|show|display|render|appear)\\w*";
+const ABSENCE = new RegExp(
+  [
+    "\\b(?:no|without|never|absence|unchanged|unmodified)\\b",
+    "\\bzero\\s+(?:[\\w./:-]+\\s+){0,4}(?:calls|writes|requests|effects)\\b",
+    "\\b(?:pure|purity)\\b",
+    `\\b(?:not|cannot|\\w+n't)\\s+(?:be(?:en)?\\s+|get\\s+)?${NEGATED_VERB}\\b`,
+    "\\b(?:not|\\w+n't)\\s+(?:be(?:en)?\\s+|get\\s+)?\\w+(?:ed|en)\\b",
+  ].join("|"),
+  "i",
+);
+
+/** Quoted strings are displayed copy, not claims: `shows "No photos yet"` asserts presence. */
+const QUOTED = /"[^"]*"|“[^”]*”|‘[^’]*’|`[^`]*`|(?<![\w])'[^']*'(?![\w])/g;
+
+/**
+ * Words that introduce displayed content. Everything after them in the same clause is the
+ * content being asserted present (an empty-state message may itself contain "no").
+ */
+const DISPLAY =
+  /\b(?:show(?:s|n|ing)?|display(?:s|ed|ing)?|render(?:s|ed|ing)?|read(?:s|ing)|say(?:s|ing)|message|text|copy|label(?:led)?|title(?:d)?|heading|caption|placeholder|banner|toast|empty[- ]state)\b/i;
+
+/** Clause boundaries: sentence ends, semicolons, commas, and coordinating conjunctions. */
+const CLAUSE = /[.;,!?]+(?=\s|$)|[;\n]|\b(?:and|but|while|whereas|then)\b/i;
+
+/**
+ * True when `text` claims something does NOT happen or is absent (needs instrumentation).
+ * Assertions that a message is displayed are presence claims even when the copy is negative.
+ */
 export function hasAbsenceClaim(text: string): boolean {
-  return /\b(?:no|without|never|absence|unchanged|unmodified)\b|\bzero\s+(?:[\w./:-]+\s+){0,4}(?:calls|writes|requests|effects)\b|\b(?:pure|purity)\b|\b(?:not|doesn't|cannot)\s+(?:produce|perform|write|log|mutate|modify|access|emit)\b/i.test(
-    text,
-  );
+  return text
+    .replace(QUOTED, " ")
+    .split(CLAUSE)
+    .some((clause) => {
+      const match = ABSENCE.exec(clause);
+      if (!match) return false;
+      const display = clause.search(DISPLAY);
+      // A negation inside the displayed content (after the display word) is copy, not a claim.
+      return display === -1 || match.index < display;
+    });
 }
 
 export function validateScenario(scenario: HoldoutScenario): void {
@@ -150,12 +187,29 @@ export function extractJson(text: string): unknown {
   return JSON.parse(candidate.slice(start, end + 1));
 }
 
-export function parseScenarios(text: string): HoldoutScenario[] {
+/** A batch may lose invalid scenarios and still be used when at least this many remain. */
+export const MIN_SCENARIOS_AFTER_DROP = 3;
+
+export interface ScenarioBatch {
+  scenarios: HoldoutScenario[];
+  /** Fixed validator reasons for scenarios dropped from the batch (never holdout text). */
+  dropped: string[];
+}
+
+/**
+ * Parses a scenario batch, dropping individually invalid scenarios instead of rejecting the
+ * whole batch, as long as MIN_SCENARIOS_AFTER_DROP valid ones remain. A batch with nothing
+ * dropped keeps any non-empty size. Otherwise the first validation error is thrown.
+ */
+export function parseScenarioBatch(text: string): ScenarioBatch {
   const value = extractJson(text);
   const list = Array.isArray(value) ? value : (value as { scenarios?: unknown }).scenarios;
   if (!Array.isArray(list)) throw new Error("scenarios must be an array");
   if (!list.length || list.length > 16) throw new Error("invalid scenario count");
-  const scenarios = list.map((raw, i) => {
+  const scenarios: HoldoutScenario[] = [];
+  const dropped: string[] = [];
+  let firstError: unknown;
+  list.forEach((raw, i) => {
     const s = raw as Partial<HoldoutScenario>;
     if (!s.given || !s.when || !s.then) throw new Error(`scenario ${i} is missing given/when/then`);
     const scenario = {
@@ -164,12 +218,22 @@ export function parseScenarios(text: string): HoldoutScenario[] {
       when: s.when,
       then: s.then,
     };
-    validateScenario(scenario);
-    return scenario;
+    try {
+      validateScenario(scenario);
+      scenarios.push(scenario);
+    } catch (error) {
+      firstError ??= error;
+      dropped.push(scenarioRejectionReason(error));
+    }
   });
+  if (dropped.length && scenarios.length < MIN_SCENARIOS_AFTER_DROP) throw firstError;
   if (new Set(scenarios.map((scenario) => scenario.id)).size !== scenarios.length)
     throw new Error("duplicate scenario ids");
-  return scenarios;
+  return { scenarios, dropped };
+}
+
+export function parseScenarios(text: string): HoldoutScenario[] {
+  return parseScenarioBatch(text).scenarios;
 }
 
 export function parseVerdicts(text: string): ScenarioVerdict[] {
