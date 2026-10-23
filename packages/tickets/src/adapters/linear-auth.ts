@@ -5,7 +5,7 @@
  * Secrets are read from the host env by variable NAME at use time; tokens live in memory (and an
  * optional 0600 cache file), are never logged, never included in errors, never given to sandboxes.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import type { FetchLike } from "./linear-client.js";
 
@@ -71,6 +71,7 @@ export interface AppAuthOptions extends LinearAppAuthConfig {
 
 interface Token {
   accessToken: string;
+  issuedAt: number;
   expiresAt: number;
 }
 
@@ -100,7 +101,10 @@ export class AppAuth implements LinearAuth {
   }
 
   #fresh(t: Token | undefined): t is Token {
-    return t !== undefined && t.expiresAt - REFRESH_MARGIN_MS > this.#now();
+    if (!t) return false;
+    // Short-lived tokens refresh at half-life, so a token is never "stale" on arrival.
+    const margin = Math.min(REFRESH_MARGIN_MS, (t.expiresAt - t.issuedAt) / 2);
+    return t.expiresAt - margin > this.#now();
   }
 
   async header(): Promise<string> {
@@ -161,9 +165,16 @@ export class AppAuth implements LinearAuth {
       throw new LinearAuthError(`Linear app token request failed (HTTP ${res.status})`);
     const seconds = Number(parsed?.expires_in);
     const lifetime = Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 3600_000;
-    const fresh = { accessToken: token, expiresAt: this.#now() + lifetime };
+    const now = this.#now();
+    const fresh = { accessToken: token, issuedAt: now, expiresAt: now + lifetime };
     this.#writeCache(fresh);
     return fresh;
+  }
+
+  /** Hash of the client id value (never the id itself, never the secret). */
+  #clientTag(): string | undefined {
+    const id = this.o.env()[this.o.clientIdEnv]?.trim();
+    return id ? createHash("sha256").update(id).digest("hex").slice(0, 16) : undefined;
   }
 
   #readCache(): Token | undefined {
@@ -173,12 +184,17 @@ export class AppAuth implements LinearAuth {
       // Only trust a private regular file this process could have written.
       if (!st.isFile() || st.mode & 0o077 || st.uid !== process.getuid?.()) return undefined;
       const raw = JSON.parse(readFileSync(this.o.cacheFile, "utf8")) as Partial<Token> & {
-        clientIdEnv?: string;
+        client?: string;
       };
-      if (raw.clientIdEnv !== this.o.clientIdEnv) return undefined;
-      if (typeof raw.accessToken !== "string" || typeof raw.expiresAt !== "number")
+      // A rotated app (different client id) never reuses the old app's token.
+      if (!raw.client || raw.client !== this.#clientTag()) return undefined;
+      if (
+        typeof raw.accessToken !== "string" ||
+        typeof raw.expiresAt !== "number" ||
+        typeof raw.issuedAt !== "number"
+      )
         return undefined;
-      return { accessToken: raw.accessToken, expiresAt: raw.expiresAt };
+      return { accessToken: raw.accessToken, issuedAt: raw.issuedAt, expiresAt: raw.expiresAt };
     } catch {
       return undefined;
     }
@@ -189,7 +205,7 @@ export class AppAuth implements LinearAuth {
     if (!file) return;
     try {
       const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-      const data = token ? { ...token, clientIdEnv: this.o.clientIdEnv } : {};
+      const data = token ? { ...token, client: this.#clientTag() } : {};
       // `wx`: never follow a planted file or symlink at the temp path.
       writeFileSync(tmp, JSON.stringify(data), { mode: 0o600, flag: "wx" });
       chmodSync(tmp, 0o600);

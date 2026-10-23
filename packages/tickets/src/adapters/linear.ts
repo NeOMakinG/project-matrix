@@ -167,7 +167,7 @@ export class LinearTicketStore implements TicketStore {
       });
       issue.description = block.text;
     } catch {
-      // Best effort: the block is still read as a fallback and the strip retried next sync.
+      // Best effort: the block is still read as a fallback (one strip attempt per process).
     }
   }
 
@@ -452,8 +452,10 @@ export class LinearTicketStore implements TicketStore {
           : undefined;
       // A phase start never pulls an issue a human finished or canceled back onto the board.
       const reopen = isTerminal(issue.state.type) && PHASED.has(patch.status);
-      // Never move an issue out of the column a human parked it in to stop Matrix.
-      if (!reopen && !(await this.#humanHold(issue)))
+      // A phase start never moves an issue out of the column a human parked it in to stop
+      // Matrix; `ready` (a deliberate restart) and other statuses always apply.
+      const held = PHASED.has(patch.status) && (await this.#humanHold(issue));
+      if (!reopen && !held)
         input.stateId =
           (column ? await this.#optionalStateId(column) : undefined) ??
           (await this.#stateId(patch.status));

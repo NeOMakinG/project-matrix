@@ -78,7 +78,7 @@ query MatrixViewer { viewer { id app } }`;
 export const ISSUE_HISTORY = `
 query MatrixIssueHistory($id: String!) {
   issue(id: $id) {
-    history(first: 50) {
+    history(first: 100, orderBy: createdAt) {
       nodes { createdAt actor { id } botActor { id } fromState { name } toState { name } }
     }
   }

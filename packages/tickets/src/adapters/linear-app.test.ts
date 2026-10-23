@@ -300,3 +300,49 @@ describe("a human parking an issue wins over Matrix's next column write", () => 
     expect(fake.issues.get(t.id)?.state.name).toBe("Backlog");
   });
 });
+
+describe("review follow-ups", () => {
+  test("a restart (status ready) moves a parked issue to Ready", async () => {
+    const { fake, store } = make();
+    const t = await store.create({ title: "T", body: "b" });
+    await store.update(t.id, { status: "in_progress", phase: "implement" });
+    const issue = fake.issues.get(t.id);
+    fake.actorId = "user-ada";
+    await fake.fetch("https://api.linear.app/graphql", {
+      method: "POST",
+      headers: { Authorization: fake.calls.at(-1)?.auth ?? "" },
+      body: JSON.stringify({
+        query: "mutation MatrixIssueUpdate { x }",
+        variables: { id: issue?.id, input: { stateId: fake.states[0]?.id } },
+      }),
+    });
+    fake.actorId = undefined;
+    await store.update(t.id, { status: "ready" });
+    expect(fake.issues.get(t.id)?.state.name).toBe("Ready");
+  });
+
+  test("short-lived tokens are reused until half-life, not refetched per call", async () => {
+    let now = 0;
+    const fake = appFake(3600);
+    const client = new LinearClient({ fetch: fake.fetch, env: ENV, app: APP, now: () => now });
+    const viewer = "query MatrixViewer { viewer { id app } }";
+    await client.request(viewer);
+    await client.request(viewer);
+    expect(fake.tokenCalls).toHaveLength(1);
+    now += 1900_000;
+    await client.request(viewer);
+    expect(fake.tokenCalls).toHaveLength(2);
+  });
+
+  test("a rotated app (new client id) does not reuse the cached token", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "matrix-linear-rot-")), "token.json");
+    const fake = appFake();
+    await make(fake, { tokenCacheFile: file }).store.list();
+    const rotated = `client-${"r".repeat(12)}`;
+    fake.app = { clientId: rotated, clientSecret: SECRET, expiresIn: 86400 * 30 };
+    const env = { ...ENV, MATRIX_LINEAR_ID: rotated };
+    await make(fake, { tokenCacheFile: file, env }).store.list();
+    expect(fake.tokenCalls).toHaveLength(2);
+    expect(readFileSync(file, "utf8")).not.toContain(rotated);
+  });
+});
