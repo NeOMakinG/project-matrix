@@ -8,7 +8,7 @@ import {
   runToCompletion,
   safeGitEnv,
 } from "@matrix/sandbox";
-import { CoreError } from "../core-port.js";
+import { CoreError, type SetupStep } from "../core-port.js";
 
 /** What the operator sends to register a repo that already exists on the host. */
 export interface RepoRegistration {
@@ -190,6 +190,8 @@ const DEFAULT_EDITABLE_FILES = new Set([
   "Cargo.toml",
   "Cargo.lock",
 ]);
+/** Root-level docs (README.md, SPECS.md, CHANGELOG.md, ...) are editable by default. */
+const DOC_FILE = /^[A-Za-z0-9_][A-Za-z0-9._-]*\.md$/i;
 const EDITABLE = /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
 
 /**
@@ -206,7 +208,8 @@ export function validateEditablePaths(paths: string[]): string[] {
 
 /**
  * Default editable paths of an existing repo: every tracked top-level directory on the base branch
- * except dot directories (`.git`, `.github`, `.matrix`, ...), plus the usual top-level manifests.
+ * except dot directories (`.git`, `.github`, `.matrix`, ...), plus the usual top-level manifests and
+ * root-level Markdown docs (`README.md`, `SPECS.md`, `CHANGELOG.md`).
  */
 export async function defaultEditablePaths(
   repo: Pick<ResolvedRepo, "path" | "baseBranch">,
@@ -224,7 +227,32 @@ export async function defaultEditablePaths(
     const type = record.slice(0, tab).split(" ")[1];
     const name = record.slice(tab + 1);
     if (name.startsWith(".") || !EDITABLE.test(name)) continue;
-    if (type === "tree" || (type === "blob" && DEFAULT_EDITABLE_FILES.has(name))) out.push(name);
+    if (
+      type === "tree" ||
+      (type === "blob" && (DEFAULT_EDITABLE_FILES.has(name) || DOC_FILE.test(name)))
+    )
+      out.push(name);
   }
   return out;
+}
+
+export type { SetupStep };
+
+const SETUP_CWD = /^[A-Za-z0-9_][A-Za-z0-9._-]*(\/[A-Za-z0-9_][A-Za-z0-9._-]*)*$/;
+const SETUP_ARG = /^[^\0\r\n]{1,200}$/;
+
+/**
+ * Operator-set setup steps for an existing repo: at most 10, relative non-dot `cwd`, argv only.
+ * An empty list disables dependency setup (no lockfile detection).
+ */
+export function validateSetup(steps: SetupStep[]): SetupStep[] {
+  if (steps.length > 10) invalid("setup accepts at most 10 steps");
+  return steps.map((step) => {
+    const cwd = step.cwd === undefined || step.cwd === "." ? undefined : step.cwd;
+    if (cwd !== undefined && (cwd.length > 200 || !SETUP_CWD.test(cwd)))
+      invalid(`invalid setup cwd: ${JSON.stringify(step.cwd)} (relative, no dot segments)`);
+    if (step.run.length === 0 || step.run.length > 30 || !step.run.every((a) => SETUP_ARG.test(a)))
+      invalid("setup run must be 1 to 30 argv entries without NUL or newlines");
+    return { ...(cwd ? { cwd } : {}), run: [...step.run] };
+  });
 }

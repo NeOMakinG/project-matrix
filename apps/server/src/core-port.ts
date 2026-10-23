@@ -10,6 +10,12 @@ import type {
 import type { NewTicket, Ticket, TicketPatch, TicketQuery } from "@matrix/tickets";
 import type { PrivateStateOwner } from "./state-owner.js";
 
+/** One dependency install step of an existing repo: argv (no shell) run in `cwd` (repo-relative). */
+export interface SetupStep {
+  cwd?: string;
+  run: string[];
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -24,6 +30,9 @@ export interface Project {
     remote: string;
     github: string;
     editablePaths: string[];
+    /** Dependency install steps before checks; absent = detected from lockfiles. */
+    setup?: SetupStep[];
+    setupScripts: boolean;
   };
   /** Effective model per model-driven phase. */
   models?: Partial<Record<ModelPhase, { runner: RunnerKind; model: string }>>;
@@ -57,12 +66,19 @@ export interface CreateProjectInput {
   /** Check commands run by the checks and QA phases (the init interview sets these later). */
   checks?: CheckSpec[];
   /** Register an existing host repo instead of creating an empty one (MATRIX_REPO_ROOTS). */
-  repo?: { path: string; baseBranch: string; remote?: string; editablePaths?: string[] };
+  repo?: {
+    path: string;
+    baseBranch: string;
+    remote?: string;
+    editablePaths?: string[];
+    setup?: SetupStep[];
+    setupScripts?: boolean;
+  };
   models?: ModelPlanInput;
 }
 export interface UpdateProjectInput {
   /** Existing repos only: paths agents may change (dot paths always stay denied). */
-  repo?: { editablePaths?: string[] };
+  repo?: { editablePaths?: string[]; setup?: SetupStep[] | null; setupScripts?: boolean };
   tickets?: TicketsInput;
   checks?: CheckSpec[];
   models?: ModelPlanInput;

@@ -9,7 +9,7 @@ import {
   REVIEW_LANES,
   type RunRecord,
 } from "@matrix/core";
-import type { Approval, Project, Run } from "../core-port.js";
+import type { Approval, Project, Run, SetupStep } from "../core-port.js";
 import type { TicketSettings } from "./tickets.js";
 
 /** Server-side metadata kept inside the stored project config (core stores the config as JSON). */
@@ -22,7 +22,16 @@ export interface MatrixMeta {
    * Set for a repo that already existed on the host (registered, not created by Matrix). Its
    * config lives here, host-side; nothing is written into the repo and runs end with a draft PR.
    */
-  repo?: { external: true; remote: string; github: string; editablePaths?: string[] };
+  repo?: {
+    external: true;
+    remote: string;
+    github: string;
+    editablePaths?: string[];
+    /** Dependency install steps run before checks; unset = lockfile detection, [] = none. */
+    setup?: SetupStep[];
+    /** Detected installs run lifecycle scripts (default off: `--ignore-scripts`). */
+    setupScripts?: boolean;
+  };
 }
 
 export type StoredProject = ProjectConfig & { matrix?: MatrixMeta };
@@ -48,6 +57,10 @@ export function toProject(config: StoredProject): Project {
             remote: config.matrix.repo.remote,
             github: config.matrix.repo.github,
             editablePaths: [...(config.matrix.repo.editablePaths ?? [])],
+            ...(config.matrix.repo.setup
+              ? { setup: config.matrix.repo.setup.map((s) => ({ ...s, run: [...s.run] })) }
+              : {}),
+            setupScripts: config.matrix.repo.setupScripts === true,
           },
         }
       : {}),

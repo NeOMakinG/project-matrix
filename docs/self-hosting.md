@@ -229,9 +229,44 @@ no tech-watch digests. The project config lives in the Matrix database.
   by the lockfile (`bun`, `pnpm`, `yarn`, else `npm`). No scripts means no checks: set them.
 - **Editable paths**: `repo.editablePaths` lists what agents may change (here `app/`, `docs/`,
   `designs/`). Default: every tracked top-level directory on the base branch plus the usual
-  manifests (`package.json`, lockfiles, tsconfig, ...). Dot paths (`.git`, `.github/workflows`,
+  manifests (`package.json`, lockfiles, tsconfig, ...) and root-level Markdown docs
+  (`README.md`, `SPECS.md`, `CHANGELOG.md`, ...). Dot paths (`.git`, `.github/workflows`,
   `.env`, `.matrix`) stay denied whatever the list says. Change it with
   `PATCH /v1/projects/{id}` and `{"repo": {"editablePaths": [...]}}`.
+- **Dependency setup**: run worktrees start without `node_modules`, so before checks (and, best
+  effort, before implement) Matrix installs dependencies in the sandbox. `repo.setup` lists the
+  steps (argv, no shell, `cwd` relative to the repo), for example
+  `[{"cwd": "app", "run": ["npm", "ci", "--no-audit", "--no-fund", "--ignore-scripts"]}]`.
+  Unset, Matrix detects one frozen install per directory that has a `package.json` and a
+  lockfile: the root plus every directory a check runs in (`npm --prefix app`, `pnpm -C app`,
+  `yarn --cwd app`): `package-lock.json` → `npm ci`, `pnpm-lock.yaml` →
+  `pnpm install --frozen-lockfile`, `yarn.lock` → `yarn install --frozen-lockfile`, `bun.lock` →
+  `bun install --frozen-lockfile`. `[]` disables setup; `null` (PATCH) resets to detection.
+  - *Network*: setup runs with the sandbox `allowlist` policy: an HTTPS CONNECT proxy on the host
+    (the credential broker's `egress.sock`) only tunnels to `registry.npmjs.org`,
+    `registry.yarnpkg.com` and `repo.yarnpkg.com` on port 443, private addresses refused. Git or
+    tarball dependencies hosted elsewhere fail: vendor them. Checks themselves keep `network: none`.
+  - *Lifecycle scripts*: detected installs pass `--ignore-scripts`. `npm ci` would otherwise run
+    every dependency's `preinstall`/`postinstall` plus the repo's own `prepare` with registry
+    egress and the run's gateway token: a compromised package or an agent-edited lockfile could
+    exfiltrate through the gateway or poison the cache. The cost: packages that build native code
+    or download binaries in `postinstall`, and `patch-package`, do not run. Opt in per project with
+    `repo.setupScripts: true`, or list explicit steps (they run exactly as given), e.g. an
+    `--ignore-scripts` install followed by `["npx", "--no-install", "patch-package"]`.
+  - *Cache*: a successful install is copied to `$MATRIX_DATA_DIR/deps-cache/<project>/<key>`,
+    keyed by project, `cwd`, argv and the exact `package.json`, lockfile and package-manager
+    config bytes (`.npmrc`, `.yarnrc.yml`, `pnpm-workspace.yaml`, ...; the 3 most recently used
+    per project are kept). Only installs done before checks, on the cleaned committed tree, are
+    stored; the best-effort install before implement may restore but never writes the cache. Later runs copy it into the worktree (`cp -a`, reflinks where supported)
+    instead of reinstalling; the cache is never mounted into a sandbox, so a run cannot alter it.
+  - *Never committed*: untracked `node_modules` are disposable: excluded from the commit gate and
+    the handover fingerprint, and wiped right before checks so nothing an agent planted there
+    survives; setup then reinstalls from the committed lockfile.
+  - *Failures*: a failed setup, or a check that clearly could not run (exit 126/127, a shell
+    `not found` line, `spawn X ENOENT`, a missing `node_modules/.bin` entry), is an
+    **environment** failure: the
+    ticket blocks for a human (needs-human, reason in the status comment) without going back to
+    implement and without consuming implement attempts.
 - **Matrix artifacts stay host-side**: the derived code graph is written to
   `$MATRIX_DATA_DIR/projects/<id>/graph/`, never committed; the publisher refuses to push a run
   branch that touches `.matrix/` or `.github/workflows/`.
@@ -240,7 +275,8 @@ no tech-watch digests. The project config lives in the Matrix database.
   answers `GET /v1/models`, unknown ids are rejected: use gateway ids (for example
   `claude-opus-4-7` for Opus 5.5, `claude-sonnet-5-5`, `gpt-6-sol`). Setting `implement` or `spike` drops the
   size tiers.
-- **Later changes**: `PATCH /v1/projects/{id}` with any of `repo.editablePaths`, `tickets`,
+- **Later changes**: `PATCH /v1/projects/{id}` with any of `repo.editablePaths`, `repo.setup`,
+  `repo.setupScripts`, `tickets`,
   `checks`, `models`.
 
 ### How a run ends

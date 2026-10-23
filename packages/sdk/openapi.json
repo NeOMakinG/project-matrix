@@ -59,9 +59,38 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "setup": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "cwd": {
+                      "type": "string"
+                    },
+                    "run": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": ["run"]
+                },
+                "description": "Dependency install steps; absent = detected from lockfiles"
+              },
+              "setupScripts": {
+                "type": "boolean"
               }
             },
-            "required": ["external", "baseBranch", "remote", "github", "editablePaths"],
+            "required": [
+              "external",
+              "baseBranch",
+              "remote",
+              "github",
+              "editablePaths",
+              "setupScripts"
+            ],
             "description": "Set for an existing repo registered on the host"
           },
           "models": {
@@ -305,6 +334,37 @@
             "minItems": 1,
             "maxItems": 100,
             "description": "Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs"
+          },
+          "setup": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "cwd": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "run": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "minItems": 1,
+                  "maxItems": 30
+                }
+              },
+              "required": ["run"],
+              "additionalProperties": false
+            },
+            "maxItems": 10,
+            "description": "Dependency install steps run in the sandbox before checks (argv, no shell, registry-only egress), e.g. [{cwd:'app',run:['npm','ci','--no-audit','--no-fund','--ignore-scripts']}]. Unset: frozen install detected from lockfiles (root + check dirs), lifecycle scripts off. []: no setup."
+          },
+          "setupScripts": {
+            "type": "boolean",
+            "description": "Let detected installs run dependency lifecycle scripts (postinstall, native builds). Default false: --ignore-scripts"
           }
         },
         "required": ["path"],
@@ -384,6 +444,37 @@
                 "minItems": 1,
                 "maxItems": 100,
                 "description": "Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs"
+              },
+              "setup": {
+                "type": ["array", "null"],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "cwd": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "run": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "minItems": 1,
+                      "maxItems": 30
+                    }
+                  },
+                  "required": ["run"],
+                  "additionalProperties": false
+                },
+                "maxItems": 10,
+                "description": "null resets to lockfile detection"
+              },
+              "setupScripts": {
+                "type": "boolean",
+                "description": "Let detected installs run dependency lifecycle scripts (postinstall, native builds). Default false: --ignore-scripts"
               }
             },
             "additionalProperties": false

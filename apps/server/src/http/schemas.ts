@@ -29,6 +29,11 @@ export const Project = z
         remote: z.string(),
         github: z.string(),
         editablePaths: z.array(z.string()),
+        setup: z
+          .array(z.object({ cwd: z.string().optional(), run: z.array(z.string()) }))
+          .optional()
+          .openapi({ description: "Dependency install steps; absent = detected from lockfiles" }),
+        setupScripts: z.boolean(),
       })
       .optional()
       .openapi({ description: "Set for an existing repo registered on the host" }),
@@ -81,6 +86,25 @@ const EditablePaths = z.array(z.string().min(1).max(200)).min(1).max(100).openap
     "Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs",
 });
 
+const SetupSteps = z
+  .array(
+    z
+      .object({
+        cwd: z.string().min(1).max(200).optional(),
+        run: z.array(z.string().min(1).max(200)).min(1).max(30),
+      })
+      .strict(),
+  )
+  .max(10)
+  .openapi({
+    description:
+      "Dependency install steps run in the sandbox before checks (argv, no shell, registry-only egress), e.g. [{cwd:'app',run:['npm','ci','--no-audit','--no-fund','--ignore-scripts']}]. Unset: frozen install detected from lockfiles (root + check dirs), lifecycle scripts off. []: no setup.",
+  });
+const SetupScripts = z.boolean().openapi({
+  description:
+    "Let detected installs run dependency lifecycle scripts (postinstall, native builds). Default false: --ignore-scripts",
+});
+
 export const ExistingRepo = z
   .object({
     path: z
@@ -96,6 +120,8 @@ export const ExistingRepo = z
       .default("origin")
       .openapi({ description: "GitHub remote draft PRs are opened on" }),
     editablePaths: EditablePaths.optional(),
+    setup: SetupSteps.optional(),
+    setupScripts: SetupScripts.optional(),
   })
   .strict()
   .openapi("ExistingRepo");
@@ -172,7 +198,16 @@ const ChecksSettings = z
 
 export const UpdateProject = z
   .object({
-    repo: z.object({ editablePaths: EditablePaths.optional() }).strict().optional(),
+    repo: z
+      .object({
+        editablePaths: EditablePaths.optional(),
+        setup: SetupSteps.nullable()
+          .optional()
+          .openapi({ description: "null resets to lockfile detection" }),
+        setupScripts: SetupScripts.optional(),
+      })
+      .strict()
+      .optional(),
     tickets: TicketsSettings.optional(),
     checks: ChecksSettings.optional().openapi({
       description: "Check commands run in the sandbox (argv, no shell)",

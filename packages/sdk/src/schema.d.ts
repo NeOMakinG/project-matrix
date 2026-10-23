@@ -4228,6 +4228,12 @@ export interface components {
         remote: string;
         github: string;
         editablePaths: string[];
+        /** @description Dependency install steps; absent = detected from lockfiles */
+        setup?: {
+          cwd?: string;
+          run: string[];
+        }[];
+        setupScripts: boolean;
       };
       /** @description Effective model per model-driven phase */
       models?: {
@@ -4311,6 +4317,13 @@ export interface components {
       remote: string;
       /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
       editablePaths?: string[];
+      /** @description Dependency install steps run in the sandbox before checks (argv, no shell, registry-only egress), e.g. [{cwd:'app',run:['npm','ci','--no-audit','--no-fund','--ignore-scripts']}]. Unset: frozen install detected from lockfiles (root + check dirs), lifecycle scripts off. []: no setup. */
+      setup?: {
+        cwd?: string;
+        run: string[];
+      }[];
+      /** @description Let detected installs run dependency lifecycle scripts (postinstall, native builds). Default false: --ignore-scripts */
+      setupScripts?: boolean;
     };
     ModelPlan: {
       spike?: components["schemas"]["PhaseModel"];
@@ -4334,6 +4347,15 @@ export interface components {
       repo?: {
         /** @description Paths agents may change (relative; dot paths like .github/workflows stay denied). Default: tracked top-level dirs */
         editablePaths?: string[];
+        /** @description null resets to lockfile detection */
+        setup?:
+          | {
+              cwd?: string;
+              run: string[];
+            }[]
+          | null;
+        /** @description Let detected installs run dependency lifecycle scripts (postinstall, native builds). Default false: --ignore-scripts */
+        setupScripts?: boolean;
       };
       tickets?: {
         /** @enum {string} */

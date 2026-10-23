@@ -35,6 +35,7 @@ import {
   WorktreeGitPort,
 } from "@matrix/workspace";
 import type { PrivateStateOwner } from "../state-owner.js";
+import { dependencySetup } from "./deps-setup.js";
 import { derivedGraphHandover } from "./derived-graph.js";
 import { servedModels } from "./gateway-models.js";
 import type { StoredProject } from "./mapping.js";
@@ -415,6 +416,19 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       },
       runners,
       sandbox: checkedSandbox,
+      // Existing repos only: dependencies installed (or restored from the host cache) before checks.
+      setup: dependencySetup({
+        sandbox: checkedSandbox,
+        cacheRoot: join(opts.dataDir, "deps-cache"),
+        policy: (ctx) => {
+          const repo = (ctx.project as StoredProject).matrix?.repo;
+          if (!repo) return undefined;
+          return {
+            ...(repo.setup ? { steps: repo.setup } : {}),
+            ...(repo.setupScripts ? { scripts: true } : {}),
+          };
+        },
+      }),
       qa: scenarioQaDriver({
         ...(opts.gitleaksBinary ? { gitleaksBinary: opts.gitleaksBinary } : {}),
         sandbox: checkedSandbox,

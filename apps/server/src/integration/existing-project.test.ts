@@ -82,7 +82,11 @@ test("registers an existing repo host-side, with Linear, detected checks and a m
   const stored = (await factory.store.getProject(id)) as StoredProject;
   expect(stored).toMatchObject({ repoPath: repo, baseBranch: "main", lastPhase: "merge" });
   expect(stored.models.tiers).toBeUndefined();
-  expect(stored.matrix?.repo?.editablePaths).toEqual(["package.json", "pnpm-lock.yaml"]);
+  expect(stored.matrix?.repo?.editablePaths).toEqual([
+    "README.md",
+    "package.json",
+    "pnpm-lock.yaml",
+  ]);
   const paths = await call("PATCH", `/v1/projects/${id}`, {
     repo: { editablePaths: ["app", "docs", "designs"] },
   });
@@ -91,6 +95,26 @@ test("registers an existing repo host-side, with Linear, detected checks and a m
     (await call("PATCH", `/v1/projects/${id}`, { repo: { editablePaths: [".github/workflows"] } }))
       .status,
   ).toBe(400);
+
+  expect(paths.body).toMatchObject({ repo: { setupScripts: false } });
+  expect((paths.body as { repo: { setup?: unknown } }).repo.setup).toBeUndefined();
+  const setup = [{ cwd: "app", run: ["npm", "ci", "--no-audit", "--no-fund", "--ignore-scripts"] }];
+  const withSetup = await call("PATCH", `/v1/projects/${id}`, { repo: { setup } });
+  expect(withSetup.body).toMatchObject({
+    repo: { setup, editablePaths: ["app", "docs", "designs"] },
+  });
+  expect(((await factory.store.getProject(id)) as StoredProject).matrix?.repo?.setup).toEqual(
+    setup,
+  );
+  for (const bad of [[{ cwd: "../x", run: ["npm", "ci"] }], [{ run: [] }], [{ run: "npm ci" }]])
+    expect((await call("PATCH", `/v1/projects/${id}`, { repo: { setup: bad } })).status).toBe(400);
+  const reset = await call("PATCH", `/v1/projects/${id}`, {
+    repo: { setup: null, setupScripts: true },
+  });
+  expect(reset.body).toMatchObject({ repo: { setupScripts: true } });
+  expect(
+    ((await factory.store.getProject(id)) as StoredProject).matrix?.repo?.setup,
+  ).toBeUndefined();
 
   expect((await call("POST", `/v1/projects/${id}/init`)).status).toBe(409);
   const again = await call("POST", "/v1/projects", {
