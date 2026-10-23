@@ -126,6 +126,11 @@ export const ExistingRepo = z
   .strict()
   .openapi("ExistingRepo");
 
+const LinearEnvName = z
+  .string()
+  .max(64)
+  .regex(/^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$/, "must be an env var name containing LINEAR");
+
 /** Linear settings. The API key itself is never accepted: only the host env var NAME holding it. */
 export const LinearTickets = z
   .object({
@@ -142,6 +147,14 @@ export const LinearTickets = z
       .regex(/^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$/, "must be an env var name containing LINEAR")
       .optional()
       .openapi({ description: "Host env var NAME holding the key; default LINEAR_API_KEY" }),
+    app: z
+      .object({ clientIdEnv: LinearEnvName, clientSecretEnv: LinearEnvName })
+      .strict()
+      .optional()
+      .openapi({
+        description:
+          "OAuth app (client credentials) env var NAMES; Matrix then acts as its own Linear user. Preferred over apiKeyEnv",
+      }),
   })
   .strict()
   .openapi("LinearTickets");

@@ -8,6 +8,7 @@ import { LinearTicketStore } from "@matrix/tickets/adapters/linear";
 import { MarkdownTicketStore } from "@matrix/tickets/adapters/markdown";
 import { CoreError } from "../core-port.js";
 import type { PrivateStateOwner } from "../state-owner.js";
+import { linearTokenCacheFile, PrivateLinearMetaStore } from "./linear-meta-file.js";
 import { publishOwnedFile } from "./owned-files.js";
 
 export type TicketSystem = "beads" | "markdown" | "github" | "linear";
@@ -23,6 +24,11 @@ export interface TicketSettings {
     readyState?: string;
     /** Host env var NAME holding the key (default `LINEAR_API_KEY`). Never the key itself. */
     apiKeyEnv?: string;
+    /**
+     * OAuth app (client credentials): host env var NAMES of the client id and secret. When set,
+     * Matrix acts as its own Linear app user and `apiKeyEnv` is ignored.
+     */
+    app?: { clientIdEnv: string; clientSecretEnv: string };
   };
 }
 
@@ -78,6 +84,7 @@ export function ticketStoreFor(
   settings: TicketSettings,
   binaries: TicketBinaries = {},
   owner?: PrivateStateOwner,
+  projectId?: string,
 ): TicketStore {
   const executor: LineExecutor = (spec, onLine, signal) =>
     trackerDeadline(
@@ -139,6 +146,19 @@ export function ticketStoreFor(
         projectLabel: linear.projectLabel,
         ...(linear.readyState ? { readyState: linear.readyState } : {}),
         ...(linear.apiKeyEnv ? { apiKeyEnv: linear.apiKeyEnv } : {}),
+        ...(linear.app
+          ? {
+              app: {
+                clientIdEnv: linear.app.clientIdEnv,
+                clientSecretEnv: linear.app.clientSecretEnv,
+              },
+              ...(owner
+                ? { tokenCacheFile: linearTokenCacheFile(owner, linear.app.clientIdEnv) }
+                : {}),
+            }
+          : {}),
+        // Matrix's per-issue meta stays host-side (never in issue descriptions) when owned.
+        ...(owner && projectId ? { metaStore: new PrivateLinearMetaStore(owner, projectId) } : {}),
         ...(owner ? { signal: owner.signal } : {}),
       });
     }

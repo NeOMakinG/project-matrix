@@ -56,7 +56,13 @@ export interface ModelPlanInput {
 export interface TicketsInput {
   kind: "beads" | "markdown" | "github" | "linear";
   repo?: string;
-  linear?: { teamKey: string; projectLabel: string; readyState?: string; apiKeyEnv?: string };
+  linear?: {
+    teamKey: string;
+    projectLabel: string;
+    readyState?: string;
+    apiKeyEnv?: string;
+    app?: { clientIdEnv: string; clientSecretEnv: string };
+  };
 }
 export interface CreateProjectInput {
   name: string;

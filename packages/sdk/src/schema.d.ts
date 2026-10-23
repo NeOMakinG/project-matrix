@@ -4303,6 +4303,11 @@ export interface components {
       readyState?: string;
       /** @description Host env var NAME holding the key; default LINEAR_API_KEY */
       apiKeyEnv?: string;
+      /** @description OAuth app (client credentials) env var NAMES; Matrix then acts as its own Linear user. Preferred over apiKeyEnv */
+      app?: {
+        clientIdEnv: string;
+        clientSecretEnv: string;
+      };
     };
     /** @description Register an existing host repo instead of creating an empty one */
     ExistingRepo: {

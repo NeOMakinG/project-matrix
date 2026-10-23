@@ -194,6 +194,7 @@ export class RealCore implements CorePort {
           project.matrix?.tickets ?? DEFAULT_TICKETS,
           this.o.binaries,
           this.o.stateOwner,
+          projectId,
         );
     this.o.stateOwner?.assertOwned();
     const indexed: TicketStore = {

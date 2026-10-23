@@ -297,6 +297,24 @@
             "maxLength": 64,
             "pattern": "^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$",
             "description": "Host env var NAME holding the key; default LINEAR_API_KEY"
+          },
+          "app": {
+            "type": "object",
+            "properties": {
+              "clientIdEnv": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$"
+              },
+              "clientSecretEnv": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$"
+              }
+            },
+            "required": ["clientIdEnv", "clientSecretEnv"],
+            "additionalProperties": false,
+            "description": "OAuth app (client credentials) env var NAMES; Matrix then acts as its own Linear user. Preferred over apiKeyEnv"
           }
         },
         "required": ["teamKey", "projectLabel"],

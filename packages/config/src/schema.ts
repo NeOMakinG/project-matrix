@@ -177,6 +177,10 @@ export const modelsConfig = z.object({
   aliases: z.record(z.string().min(1), z.string().min(1)).default({}),
 });
 
+const linearEnvName = z
+  .string()
+  .regex(/^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$/, "must be an env var name containing LINEAR");
+
 /** Linear tracker settings. Holds the NAME of the host env var with the API key, never the key. */
 export const linearTickets = z.object({
   teamKey: z.string().regex(/^[A-Z][A-Z0-9]{0,9}$/),
@@ -188,6 +192,8 @@ export const linearTickets = z.object({
     // Only Linear-named vars: the value is sent to api.linear.app as the Authorization header.
     .regex(/^([A-Z0-9]+_)*LINEAR(_[A-Z0-9]+)*$/, "must be an env var name containing LINEAR")
     .default("LINEAR_API_KEY"),
+  /** OAuth app (client credentials) env var NAMES; preferred over `apiKeyEnv` when set. */
+  app: z.object({ clientIdEnv: linearEnvName, clientSecretEnv: linearEnvName }).strict().optional(),
 });
 
 export type LinearTicketsConfig = z.infer<typeof linearTickets>;

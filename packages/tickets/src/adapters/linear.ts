@@ -21,17 +21,21 @@ import {
   DEFAULT_STATE_NAMES,
   isCommentKey,
   isTerminal,
+  type LinearMeta,
   type LinearPhaseColumns,
   type LinearStateNames,
   openBlockers,
   readBody,
+  safeMeta,
   toLinearPriority,
   toTicket,
   writeBody,
 } from "./linear-mapping.js";
+import { findLegacyBlock, type LinearMetaStore } from "./linear-meta.js";
 import * as Q from "./linear-queries.js";
 
 export { LinearApiError, sanitizeUntrusted } from "./linear-client.js";
+export { type LinearMetaStore, MemoryLinearMetaStore } from "./linear-meta.js";
 
 export interface LinearStoreOptions extends LinearClientOptions {
   /** Linear team key, e.g. `NEO`. */
@@ -44,9 +48,20 @@ export interface LinearStoreOptions extends LinearClientOptions {
   states?: Partial<LinearStateNames>;
   /** Override the board column per Matrix phase (see `DEFAULT_PHASE_COLUMNS`). */
   phaseColumns?: LinearPhaseColumns;
+  /**
+   * Host-side per-issue meta. When set, Matrix keeps nothing in issue descriptions and migrates
+   * old `<!-- matrix:{...} -->` blocks out of them; without it the legacy block is still written.
+   */
+  metaStore?: LinearMetaStore;
 }
 
 const norm = (s: string) => s.trim().toLowerCase();
+/** Legacy comment markers, also as Linear renders them back (`-->` shown as `→`, or escaped). */
+const OPEN = String.raw`(?:<!--|&lt;!--)\s*`;
+const CLOSE = String.raw`\s*(?:-->|--&gt;|→)`;
+const ANY_MARKER = new RegExp(`${OPEN}matrix(?::bot|-comment:[a-z0-9-]{1,40})${CLOSE}`);
+/** `key` is validated by `isCommentKey`, so it is regex-safe. */
+const keyMarker = (key: string) => new RegExp(`${OPEN}matrix-comment:${key}${CLOSE}`);
 /** Coarse statuses the reconciler sets at phase start; with a phase they map to its column. */
 const PHASED = new Set<TicketStatus>(["in_progress", "review", "qa"]);
 /** Linear state types of columns before work starts (Backlog, Todo, Triage). */
@@ -66,7 +81,11 @@ export class LinearTicketStore implements TicketStore {
   readonly #label: string;
   readonly #names: LinearStateNames;
   readonly #phases: LinearPhaseColumns;
+  readonly #host: LinearMetaStore | undefined;
   #team: Promise<Team> | undefined;
+  #viewer: Promise<string> | undefined;
+  /** Issues whose legacy block strip was already tried by this process (one try each). */
+  readonly #stripTried = new Set<string>();
 
   constructor(options: LinearStoreOptions) {
     if (!/^[A-Z][A-Z0-9]{0,9}$/.test(options.teamKey))
@@ -82,6 +101,78 @@ export class LinearTicketStore implements TicketStore {
       ...(options.readyState ? { ready: options.readyState } : {}),
     };
     this.#phases = { ...DEFAULT_PHASE_COLUMNS, ...options.phaseColumns };
+    this.#host = options.metaStore;
+  }
+
+  /** True when Matrix acts as its own Linear app user (OAuth client credentials). */
+  get appMode(): boolean {
+    return this.#client.authMode === "app";
+  }
+
+  /** Matrix's Linear user id (the app user in app mode, the key's human otherwise). */
+  viewerId(): Promise<string> {
+    this.#viewer ??= this.#client
+      .request<{ viewer: { id: string } }>(Q.VIEWER)
+      .then((d) => {
+        if (!d.viewer?.id) throw new LinearApiError("Linear viewer has no id");
+        return d.viewer.id;
+      })
+      .catch((error) => {
+        this.#viewer = undefined;
+        throw error;
+      });
+    return this.#viewer;
+  }
+
+  /** Matrix's meta for an issue: host-side when available, else the legacy description block. */
+  #meta(issue: Q.LinearIssue): LinearMeta {
+    const legacy = readBody(issue.description).meta;
+    if (!this.#host) return legacy;
+    return this.#host.get(issue.id) ?? legacy;
+  }
+
+  async #saveMeta(issue: Q.LinearIssue, text: string, meta: LinearMeta): Promise<void> {
+    if (this.#host) {
+      this.#host.set(issue.id, safeMeta(meta as Record<string, unknown>));
+      return;
+    }
+    const data = await this.#client.request<{ issueUpdate: { success: boolean } }>(Q.UPDATE_ISSUE, {
+      id: issue.id,
+      input: { description: writeBody(text, meta) },
+    });
+    if (!data.issueUpdate.success)
+      throw new LinearApiError(`Linear issueUpdate ${issue.identifier} failed`);
+  }
+
+  /**
+   * Moves a legacy description block host-side and strips it from the description. Only a block
+   * in Matrix's exact format at the very end is touched; the text before it is kept byte for byte,
+   * and nothing is written when the description changed since it was read (a human editing).
+   */
+  async #migrate(issue: Q.LinearIssue): Promise<void> {
+    if (!this.#host) return;
+    const block = findLegacyBlock(issue.description);
+    if (!block) return;
+    if (!this.#host.get(issue.id)) this.#host.set(issue.id, safeMeta(block.meta));
+    if (this.#stripTried.has(issue.id)) return;
+    try {
+      const fresh = await this.#client.request<{ issue: Q.LinearIssue | null }>(Q.GET_ISSUE, {
+        id: issue.id,
+      });
+      if (fresh.issue?.description !== issue.description) return;
+      this.#stripTried.add(issue.id);
+      await this.#client.request(Q.UPDATE_ISSUE, {
+        id: issue.id,
+        input: { description: block.text },
+      });
+      issue.description = block.text;
+    } catch {
+      // Best effort: the block is still read as a fallback and the strip retried next sync.
+    }
+  }
+
+  #ticket(issue: Q.LinearIssue): Ticket {
+    return toTicket(issue, this.#names, this.#host ? this.#meta(issue) : undefined);
   }
 
   #idOk(id: string): boolean {
@@ -139,7 +230,11 @@ export class LinearTicketStore implements TicketStore {
       const data: { issues: { nodes: Q.LinearIssue[]; pageInfo: Q.PageInfo } } =
         await this.#client.request(Q.LIST_ISSUES, { filter, after });
       out.push(...data.issues.nodes);
-      if (!data.issues.pageInfo.hasNextPage) return out.filter((i) => this.#inScope(i));
+      if (!data.issues.pageInfo.hasNextPage) {
+        const scoped = out.filter((i) => this.#inScope(i));
+        for (const i of scoped) await this.#migrate(i);
+        return scoped;
+      }
       after = data.issues.pageInfo.endCursor;
       if (!after) throw new LinearApiError("Linear pagination returned no cursor");
     }
@@ -150,7 +245,9 @@ export class LinearTicketStore implements TicketStore {
     if (!this.#idOk(id)) return null;
     try {
       const data = await this.#client.request<{ issue: Q.LinearIssue | null }>(Q.GET_ISSUE, { id });
-      return data.issue && this.#inScope(data.issue) ? data.issue : null;
+      if (!data.issue || !this.#inScope(data.issue)) return null;
+      await this.#migrate(data.issue);
+      return data.issue;
     } catch (error) {
       if (error instanceof LinearApiError && /not found|entity not found/i.test(error.message))
         return null;
@@ -165,14 +262,12 @@ export class LinearTicketStore implements TicketStore {
   }
 
   async list(query: TicketQuery = {}): Promise<Ticket[]> {
-    return (await this.#issues())
-      .map((i) => toTicket(i, this.#names))
-      .filter((t) => matches(t, query));
+    return (await this.#issues()).map((i) => this.#ticket(i)).filter((t) => matches(t, query));
   }
 
   async get(id: string): Promise<Ticket | null> {
     const issue = await this.#issue(id);
-    return issue ? toTicket(issue, this.#names) : null;
+    return issue ? this.#ticket(issue) : null;
   }
 
   async ready(): Promise<Ticket[]> {
@@ -181,10 +276,14 @@ export class LinearTicketStore implements TicketStore {
       .filter((i) => i.state.name.trim().toLowerCase() === this.#names.ready.trim().toLowerCase())
       .filter((i) => this.#requeueable(i))
       .filter((i) => openBlockers(i).length === 0)
-      .map((i) => ({ ...toTicket(i, this.#names), status: "ready" as const }));
+      .map((i) => ({ ...this.#ticket(i), status: "ready" as const }));
   }
 
-  /** One query per call (by issue number, in not-started columns), however many ids. */
+  /**
+   * One query per call (by issue number, in not-started columns), however many ids. In app mode
+   * the issue history tells who moved it: a move by Matrix's own app user is not a stop request.
+   * With a personal key (or when history is unavailable) any such move counts, as before.
+   */
   async stopRequests(ids: string[]): Promise<StopRequest[]> {
     const numbers = ids.filter((id) => this.#idOk(id)).map((id) => Number(id.split("-")[1]));
     if (!numbers.length) return [];
@@ -193,10 +292,57 @@ export class LinearTicketStore implements TicketStore {
       number: { in: numbers },
       state: { type: { in: [...NOT_STARTED_TYPES] } },
     });
-    return issues
-      .filter((i) => wanted.has(i.identifier) && NOT_STARTED_TYPES.has(i.state.type))
-      .filter((i) => norm(i.state.name) !== norm(this.#names.ready))
-      .map((i) => ({ id: i.identifier, column: i.state.name }));
+    const candidates = issues.filter((i) => wanted.has(i.identifier) && this.#inStopColumn(i));
+    const out: StopRequest[] = [];
+    for (const i of candidates)
+      if (!(this.appMode && (await this.#movedByMatrix(i))))
+        out.push({ id: i.identifier, column: i.state.name });
+    return out;
+  }
+
+  /**
+   * Who made the latest move into the issue's current column, per issue history: `matrix` (its
+   * app user), `other`, or undefined when history cannot tell. Only meaningful in app mode.
+   */
+  async #lastMoveBy(issue: Q.LinearIssue): Promise<"matrix" | "other" | undefined> {
+    try {
+      const data = await this.#client.request<{
+        issue: { history: { nodes: Q.LinearHistoryNode[] } } | null;
+      }>(Q.ISSUE_HISTORY, { id: issue.id });
+      const last = (data.issue?.history.nodes ?? [])
+        .filter((n) => n.toState)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+      if (!last || norm(last.toState?.name ?? "") !== norm(issue.state.name)) return undefined;
+      if (!last.actor?.id) return undefined;
+      return last.actor.id === (await this.viewerId()) ? "matrix" : "other";
+    } catch {
+      return undefined;
+    }
+  }
+
+  async #movedByMatrix(issue: Q.LinearIssue): Promise<boolean> {
+    return (await this.#lastMoveBy(issue)) === "matrix";
+  }
+
+  /** Backlog/Todo/Triage, never Ready: where a human parks an issue to stop Matrix. */
+  #inStopColumn(issue: Q.LinearIssue): boolean {
+    return (
+      NOT_STARTED_TYPES.has(issue.state.type) && norm(issue.state.name) !== norm(this.#names.ready)
+    );
+  }
+
+  /**
+   * True when a human parked the issue in a stop column, so Matrix must not move it out (the
+   * reconciler's stop poll then cancels the workflow). App mode asks the issue history; otherwise
+   * (or when history cannot tell) an issue Matrix already worked on (it has a phase) counts.
+   */
+  async #humanHold(issue: Q.LinearIssue): Promise<boolean> {
+    if (!this.#inStopColumn(issue)) return false;
+    if (this.appMode) {
+      const by = await this.#lastMoveBy(issue);
+      if (by) return by === "other";
+    }
+    return this.#meta(issue).phase !== undefined;
   }
 
   /**
@@ -204,7 +350,7 @@ export class LinearTicketStore implements TicketStore {
    * column it was blocked in, or (when blocked while in Ready) the needs-human label was removed.
    */
   #requeueable(issue: Q.LinearIssue): boolean {
-    const { blocked, blockedIn } = readBody(issue.description).meta;
+    const { blocked, blockedIn } = this.#meta(issue);
     if (!blocked) return true;
     // Unknown origin (blocked before `blockedIn` existed) counts as blocked in Ready.
     if (blockedIn !== undefined && norm(blockedIn) !== norm(issue.state.name)) return true;
@@ -267,7 +413,7 @@ export class LinearTicketStore implements TicketStore {
       input: {
         teamId: team.id,
         title: input.title,
-        description: writeBody(input.body, {}),
+        description: this.#host ? input.body : writeBody(input.body, {}),
         labelIds,
         stateId: await this.#stateId("open"),
         ...(input.priority !== undefined ? { priority: toLinearPriority(input.priority) } : {}),
@@ -277,21 +423,25 @@ export class LinearTicketStore implements TicketStore {
     const issue = data.issueCreate.issue;
     if (!data.issueCreate.success || !issue) throw new LinearApiError("Linear issueCreate failed");
     for (const dep of input.deps ?? []) await this.link(dep, issue.identifier, "blocks");
-    return (await this.get(issue.identifier)) ?? toTicket(issue, this.#names);
+    return (await this.get(issue.identifier)) ?? this.#ticket(issue);
   }
 
   async update(id: string, patch: TicketPatch): Promise<Ticket> {
     const issue = await this.#must(id);
-    const { text, meta } = readBody(issue.description);
+    const text = readBody(issue.description).text;
+    const meta = this.#meta(issue);
     if (patch.phase !== undefined) meta.phase = patch.phase;
     if (patch.status !== undefined) {
       meta.blocked = patch.status === "blocked";
       if (meta.blocked) meta.blockedIn = issue.state.name;
       else delete meta.blockedIn;
     }
-    const input: Record<string, unknown> = {
-      description: writeBody(patch.body ?? text, meta),
-    };
+    // Host mode: the description is the human's text only, written when the body changes.
+    const input: Record<string, unknown> = this.#host
+      ? patch.body !== undefined
+        ? { description: patch.body }
+        : {}
+      : { description: writeBody(patch.body ?? text, meta) };
     if (patch.title !== undefined) input.title = patch.title;
     if (patch.priority !== undefined) input.priority = toLinearPriority(patch.priority);
     // "blocked" keeps the current column; the flag lives in the body block.
@@ -302,7 +452,8 @@ export class LinearTicketStore implements TicketStore {
           : undefined;
       // A phase start never pulls an issue a human finished or canceled back onto the board.
       const reopen = isTerminal(issue.state.type) && PHASED.has(patch.status);
-      if (!reopen)
+      // Never move an issue out of the column a human parked it in to stop Matrix.
+      if (!reopen && !(await this.#humanHold(issue)))
         input.stateId =
           (column ? await this.#optionalStateId(column) : undefined) ??
           (await this.#stateId(patch.status));
@@ -311,10 +462,13 @@ export class LinearTicketStore implements TicketStore {
       input.labelIds = await this.#labelIds([this.#label, ...patch.labels]);
     if (patch.assignee !== undefined) input.assigneeId = await this.#userId(patch.assignee);
     if (patch.parent !== undefined) input.parentId = (await this.#must(patch.parent)).id;
-    const data = await this.#client.request<{
-      issueUpdate: { success: boolean; issue: Q.LinearIssue | null };
-    }>(Q.UPDATE_ISSUE, { id: issue.id, input });
-    if (!data.issueUpdate.success) throw new LinearApiError(`Linear issueUpdate ${id} failed`);
+    if (Object.keys(input).length) {
+      const data = await this.#client.request<{
+        issueUpdate: { success: boolean; issue: Q.LinearIssue | null };
+      }>(Q.UPDATE_ISSUE, { id: issue.id, input });
+      if (!data.issueUpdate.success) throw new LinearApiError(`Linear issueUpdate ${id} failed`);
+    }
+    if (this.#host) this.#host.set(issue.id, safeMeta(meta as Record<string, unknown>));
     if (patch.deps !== undefined) await this.#syncDeps(issue, patch.deps);
     const updated = await this.get(id);
     if (!updated) throw new Error(`ticket ${id} vanished after update`);
@@ -334,15 +488,29 @@ export class LinearTicketStore implements TicketStore {
     await this.#createComment(await this.#must(id), body);
   }
 
+  /**
+   * App mode posts the body as is (Matrix is recognised by its own Linear user). With a personal
+   * key the legacy hidden marker is still appended, since the author is the human's identity.
+   */
   async #createComment(issue: Q.LinearIssue, body: string): Promise<string> {
     const data = await this.#client.request<{
       commentCreate: { success: boolean; comment: { id: string } | null };
     }>(Q.CREATE_COMMENT, {
-      input: { issueId: issue.id, body: `${body}\n\n${MATRIX_COMMENT_MARKER}` },
+      input: {
+        issueId: issue.id,
+        body: this.appMode ? body : `${body}\n\n${MATRIX_COMMENT_MARKER}`,
+      },
     });
     if (!data.commentCreate.success || !data.commentCreate.comment)
       throw new LinearApiError(`Linear comment on ${issue.identifier} failed`);
     return data.commentCreate.comment.id;
+  }
+
+  /** Whether `user` is Matrix: its app user id in app mode, the key's user otherwise. */
+  async #isMatrix(user: { id?: string; isMe?: boolean } | null | undefined): Promise<boolean> {
+    if (!user) return false;
+    if (!this.appMode) return user.isMe === true;
+    return typeof user.id === "string" && user.id === (await this.viewerId());
   }
 
   /** Moves the issue to the column of a workflow phase; never reopens a finished issue. */
@@ -353,6 +521,8 @@ export class LinearTicketStore implements TicketStore {
     if (norm(issue.state.name) === norm(column)) return;
     // A human closed or canceled it while Matrix worked: leave it there.
     if (isTerminal(issue.state.type)) return;
+    // A human parked it in Backlog/Todo/Triage: never override that (the stop poll cancels).
+    if (await this.#humanHold(issue)) return;
     // Boards without this column keep the coarse column the reconciler already set.
     const stateId = await this.#optionalStateId(column);
     if (!stateId) return;
@@ -364,59 +534,63 @@ export class LinearTicketStore implements TicketStore {
   }
 
   /**
-   * One live comment per `key`: created once, then edited in place. Its id rides in the hidden
-   * Matrix block of the issue description; a deleted comment is recreated.
+   * One live comment per `key`: created once, then edited in place. Its id is kept in Matrix's
+   * per-issue meta (host-side, or the legacy description block); a deleted comment is recreated.
    */
   async upsertComment(id: string, key: string, body: string): Promise<void> {
     if (!isCommentKey(key)) throw new Error(`invalid comment key ${JSON.stringify(key)}`);
     const issue = await this.#must(id);
-    const marked = `${body}\n\n<!-- matrix-comment:${key} -->`;
-    const known = readBody(issue.description).meta.comments?.[key];
-    // The stored id is untrusted (anyone can edit the description): only edit our own comment
-    // on this very issue. Otherwise recover a lost id by marker, else create a new comment.
+    const text = this.appMode ? body : `${body}\n\n<!-- matrix-comment:${key} -->`;
+    const known = this.#meta(issue).comments?.[key];
+    // The stored id is untrusted (a legacy block is editable by anyone): only edit Matrix's own
+    // comment on this very issue. Otherwise recover a lost id by marker, else create a new one.
     const target =
       (known && (await this.#ownComment(known, issue.id)) ? known : undefined) ??
       (await this.#markedComment(issue.id, key));
     if (target) {
       const data = await this.#client.request<{ commentUpdate: { success: boolean } }>(
         Q.UPDATE_COMMENT,
-        { id: target, input: { body: marked } },
+        { id: target, input: { body: text } },
       );
       if (!data.commentUpdate.success) throw new LinearApiError(`Linear comment on ${id} failed`);
       if (target === known) return;
     }
-    const commentId = target ?? (await this.#createComment(issue, marked));
-    // Re-read right before writing so a human edit since the first read is kept.
+    const commentId = target ?? (await this.#createComment(issue, text));
+    // Re-read right before writing so a human edit (or a concurrent meta write) is kept.
     const fresh = await this.#must(id);
-    const { text, meta } = readBody(fresh.description);
+    const meta = this.#meta(fresh);
     meta.comments = { ...meta.comments, [key]: commentId };
-    const data = await this.#client.request<{ issueUpdate: { success: boolean } }>(Q.UPDATE_ISSUE, {
-      id: issue.id,
-      input: { description: writeBody(text, meta) },
-    });
-    if (!data.issueUpdate.success) throw new LinearApiError(`Linear issueUpdate ${id} failed`);
+    await this.#saveMeta(fresh, readBody(fresh.description).text, meta);
   }
 
   async #ownComment(commentId: string, issueUuid: string): Promise<boolean> {
     try {
       const data = await this.#client.request<{
-        comment: { issue: { id: string } | null; user: { isMe: boolean } | null } | null;
+        comment: {
+          issue: { id: string } | null;
+          user: { id?: string; isMe: boolean } | null;
+        } | null;
       }>(Q.COMMENT, { id: commentId });
-      return data.comment?.issue?.id === issueUuid && data.comment.user?.isMe === true;
+      return data.comment?.issue?.id === issueUuid && (await this.#isMatrix(data.comment.user));
     } catch (error) {
       if (error instanceof LinearApiError && /not found/i.test(error.message)) return false;
       throw error;
     }
   }
 
+  /** Legacy recovery: Matrix's own comment carrying the keyed marker (even after round-trip). */
   async #markedComment(issueUuid: string, key: string): Promise<string | undefined> {
     const data = await this.#client.request<{
       issue: {
-        comments: { nodes: Array<{ id: string; body: string; user: { isMe: boolean } | null }> };
+        comments: {
+          nodes: Array<{ id: string; body: string; user: { id?: string; isMe: boolean } | null }>;
+        };
       } | null;
     }>(Q.ISSUE_COMMENTS, { id: issueUuid });
-    const marker = `<!-- matrix-comment:${key} -->`;
-    return data.issue?.comments.nodes.find((c) => c.user?.isMe && c.body.includes(marker))?.id;
+    const marker = keyMarker(key);
+    for (const c of data.issue?.comments.nodes ?? [])
+      if (marker.test(c.body) && (await this.#isMatrix(c.user))) return c.id;
+    return undefined;
   }
 
   /** Makes sure the project label exists on the team (created when missing). */
@@ -450,9 +624,10 @@ export class LinearTicketStore implements TicketStore {
   }
 
   /**
-   * Comments oldest first, sanitized. A comment counts as Matrix's own only when the API key's
-   * user wrote it AND it carries a Matrix marker: a personal API key shares its identity with the
-   * human, and a human pasting the marker does not make their comment Matrix's.
+   * Comments oldest first, sanitized. App mode: Matrix's comments are those its app user wrote;
+   * legacy marked comments (posted earlier with a personal key) also count, which can only hide a
+   * comment from prompts, never lend it Matrix's authority. Personal key: the key's user wrote it
+   * AND it carries a marker, since that identity is shared with the human.
    */
   async listComments(id: string): Promise<TicketComment[]> {
     const issue = await this.#must(id);
@@ -463,25 +638,25 @@ export class LinearTicketStore implements TicketStore {
             id: string;
             body: string;
             createdAt?: string;
-            user: { isMe: boolean; displayName?: string; name?: string } | null;
+            user: { id?: string; isMe: boolean; displayName?: string; name?: string } | null;
           }>;
         };
       } | null;
     }>(Q.ISSUE_COMMENTS, { id: issue.id });
-    return (data.issue?.comments.nodes ?? [])
-      .map((c) => {
-        const marked =
-          c.body.includes(MATRIX_COMMENT_MARKER) || c.body.includes("<!-- matrix-comment:");
-        const author = c.user?.displayName || c.user?.name;
-        return {
-          id: c.id,
-          body: sanitizeUntrusted(c.body),
-          byMatrix: c.user?.isMe === true && marked,
-          ...(author ? { author: sanitizeUntrusted(author) } : {}),
-          ...(c.createdAt ? { createdAt: c.createdAt } : {}),
-        };
-      })
-      .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
+    const out: TicketComment[] = [];
+    for (const c of data.issue?.comments.nodes ?? []) {
+      const marked = ANY_MARKER.test(c.body);
+      const own = await this.#isMatrix(c.user);
+      const author = c.user?.displayName || c.user?.name;
+      out.push({
+        id: c.id,
+        body: sanitizeUntrusted(c.body),
+        byMatrix: this.appMode ? own || marked : own && marked,
+        ...(author ? { author: sanitizeUntrusted(author) } : {}),
+        ...(c.createdAt ? { createdAt: c.createdAt } : {}),
+      });
+    }
+    return out.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
   }
 
   /** `from blocks to`, `from is parent of to`, or `from related to` (same as other adapters). */

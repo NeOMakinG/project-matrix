@@ -35,6 +35,40 @@ Config only ever holds the variable name. The key is read per request, sent as t
 `Authorization` header to `https://api.linear.app/graphql`, and is never passed to sandboxes,
 runner environments, logs or error messages.
 
+### Matrix as its own Linear user (recommended)
+
+With a personal key every Matrix action shows up as that human. Create a Linear OAuth
+application (Settings > API > OAuth applications, enable **client credentials**), put its id and
+secret in the host env, and reference their NAMES:
+
+```json
+"linear": { "teamKey": "NEO", "projectLabel": "project:demo",
+            "app": { "clientIdEnv": "LINEAR_MATRIX_APP_CLIENT_ID",
+                     "clientSecretEnv": "LINEAR_MATRIX_APP_CLIENT_SECRET" } }
+```
+
+`app` wins over `apiKeyEnv` when both are set (`PATCH /v1/projects/{id}` with the full
+`tickets` object switches an existing project). The server exchanges the credentials at
+`https://api.linear.app/oauth/token` (`grant_type=client_credentials`, `scope=read,write`) and
+sends `Authorization: Bearer <token>`. The token (~30 days) is cached in memory and in a 0600
+file in the server's private state directory, refreshed a day before expiry and once on a 401;
+it is never logged, never in errors, never given to sandboxes. Both names must contain `LINEAR`.
+
+In app mode Matrix resolves its `viewer` id at first use and recognises its own comments by that
+author id, so comments carry no hidden markers; a move into Backlog/Todo/Triage by that app user
+(per `issue.history`) is not taken as a human stop.
+
+### Matrix bookkeeping lives host-side
+
+Per-issue state (phase, blocked flag and its column, live comment ids) is kept in the server's
+private state directory (`linear-meta-<project>.json`, mode 600), keyed by Linear issue UUID.
+Descriptions only hold the human's text. Older issues carried a `<!-- matrix:{...} -->` block
+(rendered visibly by Linear, with `-->` turned into `→`): on the next sync Matrix copies it
+host-side (host data wins if it already exists) and removes only that trailing block. A block is
+recognised only in Matrix's exact format with Matrix's own keys, nothing is written if the
+description changed since it was read, and the text before the block is kept as is. Without a
+private state directory (tools, tests) the legacy block is still written.
+
 ## Behaviour
 
 - **Scope:** `list`/`get` only see issues of the team that carry the project label. Issue ids
@@ -55,10 +89,11 @@ runner environments, logs or error messages.
   `phaseColumns` on `LinearTicketStore`.
 - **Live status comment:** one comment per issue (key `matrix-status`), created once and then
   edited in place with phase, status, attempt/review loops, the last error (redacted, one line),
-  https links from run receipts (PR, evidence) and a timestamp. Its comment id rides in the hidden
-  Matrix body block and is only trusted when it is Matrix's own comment on that same issue; a
-  lost id is recovered by the `<!-- matrix-comment:matrix-status -->` marker, a deleted comment is
-  recreated. Failed writes retry up to 3 times with backoff. Updates are debounced (1.5 s) and coalesced
+  https links from run receipts (PR, evidence) and a timestamp. Its comment id is kept host-side
+  and only trusted when it is Matrix's own comment on that same issue; with a personal key a lost
+  id is recovered by the `<!-- matrix-comment:matrix-status -->` marker (also after Linear's `→`
+  rewrite), a deleted comment is recreated. Switching to app mode starts a new status comment (the
+  app cannot edit comments the personal key wrote). Failed writes retry up to 3 times with backoff. Updates are debounced (1.5 s) and coalesced
   per issue, and nothing is written when the rendered status did not change.
 - **Project label:** created on the team (if missing) on the project's first ticket sync.
 - **Tracker outages never fail a workflow.** Every failed tracker write (status update, comment,
@@ -93,14 +128,16 @@ MATRIX_LINEAR_LIVE=1 LINEAR_API_KEY=... bunx vitest run packages/tickets/src/ada
 - **Human stop:** moving an issue to a not-started column (Backlog, Todo, Triage; not Ready)
   while its workflow is queued or running stops it: the active run is cancelled (container killed
   / Orca terminal interrupted and closed), the workflow blocks with `stopped by human (moved to
-  Backlog)`, and the issue stays where the human put it. Matrix never writes those columns itself
-  while a workflow is active, so such a move is always a human's. Moving it to **Ready** later
+  Backlog)`, and the issue stays where the human put it. In app mode the issue history tells a
+  human's move from Matrix's own; with a personal key (or no usable history) any such move counts. Moving it to **Ready** later
   restarts it in the same phase and does not count against `maxRequeuesPerDay`. The same stop is
   available over the API: `POST /v1/runs/{id}/cancel`, `POST /v1/projects/{id}/tickets/{ticketId}/cancel`
   and `POST /v1/projects/{id}/cancel` (every active workflow of the project).
-- **Own comments:** every comment Matrix posts carries a hidden `<!-- matrix:bot -->` marker. A
-  comment counts as Matrix's only with that marker AND the API key's own identity, so a personal
-  key does not hide the human's comments, and a pasted marker does not hide a human's either.
+- **Own comments:** in app mode a comment is Matrix's when its author is Matrix's app user;
+  legacy marked comments (posted earlier with a personal key) also count, which can only hide a
+  comment from prompts. With a personal key every comment carries a `<!-- matrix:bot -->` marker
+  and counts as Matrix's only with that marker AND the key's identity, so a pasted marker does
+  not hide another human's comment.
   Matrix never feeds its own comments back into prompts.
 - **Untrusted prompt input:** title, body and human comments reach agents sanitized and fenced in
   `<<<UNTRUSTED TICKET CONTENT …>>>` markers the content cannot close.

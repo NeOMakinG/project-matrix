@@ -11,7 +11,22 @@ export interface FakeLinear {
   queue: Array<{ status: number; body: unknown; headers?: Record<string, string> }>;
   pageSize: number;
   /** Comments by id (body + owning issue uuid). */
-  comments: Map<string, { issueId: string; body: string; isMe?: boolean }>;
+  comments: Map<string, { issueId: string; body: string; isMe?: boolean; userId?: string }>;
+  /** The authenticated user (`viewer`); comments and moves default to it. */
+  viewer: { id: string; app: boolean };
+  /** Who the next mutations are attributed to in history (default: the viewer). */
+  actorId: string | undefined;
+  /** State-change history by issue uuid. */
+  history: Map<string, Array<{ createdAt: string; actorId: string; from: string; to: string }>>;
+  /**
+   * OAuth app: when set, GraphQL requires `Bearer <token>` for a token the fake issued and still
+   * considers valid; the token endpoint accepts these credentials.
+   */
+  app?: { clientId: string; clientSecret: string; expiresIn: number };
+  /** Tokens issued by the fake token endpoint, oldest first; `revoked` ones answer 401. */
+  tokens: string[];
+  revoked: Set<string>;
+  tokenCalls: Array<Record<string, string>>;
 }
 
 const STATES: Array<[string, string]> = [
@@ -45,7 +60,14 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
     queue: [],
     pageSize: 2,
     comments: new Map(),
+    viewer: { id: "user-me", app: false },
+    actorId: undefined,
+    history: new Map(),
+    tokens: [],
+    revoked: new Set(),
+    tokenCalls: [],
   };
+  let clock = 0;
 
   const view = (issue: LinearIssue): LinearIssue => ({
     ...issue,
@@ -66,8 +88,18 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
     if (typeof input.title === "string") issue.title = input.title;
     if (typeof input.description === "string") issue.description = input.description;
     if (typeof input.priority === "number") issue.priority = input.priority;
-    if (typeof input.stateId === "string")
+    if (typeof input.stateId === "string") {
+      const from = issue.state.name;
       issue.state = states.find((s) => s.id === input.stateId) as LinearState;
+      const log = fake.history.get(issue.id) ?? [];
+      log.push({
+        createdAt: `2026-10-22T01:00:${String(++clock).padStart(2, "0")}Z`,
+        actorId: fake.actorId ?? fake.viewer.id,
+        from,
+        to: issue.state.name,
+      });
+      fake.history.set(issue.id, log);
+    }
     if (Array.isArray(input.labelIds))
       issue.labels.nodes = [...labels.values()]
         .filter((l) => (input.labelIds as string[]).includes(l.id))
@@ -152,14 +184,23 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
       }
       case "MatrixComment": {
         const id = `comment-${++seq}`;
-        fake.comments.set(id, { issueId: v.input.issueId, body: v.input.body });
+        fake.comments.set(id, {
+          issueId: v.input.issueId,
+          body: v.input.body,
+          userId: fake.actorId ?? fake.viewer.id,
+          isMe: (fake.actorId ?? fake.viewer.id) === fake.viewer.id,
+        });
         return { commentCreate: { success: true, comment: { id } } };
       }
       case "MatrixCommentLookup": {
         const c = fake.comments.get(v.id);
         if (!c) throw new Error("Entity not found: Comment");
         return {
-          comment: { id: v.id, issue: { id: c.issueId }, user: { isMe: c.isMe !== false } },
+          comment: {
+            id: v.id,
+            issue: { id: c.issueId },
+            user: { id: userOf(c), isMe: c.isMe !== false },
+          },
         };
       }
       case "MatrixIssueComments": {
@@ -170,7 +211,11 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
             id,
             body: c.body,
             createdAt: `2026-10-22T00:00:${id.replace(/\D/g, "").padStart(2, "0").slice(-2)}Z`,
-            user: { isMe: c.isMe !== false, displayName: c.isMe === false ? "ada" : "matrix" },
+            user: {
+              id: userOf(c),
+              isMe: c.isMe !== false,
+              displayName: c.isMe === false ? "ada" : "matrix",
+            },
           }));
         return { issue: { comments: { nodes } } };
       }
@@ -205,6 +250,19 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
           1,
         );
         return { issueRelationDelete: { success: true } };
+      case "MatrixViewer":
+        return { viewer: fake.viewer };
+      case "MatrixIssueHistory": {
+        const issue = byUuid(v.id) as LinearIssue;
+        const nodes = (fake.history.get(issue.id) ?? []).map((h) => ({
+          createdAt: h.createdAt,
+          actor: { id: h.actorId },
+          botActor: null,
+          fromState: { name: h.from },
+          toState: { name: h.to },
+        }));
+        return { issue: { history: { nodes: nodes.reverse() } } };
+      }
       case "MatrixUsers":
         return { users: { nodes: v.q === "ada" ? [{ id: "user-1" }] : [] } };
       default:
@@ -212,6 +270,23 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
     }
   };
 
+  const userOf = (c: { isMe?: boolean; userId?: string }) =>
+    c.userId ?? (c.isMe === false ? "user-ada" : fake.viewer.id);
+  const tokenEndpoint = (body: string) => {
+    const form = Object.fromEntries(new URLSearchParams(body));
+    fake.tokenCalls.push(form);
+    const app = fake.app;
+    if (
+      !app ||
+      form.grant_type !== "client_credentials" ||
+      form.client_id !== app.clientId ||
+      form.client_secret !== app.clientSecret
+    )
+      return respond(401, { error: "invalid_client" });
+    const token = `lin_oauth_fake${fake.tokens.length + 1}`;
+    fake.tokens.push(token);
+    return respond(200, { access_token: token, token_type: "Bearer", expires_in: app.expiresIn });
+  };
   const respond = (status: number, body: unknown, headers: Record<string, string> = {}) => ({
     ok: status >= 200 && status < 300,
     status,
@@ -219,7 +294,18 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
     text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
   });
 
-  fake.fetch = async (_url, init) => {
+  fake.fetch = async (url, init) => {
+    if (url.endsWith("/oauth/token")) return tokenEndpoint(init.body);
+    if (fake.app) {
+      const auth = init.headers.Authorization ?? "";
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      if (!fake.tokens.includes(token) || fake.revoked.has(token))
+        return respond(401, {
+          errors: [
+            { message: "Authentication required", extensions: { code: "AUTHENTICATION_ERROR" } },
+          ],
+        });
+    }
     const { query, variables } = JSON.parse(init.body) as {
       query: string;
       variables: Record<string, unknown>;

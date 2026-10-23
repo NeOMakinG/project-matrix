@@ -1,8 +1,9 @@
 /**
- * Minimal fetch-based client for Linear's GraphQL API. Host-only: the API key is read from the
- * host environment by variable NAME at request time and is never stored on the instance, logged or
- * included in errors.
+ * Minimal fetch-based client for Linear's GraphQL API. Host-only: credentials are read from the
+ * host environment by variable NAME (see `linear-auth.ts`) and are never logged or included in
+ * errors. App mode (OAuth client credentials) wins over a personal key when both are configured.
  */
+import { ApiKeyAuth, AppAuth, type LinearAppAuthConfig, type LinearAuth } from "./linear-auth.js";
 
 export const LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 
@@ -19,6 +20,14 @@ export type FetchLike = (
 export interface LinearClientOptions {
   /** Name of the host env var holding the personal API key. Default `LINEAR_API_KEY`. */
   apiKeyEnv?: string;
+  /** OAuth app (client credentials): Matrix acts as its own Linear user. Preferred when set. */
+  app?: LinearAppAuthConfig;
+  /** Optional 0600 file caching the app token across restarts (app mode only). */
+  tokenCacheFile?: string;
+  /** Token endpoint override (tests). */
+  tokenEndpoint?: string;
+  /** Clock for token expiry (tests). */
+  now?: () => number;
   /** Environment to read the key from. Default `process.env`. */
   env?: Record<string, string | undefined>;
   fetch?: FetchLike;
@@ -70,20 +79,35 @@ const defaultSleep = (ms: number, signal?: AbortSignal) =>
 
 export class LinearClient {
   readonly #o: LinearClientOptions;
+  readonly #auth: LinearAuth;
 
   constructor(options: LinearClientOptions = {}) {
-    const envName = options.apiKeyEnv ?? "LINEAR_API_KEY";
-    if (!/^[A-Z_][A-Z0-9_]*$/.test(envName))
-      throw new Error(`invalid apiKeyEnv ${JSON.stringify(envName)}: expected an env var name`);
-    this.#o = { ...options, apiKeyEnv: envName };
+    this.#o = options;
+    const env = () => options.env ?? process.env;
+    const doFetch = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
+    this.#auth = options.app
+      ? new AppAuth({
+          ...options.app,
+          env,
+          fetch: doFetch,
+          ...(options.tokenEndpoint ? { tokenEndpoint: options.tokenEndpoint } : {}),
+          ...(options.tokenCacheFile ? { cacheFile: options.tokenCacheFile } : {}),
+          ...(options.now ? { now: options.now } : {}),
+        })
+      : new ApiKeyAuth(options.apiKeyEnv ?? "LINEAR_API_KEY", env);
   }
 
-  #key(): string {
-    const env = this.#o.env ?? process.env;
-    const key = env[this.#o.apiKeyEnv as string]?.trim();
-    if (!key)
-      throw new LinearApiError(`Linear API key missing: set ${this.#o.apiKeyEnv} on the host`);
-    return key;
+  /** `app` when Matrix acts as its own Linear app user, `apiKey` for a personal key. */
+  get authMode(): "apiKey" | "app" {
+    return this.#auth.mode;
+  }
+
+  async #key(): Promise<string> {
+    try {
+      return await this.#auth.header();
+    } catch (error) {
+      throw new LinearApiError(scrub((error as Error).message));
+    }
   }
 
   #backoff(attempt: number, retryAfter: string | null, reset: string | null): number {
@@ -103,6 +127,7 @@ export class LinearClient {
     // A mutation that timed out or hit a 5xx may have been applied: only retry it on rate limits,
     // which Linear rejects before executing. Queries are safe to retry on any transient failure.
     const idempotent = !/^\s*mutation\b/m.test(query);
+    let reauthed = false;
     for (let attempt = 0; ; attempt++) {
       this.#o.signal?.throwIfAborted();
       const timeout = AbortSignal.timeout(this.#o.timeoutMs ?? 15_000);
@@ -111,7 +136,7 @@ export class LinearClient {
       try {
         response = await doFetch(this.#o.endpoint ?? LINEAR_ENDPOINT, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: this.#key() },
+          headers: { "Content-Type": "application/json", Authorization: await this.#key() },
           body,
           signal,
         });
@@ -128,6 +153,15 @@ export class LinearClient {
         parsed = text ? (JSON.parse(text) as typeof parsed) : undefined;
       } catch {
         parsed = undefined;
+      }
+      // An expired or revoked app token: Linear rejects before executing, so even a mutation
+      // is safe to resend once with a fresh token.
+      const unauthenticated =
+        response.status === 401 ||
+        parsed?.errors?.some((e) => e.extensions?.code === "AUTHENTICATION_ERROR") === true;
+      if (unauthenticated && !reauthed && this.#auth.invalidate()) {
+        reauthed = true;
+        continue;
       }
       const rateLimited =
         response.status === 429 ||
