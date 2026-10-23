@@ -256,3 +256,63 @@ test("PATCH accepts size tiers: gateway-served, strict and independent from revi
   expect(((await factory.store.getProject(id)) as StoredProject).models.tiers).toEqual(tiers);
   await factory.stop();
 });
+
+test("run timeouts and implement guidance: set at registration, PATCHed, bounded, cleared", async () => {
+  const { repo, factory, call } = await boot();
+  const min = 60_000;
+  const created = await call("POST", "/v1/projects", {
+    name: "Timeouts",
+    repo: { path: repo, baseBranch: "main" },
+    tickets: { kind: "linear", linear },
+    timeouts: { checks: 45 * min },
+  });
+  expect(created.status).toBe(200);
+  expect(created.body).toMatchObject({ timeouts: { checks: 45 * min, implement: 30 * min } });
+  const id = String(created.body.id);
+  const patch = (body: unknown) => call("PATCH", `/v1/projects/${id}`, body);
+  const ok = await patch({
+    timeouts: { implement: 60 * min },
+    idleTimeoutMs: 15 * min,
+    implementGuidance: "  Run `pnpm vitest run <file>` for targeted tests.  ",
+  });
+  expect(ok.status).toBe(200);
+  // The posted timeouts replace the previous overrides as a whole.
+  expect(ok.body).toMatchObject({
+    timeouts: { implement: 60 * min, checks: 30 * min, review: 30 * min },
+    idleTimeoutMs: 15 * min,
+    implementGuidance: "Run `pnpm vitest run <file>` for targeted tests.",
+  });
+  const stored = (await factory.store.getProject(id)) as StoredProject;
+  expect(stored).toMatchObject({ timeouts: { implement: 60 * min }, idleTimeoutMs: 15 * min });
+  for (const bad of [
+    { timeouts: { implement: 4 * min } },
+    { timeouts: { implement: 121 * min } },
+    { timeouts: { merge: 10 * min } },
+    { timeouts: { implement: 10 * min + 0.5 } },
+    { idleTimeoutMs: 0 },
+    { implementGuidance: "x".repeat(4001) },
+    { implementGuidance: "   " },
+    { runTimeoutMs: 60 * min },
+  ])
+    expect((await patch(bad)).status, JSON.stringify(bad).slice(0, 60)).toBe(400);
+  const cleared = await patch({ timeouts: null, idleTimeoutMs: null, implementGuidance: null });
+  expect(cleared.status).toBe(200);
+  expect(cleared.body).toMatchObject({ timeouts: { implement: 30 * min } });
+  expect(cleared.body.idleTimeoutMs).toBeUndefined();
+  expect(cleared.body.implementGuidance).toBeUndefined();
+  const after = (await factory.store.getProject(id)) as StoredProject;
+  expect(after.timeouts).toBeUndefined();
+  expect(after.idleTimeoutMs).toBeUndefined();
+  expect(after.implementGuidance).toBeUndefined();
+  expect(
+    (
+      await call("POST", "/v1/projects", {
+        name: "Bad",
+        repo: { path: repo, baseBranch: "main" },
+        tickets: { kind: "linear", linear },
+        timeouts: { implement: 1000 },
+      })
+    ).status,
+  ).toBe(400);
+  await factory.stop();
+});

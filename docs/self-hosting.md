@@ -275,9 +275,22 @@ no tech-watch digests. The project config lives in the Matrix database.
   answers `GET /v1/models`, unknown ids are rejected: use gateway ids (for example
   `claude-opus-4-7` for Opus 5.5, `claude-sonnet-5-5`, `gpt-6-sol`). Setting `implement` or `spike` drops the
   size tiers.
+- **Run timeouts**: every run of a phase has a wall clock (default 30 min). Override per phase
+  with `timeouts: {spike, design, implement, checks, review, qa}` in ms, each 5-120 min
+  (`300000`-`7200000`); phases left out keep the default. `idleTimeoutMs` (1-120 min, default
+  10 min) stops a model run that prints nothing. A run stopped by its wall clock records
+  `run timeout after N min while still active (last tool: …)` when the agent was still calling
+  tools (raise the timeout or narrow the work), distinct from `runner idle`. On PATCH,
+  `timeouts` replaces the previous overrides as a whole; `null` resets any of the three.
+  Example, a 60 min implement for a large test suite:
+  `PATCH /v1/projects/{id}` `{"timeouts": {"implement": 3600000}}`.
+- **Implement guidance**: the implement prompt lists the project's check commands and asks the
+  agent to run only targeted tests for the files it changed, since the checks phase runs the
+  full commands afterwards. `implementGuidance` (up to 4000 chars, operator-written, trusted)
+  is appended to that prompt, e.g. the exact command for a single test file.
 - **Later changes**: `PATCH /v1/projects/{id}` with any of `repo.editablePaths`, `repo.setup`,
-  `repo.setupScripts`, `tickets`,
-  `checks`, `models`.
+  `repo.setupScripts`, `tickets`, `checks`, `models`, `timeouts`, `idleTimeoutMs`,
+  `implementGuidance`.
 
 ### How a run ends
 

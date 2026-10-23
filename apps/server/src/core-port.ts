@@ -37,6 +37,10 @@ export interface Project {
   /** Effective model per model-driven phase. */
   models?: Partial<Record<ModelPhase, { runner: RunnerKind; model: string }>>;
   checks?: CheckSpec[];
+  /** Effective wall-clock limit per run of each phase (ms). */
+  timeouts?: Record<string, number>;
+  idleTimeoutMs?: number;
+  implementGuidance?: string;
 }
 
 export type ModelPhase = "spike" | "design" | "implement" | "review" | "qa";
@@ -81,13 +85,26 @@ export interface CreateProjectInput {
     setupScripts?: boolean;
   };
   models?: ModelPlanInput;
+  timeouts?: PhaseTimeoutsInput;
+  idleTimeoutMs?: number;
+  implementGuidance?: string;
 }
+/** Per-phase run wall clock in ms (validated 5-120 min at the HTTP edge). */
+export type PhaseTimeoutsInput = {
+  [phase in "spike" | "design" | "implement" | "checks" | "review" | "qa"]?: number | undefined;
+};
 export interface UpdateProjectInput {
   /** Existing repos only: paths agents may change (dot paths always stay denied). */
   repo?: { editablePaths?: string[]; setup?: SetupStep[] | null; setupScripts?: boolean };
   tickets?: TicketsInput;
   checks?: CheckSpec[];
   models?: ModelPlanInput;
+  /** Replaces the per-phase overrides; null clears them. */
+  timeouts?: PhaseTimeoutsInput | null;
+  /** null resets to the runner default. */
+  idleTimeoutMs?: number | null;
+  /** null removes it. */
+  implementGuidance?: string | null;
 }
 
 export type RunState = "queued" | "running" | "paused" | "awaiting_approval" | RunStatus;

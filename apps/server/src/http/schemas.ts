@@ -52,6 +52,12 @@ export const Project = z
       .optional()
       .openapi({ description: "Effective model per model-driven phase" }),
     checks: z.array(z.object({ kind: z.string(), cmd: z.array(z.string()) })).optional(),
+    timeouts: z
+      .record(z.string(), z.number())
+      .optional()
+      .openapi({ description: "Effective wall-clock limit per run of each phase, in ms" }),
+    idleTimeoutMs: z.number().optional().openapi({ description: "Set when overridden" }),
+    implementGuidance: z.string().optional(),
   })
   .openapi("Project");
 
@@ -80,6 +86,34 @@ export const ModelPlan = z
   })
   .strict()
   .openapi("ModelPlan");
+
+export const TIMEOUT_PHASES = ["spike", "design", "implement", "checks", "review", "qa"] as const;
+export const MIN_TIMEOUT_MS = 5 * 60_000;
+export const MAX_TIMEOUT_MS = 120 * 60_000;
+const TimeoutMs = z.number().int().min(MIN_TIMEOUT_MS).max(MAX_TIMEOUT_MS);
+
+export const PhaseTimeouts = z
+  .object(
+    Object.fromEntries(TIMEOUT_PHASES.map((phase) => [phase, TimeoutMs.optional()])) as Record<
+      (typeof TIMEOUT_PHASES)[number],
+      z.ZodOptional<typeof TimeoutMs>
+    >,
+  )
+  .strict()
+  .openapi("PhaseTimeouts", {
+    description:
+      "Wall-clock limit per run of a phase, in ms (5-120 min). Phases left out use the default (30 min). On PATCH the object replaces the previous overrides; null clears them all.",
+  });
+
+const IdleTimeoutMs = z.number().int().min(60_000).max(MAX_TIMEOUT_MS).openapi({
+  description:
+    "A model run with no output for this long stops as 'runner idle', in ms (1-120 min). Default 10 min.",
+});
+
+const ImplementGuidance = z.string().trim().min(1).max(4000).openapi({
+  description:
+    "Operator-written guidance appended to the implement prompt as trusted project configuration (e.g. which test command to use for targeted runs).",
+});
 
 const EditablePaths = z.array(z.string().min(1).max(200)).min(1).max(100).openapi({
   description:
@@ -226,6 +260,13 @@ export const UpdateProject = z
       description: "Check commands run in the sandbox (argv, no shell)",
     }),
     models: ModelPlan.optional(),
+    timeouts: PhaseTimeouts.nullable().optional(),
+    idleTimeoutMs: IdleTimeoutMs.nullable()
+      .optional()
+      .openapi({ description: "null resets to the default" }),
+    implementGuidance: ImplementGuidance.nullable()
+      .optional()
+      .openapi({ description: "null removes it" }),
   })
   .strict()
   .openapi("UpdateProject");
@@ -265,6 +306,9 @@ export const CreateProject = z
       description: "Register an existing host repo instead of creating an empty one",
     }),
     models: ModelPlan.optional(),
+    timeouts: PhaseTimeouts.optional(),
+    idleTimeoutMs: IdleTimeoutMs.optional(),
+    implementGuidance: ImplementGuidance.optional(),
   })
   .openapi("CreateProject");
 

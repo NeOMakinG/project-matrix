@@ -51,6 +51,8 @@ export interface RunRequest {
   readOnly?: boolean;
   env?: Record<string, string>;
   timeoutMs: number;
+  /** No output for this long stops the run as idle; overrides the runner's default. */
+  idleTimeoutMs?: number;
 }
 
 export type RunEventKind = "log" | "tool" | "file" | "cost" | "error" | "done";

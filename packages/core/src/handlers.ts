@@ -26,7 +26,7 @@ import {
   scenarioRejectionReason,
 } from "./holdout.js";
 import { findingsOf } from "./machine.js";
-import { resolveModel, selectModel } from "./models.js";
+import { phaseTimeoutMs, resolveModel, selectModel } from "./models.js";
 import type {
   FigmaMcpCapability,
   Phase,
@@ -103,7 +103,10 @@ export async function callModel(
         model: resolveModel(ctx.project, model.model),
         prompt,
         workdir: options.workdir ?? ctx.workdir,
-        timeoutMs: ctx.project.runTimeoutMs,
+        timeoutMs: phaseTimeoutMs(ctx.project, options.phase ?? ctx.workflow.phase),
+        ...(ctx.project.idleTimeoutMs !== undefined
+          ? { idleTimeoutMs: ctx.project.idleTimeoutMs }
+          : {}),
         ...(options.readOnly ? { readOnly: true } : {}),
       },
       (event) => {
@@ -454,12 +457,35 @@ const implement =
             ]
           : []),
         "Follow the spike plan in the ticket comments, CONTEXT.md and docs/adr. Write tests. Commit with clear messages. Never push to the base branch.",
+        implementTestingGuidance(ctx.project),
+        ...(ctx.project.implementGuidance?.trim()
+          ? [
+              `Project guidance (source: operator project configuration):\n${ctx.project.implementGuidance.trim()}`,
+            ]
+          : []),
       ]
         .filter(Boolean)
         .join("\n\n"),
     );
     return outcomeFrom(result, { ...model, model: implementerModel });
   };
+
+/**
+ * The checks phase runs the full commands right after implement; an implementer that also runs the
+ * whole suite (thousands of tests, minutes per call) burns its run budget and gets killed mid-work.
+ */
+export function implementTestingGuidance(project: ProjectConfig): string {
+  // Without configured checks nothing runs the suite later: the agent's own tests are the gate.
+  if (!project.checks.length) return "";
+  const commands = project.checks.map((c) => `- ${c.kind}: \`${c.cmd.join(" ")}\``);
+  const minutes = Math.round(phaseTimeoutMs(project, "implement") / 60_000);
+  return [
+    "Testing during implement: after you finish, the factory's checks phase runs the project's full commands in a clean sandbox:",
+    ...commands,
+    "Do not run the whole test suite or these full commands yourself. Run only the targeted tests for the files you changed (e.g. the specific test file: `vitest run path/to/file.test.ts`, `jest path/to/file.test.ts` or `--testPathPattern <name>`), and keep typecheck/lint runs to a minimum.",
+    `This run is stopped after ${minutes} min; spend it on the change, not on full-suite runs.`,
+  ].join("\n");
+}
 
 const checks =
   (deps: HandlerDeps): PhaseHandler =>
@@ -510,7 +536,7 @@ const checks =
             workdir: ctx.workdir,
             cmd: check.cmd,
             network: "none",
-            timeoutMs: ctx.project.runTimeoutMs,
+            timeoutMs: phaseTimeoutMs(ctx.project, "checks"),
           },
           ctx.signal,
         );

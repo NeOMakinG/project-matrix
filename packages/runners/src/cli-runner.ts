@@ -174,7 +174,7 @@ export function createCliRunner(
       const env = { ...(options.baseEnv ?? defaultBaseEnv()), ...spec.env, ...(req.env ?? {}) };
       // The executor gets our own signal so a finished-but-lingering or silent CLI can be stopped
       // (SIGTERM, then SIGKILL) without being reported as a user cancellation.
-      const idleMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+      const idleMs = req.idleTimeoutMs ?? options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
       const graceMs = options.completionGraceMs ?? DEFAULT_COMPLETION_GRACE_MS;
       const controller = new AbortController();
       let stopReason: "completed" | "idle" | undefined;

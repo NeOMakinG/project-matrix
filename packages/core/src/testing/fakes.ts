@@ -9,6 +9,7 @@ import type {
 import type {
   PreparedWorkspace,
   Receipt,
+  RunEvent,
   Runner,
   RunnerId,
   RunRequest,
@@ -101,6 +102,7 @@ export class FakeTicketStore implements TicketStore {
 export type Script = (
   req: RunRequest,
   signal: AbortSignal,
+  emit: (kind: RunEvent["kind"], message: string) => void,
 ) => Partial<RunResult> | Promise<Partial<RunResult>>;
 
 /** A runner whose answers are scripted per phase; records every request it receives. */
@@ -122,7 +124,9 @@ export class FakeRunner implements Runner {
       kind: "log",
       message: `${req.phase} on ${req.model}`,
     });
-    const partial = await this.script(req, signal);
+    const partial = await this.script(req, signal, (kind, message) =>
+      onEvent({ runId: req.runId, at: new Date().toISOString(), kind, message }),
+    );
     if (signal.aborted)
       return { runId: req.runId, status: "cancelled", summary: "aborted", receipts: [] };
     return { runId: req.runId, status: "ok", summary: "", receipts: [], costUsd: 0.01, ...partial };

@@ -50,7 +50,14 @@ import {
   validateSetup,
 } from "./existing-repo.js";
 import { type FinalizeJournal, finalizeProject } from "./finalize.js";
-import { newProjectConfig, type StoredProject, toApproval, toProject, toRun } from "./mapping.js";
+import {
+  applyRunSettings,
+  newProjectConfig,
+  type StoredProject,
+  toApproval,
+  toProject,
+  toRun,
+} from "./mapping.js";
 import {
   applyModelPlan,
   assertKnownModels,
@@ -287,6 +294,8 @@ export class RealCore implements CorePort {
   async createProject(input: CreateProjectInput): Promise<Project> {
     this.o.stateOwner?.assertOwned();
     if (input.repo) return this.registerRepo({ ...input, repo: input.repo });
+    // Validate run settings before anything is created on disk.
+    applyRunSettings({} as StoredProject, input);
     const id = randomUUID();
     const repoPath = join(this.o.projectsRoot, id);
     await mkdir(this.o.projectsRoot, { recursive: true });
@@ -319,6 +328,7 @@ export class RealCore implements CorePort {
         review: { runner: "codex", model: "fake-reviewer" },
       };
     if (input.checks) config.checks = input.checks;
+    applyRunSettings(config, input);
     if (input.models) applyModelPlan(config, input.models);
     await this.assertServedModels(config, input.models);
     await this.o.store.upsertProject(config);
@@ -381,6 +391,7 @@ export class RealCore implements CorePort {
           implement: { runner: "claude-code", model: "fake-implementer" },
           review: { runner: "codex", model: "fake-reviewer" },
         };
+      applyRunSettings(config, input);
       if (input.models) applyModelPlan(config, input.models);
       // Every model the project would call, defaults included, before anything is registered.
       await this.assertServedModels(config, input.models);
@@ -436,6 +447,7 @@ export class RealCore implements CorePort {
       }
       if (patch.checks)
         config.checks = patch.checks.map((c) => ({ kind: c.kind, cmd: [...c.cmd] }));
+      applyRunSettings(config, patch);
       if (patch.models) {
         applyModelPlan(config, patch.models);
         await this.assertServedModels(config, patch.models);
