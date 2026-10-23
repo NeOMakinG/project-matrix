@@ -32,6 +32,12 @@ import {
   requiresApproval,
   type Transition,
 } from "./machine.js";
+import {
+  type ManualQaData,
+  manualQaData,
+  manualQaReason,
+  manualQaStillAllowed,
+} from "./manual-qa.js";
 import { DEFAULT_RUN_IDLE_MS, phaseTimeoutMs, resolveModel, selectModel } from "./models.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, RunnerId, Workspace } from "./ports.js";
 import type {
@@ -332,12 +338,11 @@ export class Reconciler {
       else if (result === "replayed") report.replayed.push(w.ticketId);
       else if (result === "approval") report.awaitingApproval.push(w.ticketId);
     }
-    if (this.o.pullRequests) {
-      for (const w of await this.o.store.listWorkflows({ status: ["waiting_approval"] })) {
-        const project = byId.get(w.projectId);
-        if (project && w.phase === "merge" && !this.isActive(w))
-          await this.publishPullRequest(project, w);
-      }
+    for (const w of await this.o.store.listWorkflows({ status: ["waiting_approval"] })) {
+      const project = byId.get(w.projectId);
+      if (!project || w.phase !== "merge" || this.isActive(w)) continue;
+      if (this.o.pullRequests) await this.publishPullRequest(project, w);
+      await this.observeHandoff(project, w);
     }
     return report;
   }
@@ -361,12 +366,14 @@ export class Reconciler {
       if (problems) throw new Error(`gates no longer hold: ${problems}`);
       const ticket = await this.o.tickets(project.id).get(w.ticketId);
       if (!ticket) throw new Error(`ticket ${w.ticketId} not found`);
+      const manual = await this.latestManualQa(w);
       const published = await port.publish({
         project,
         workflow: w,
         ticket,
         headSha,
         evidence: await this.pullRequestEvidence(w),
+        ...(manual ? { manualQa: { surfaces: manual.surfaces, criteria: manual.criteria } } : {}),
       });
       if (published) {
         if (this.published.size > 5_000) this.published.clear();
@@ -379,7 +386,10 @@ export class Reconciler {
           ticketId: w.ticketId,
           url: published.url,
           branch: published.branch,
+          ...(manual ? { manualQa: manualQaReason(manual.surfaces) } : {}),
         });
+      if (published && manual && !(await this.announced(project, w.ticketId, published.url)))
+        await this.announceManualQa(project, w, manual, published.url);
     } catch (error) {
       this.trackerFailed(project.id, w.ticketId, "pull-request", error);
     }
@@ -400,6 +410,128 @@ export class Reconciler {
       out.push({ phase, summary: run.summary ?? "", urls: [...new Set(urls)].slice(0, 10) });
     }
     return out;
+  }
+
+  /** `handoffKey` of handoffs whose ticket was seen outside Ready (in memory: fails safe). */
+  private readonly handoffLeftReady = new Set<string>();
+
+  private handoffKey(w: WorkflowState, qaRunId: string): string {
+    return `${w.projectId}\u0000${w.ticketId}\u0000${qaRunId}`;
+  }
+
+  /** Remembers that a handoff's ticket left Ready, so a later Ready means a human moved it back. */
+  private async observeHandoff(project: ProjectConfig, w: WorkflowState): Promise<void> {
+    const run = await this.latestRun(w, "qa");
+    if (!run || this.handoffLeftReady.has(this.handoffKey(w, run.id))) return;
+    if (!(await this.latestManualQa(w))) return;
+    try {
+      const ticket = await this.o.tickets(project.id).get(w.ticketId);
+      if (ticket && ticket.status !== "ready") {
+        if (this.handoffLeftReady.size > 5_000) this.handoffLeftReady.clear();
+        this.handoffLeftReady.add(this.handoffKey(w, run.id));
+      }
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "get", error);
+    }
+  }
+
+  /**
+   * A ticket waiting on a manual QA handoff that a human moved back to Ready is QA feedback: the
+   * merge approval is withdrawn and the workflow loops back to implement (the human's ticket
+   * comments reach the implementer). Only for manual handoffs; true when it looped.
+   */
+  private async manualQaFeedback(project: ProjectConfig, ticketId: string): Promise<boolean> {
+    const w = await this.o.store.getWorkflow(project.id, ticketId);
+    if (!w || w.status !== "waiting_approval" || w.phase !== "merge" || this.isActive(w))
+      return false;
+    if (!(await this.latestManualQa(w))) return false;
+    // Still in Ready since the handoff (e.g. the column move failed): not a human's feedback.
+    const qaRun = await this.latestRun(w, "qa");
+    if (!qaRun || !this.handoffLeftReady.delete(this.handoffKey(w, qaRun.id))) return false;
+    const fresh = (await this.o.store.getProject(project.id)) ?? project;
+    const t = reject(
+      w,
+      fresh,
+      "manual QA feedback: a human moved the ticket back to Ready; address their ticket comments",
+    );
+    let saved: WorkflowState;
+    try {
+      saved = await this.o.store.saveWorkflow(t.state);
+    } catch (error) {
+      if (error instanceof VersionConflictError) return true;
+      throw error;
+    }
+    for (const a of await this.o.store.listApprovals(w.projectId, w.ticketId, "merge"))
+      if (a.status === "pending")
+        await this.o.store
+          .decideApproval(
+            a.id,
+            "rejected",
+            { id: this.ownerId, kind: "agent" },
+            "manual QA feedback",
+          )
+          .catch(() => undefined);
+    await this.applyEffects(fresh, saved, { ...t, state: saved });
+    // Loop limit reached: the block effect already labelled and explained it.
+    if (saved.status === "blocked") return true;
+    const tickets = this.o.tickets(project.id);
+    if (tickets.removeLabel)
+      await this.trackerWrite(project.id, ticketId, "removeLabel", async () =>
+        tickets.removeLabel?.(ticketId, NEEDS_HUMAN_LABEL),
+      );
+    await this.trackerWrite(project.id, ticketId, "comment", () =>
+      tickets.comment(
+        ticketId,
+        "Matrix took the move back to Ready as manual QA feedback: the merge approval is withdrawn and the next run addresses your comments (review loop).",
+      ),
+    );
+    return true;
+  }
+
+  /** True when Matrix already posted the handoff comment for this PR (e.g. an earlier process). */
+  private async announced(project: ProjectConfig, ticketId: string, url: string): Promise<boolean> {
+    const tickets = this.o.tickets(project.id);
+    if (!tickets.listComments) return false;
+    try {
+      return (await tickets.listComments(ticketId)).some(
+        (c) =>
+          c.byMatrix && c.body.startsWith("Matrix needs a human: manual") && c.body.includes(url),
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /** Labels the ticket needs-human and says why, once per published head (tracker best effort). */
+  private async announceManualQa(
+    project: ProjectConfig,
+    w: WorkflowState,
+    manual: ManualQaData,
+    url: string,
+  ): Promise<void> {
+    const tickets = this.o.tickets(project.id);
+    const reason = manualQaReason(manual.surfaces);
+    if (tickets.addLabel)
+      await this.trackerWrite(project.id, w.ticketId, "addLabel", async () =>
+        tickets.addLabel?.(w.ticketId, NEEDS_HUMAN_LABEL),
+      );
+    const link = /^https:\/\/[^\s()<>[\]`"']{1,500}$/.test(url) ? url : "(see the status comment)";
+    await this.trackerWrite(project.id, w.ticketId, "comment", () =>
+      tickets.comment(
+        w.ticketId,
+        [
+          `Matrix needs a human: ${reason}: ${link}`,
+          "Checks and review passed; no driver for this surface runs on the Matrix host. Test the draft PR on a device with the checklist in its description, then merge it on GitHub and approve the merge in Matrix. To request changes instead, comment here and move the ticket back to Ready: the next run treats your comments as review feedback.",
+        ].join("\n\n"),
+      ),
+    );
+  }
+
+  /** The handoff of the latest QA run, when QA was handed off to a human. */
+  private async latestManualQa(w: WorkflowState): Promise<ManualQaData | undefined> {
+    const run = await this.latestRun(w, "qa");
+    if (!run || run.status !== "ok") return undefined;
+    return (await this.o.store.listReceipts(run.id)).map(manualQaData).find((d) => d);
   }
 
   private isActive(w: WorkflowState): boolean {
@@ -439,7 +571,7 @@ export class Reconciler {
       if (created) {
         const w = await this.o.store.getWorkflow(project.id, t.id);
         if (w) this.o.bus.publish({ type: "workflow.changed", workflow: w });
-      } else {
+      } else if (!(await this.manualQaFeedback(project, t.id))) {
         await this.requeue(project, t.id, t.priority);
       }
     }
@@ -946,7 +1078,9 @@ export class Reconciler {
     const problems = await this.gateProblems(fresh, w, phase);
     if (problems) return { ok: false, reason: problems, kind: "gates" };
 
-    if (requiresApproval(mode, phase)) {
+    // A manual QA handoff always needs a human merge approval, whatever the autonomy setting.
+    const manual = phase === "merge" && (await this.latestManualQa(w)) !== undefined;
+    if (requiresApproval(mode, phase) || manual) {
       const run = await this.candidateRun(w, phase);
       if (!run) return { ok: false, reason: `no run to approve for ${phase}`, kind: "gates" };
       const { approved } = await this.approvalFor(w, phase, run.id, headSha);
@@ -989,7 +1123,10 @@ export class Reconciler {
       }
       if (p === "merge") continue;
       const receipts = await this.o.store.listReceipts(run.id);
-      if (p === "qa" && !receipts.some(isTrustedHoldout))
+      const manual = p === "qa" ? receipts.map(manualQaData).find((d) => d) : undefined;
+      if (manual && !manualQaStillAllowed(project, manual))
+        return "manual QA handoff is no longer allowed by the project's qa config";
+      if (p === "qa" && !manual && !receipts.some(isTrustedHoldout))
         return "QA has no judge-produced holdout score";
       const result = gate(p, { ok: true, summary: "", receipts }, project);
       if (!result.pass) return `${p} gate no longer passes: ${result.reason}`;

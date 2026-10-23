@@ -31,3 +31,17 @@ test("branch and title stay ASCII-safe and stable", () => {
     "NEO-7: Ping ＠all about ＃3",
   );
 });
+
+test("manual QA checklist: fallback item, unknown surfaces dropped", async () => {
+  const { pullRequestBody } = await import("./pr-text.js");
+  const body = pullRequestBody({
+    ticket: { id: "NEO-1", title: "x" },
+    headSha: "a".repeat(40),
+    evidence: [],
+    linear: false,
+    manualQa: { surfaces: ["android", "<script>"], criteria: [] },
+  });
+  expect(body).toContain("No android QA driver");
+  expect(body).not.toContain("<script>");
+  expect(body).toContain("- [ ] The ticket's acceptance criteria hold on the device");
+});

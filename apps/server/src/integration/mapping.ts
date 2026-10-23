@@ -9,6 +9,7 @@ import {
   type Phase,
   type ProjectConfig,
   phaseTimeoutMs,
+  QA_SURFACES,
   REVIEW_LANES,
   type RunRecord,
 } from "@matrix/core";
@@ -19,6 +20,7 @@ import {
   type PhaseResourcesInput,
   type PhaseTimeoutsInput,
   type Project,
+  type QaSettingsInput,
   type Run,
   type SetupStep,
   type UpdateProjectInput,
@@ -99,7 +101,7 @@ export function applyRunSettings(
   config: StoredProject,
   patch: Pick<
     UpdateProjectInput,
-    "timeouts" | "idleTimeoutMs" | "implementGuidance" | "resources" | "baselineWarmup"
+    "timeouts" | "idleTimeoutMs" | "implementGuidance" | "resources" | "baselineWarmup" | "qa"
   >,
 ): void {
   if (patch.resources === null) delete config.resources;
@@ -133,6 +135,12 @@ export function applyRunSettings(
   if (patch.idleTimeoutMs === null) delete config.idleTimeoutMs;
   else if (patch.idleTimeoutMs !== undefined)
     config.idleTimeoutMs = boundedMs(patch.idleTimeoutMs, 60_000, "idleTimeoutMs");
+  if (patch.qa === null) delete config.qa;
+  else if (patch.qa !== undefined) {
+    const qa = validQaSettings(patch.qa);
+    if (qa.surfaces?.length || qa.driver) config.qa = qa;
+    else delete config.qa;
+  }
   if (patch.implementGuidance === null) delete config.implementGuidance;
   else if (patch.implementGuidance !== undefined) {
     const text = patch.implementGuidance.trim();
@@ -141,6 +149,20 @@ export function applyRunSettings(
     if (text) config.implementGuidance = text;
     else delete config.implementGuidance;
   }
+}
+
+/** Re-checked here so non-HTTP callers cannot store unknown surfaces or drivers. */
+export function validQaSettings(input: QaSettingsInput): NonNullable<StoredProject["qa"]> {
+  const surfaces = [...new Set(input.surfaces ?? [])];
+  for (const surface of surfaces)
+    if (!(QA_SURFACES as readonly string[]).includes(surface))
+      throw new CoreError("invalid_request", `unknown qa surface ${String(surface).slice(0, 20)}`);
+  if (input.driver !== undefined && input.driver !== "none" && input.driver !== "manual")
+    throw new CoreError("invalid_request", "qa.driver must be none or manual");
+  return {
+    ...(surfaces.length ? { surfaces } : {}),
+    ...(input.driver === "manual" ? { driver: "manual" as const } : {}),
+  };
 }
 
 const PARSERS: readonly string[] = CHECK_PARSERS;
@@ -202,6 +224,14 @@ export function toProject(config: StoredProject): Project {
     ...(config.baselineWarmup ? { baselineWarmup: true } : {}),
     ...(config.idleTimeoutMs !== undefined ? { idleTimeoutMs: config.idleTimeoutMs } : {}),
     ...(config.implementGuidance ? { implementGuidance: config.implementGuidance } : {}),
+    ...(config.qa
+      ? {
+          qa: {
+            ...(config.qa.surfaces ? { surfaces: [...config.qa.surfaces] } : {}),
+            driver: config.qa.driver ?? "none",
+          },
+        }
+      : {}),
   };
 }
 

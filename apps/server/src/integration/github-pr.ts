@@ -191,6 +191,7 @@ export class GitHubPullRequests implements PullRequestPort {
         headSha,
         evidence: request.evidence,
         linear: (project as StoredProject).matrix?.tickets.kind === "linear",
+        manualQa: request.manualQa,
       }),
     );
     const url = stdout

@@ -1,6 +1,7 @@
 import { checksGateReason } from "./check-baseline.js";
 import { designEvidence } from "./design.js";
 import { isTrustedHoldout } from "./holdout.js";
+import { manualQaData } from "./manual-qa.js";
 import { type AutonomyMode, PHASES, type Phase, type Receipt } from "./ports.js";
 import type {
   BackoffPolicy,
@@ -74,6 +75,12 @@ export function gate(phase: Phase, outcome: PhaseOutcome, config: ProjectConfig)
         : { pass: true, reason: "no P1 findings" };
     }
     case "qa": {
+      const manual = r.map(manualQaData).find((d) => d !== undefined);
+      if (manual) {
+        if (r.some((x) => !x.ok)) return { pass: false, reason: "QA receipt failed" };
+        // Hands off to a human: merge then always needs a human approval (see advance/authorize).
+        return { pass: true, reason: `manual ${manual.surfaces.join("/")} QA handoff` };
+      }
       const evidence = r.filter((x) => QA_EVIDENCE.has(x.kind));
       if (evidence.length === 0) return { pass: false, reason: "no QA receipts" };
       if (evidence.some((x) => !x.ok)) return { pass: false, reason: "QA receipt failed" };
@@ -165,6 +172,14 @@ export function advance(
       : state;
 
   if (result.pass) {
+    if (state.phase === "qa" && outcome.receipts.some((x) => manualQaData(x))) {
+      // Never auto-merge (or finish) from a manual QA handoff: a human approves after testing.
+      const merge = enter(withModel, "merge", config);
+      return {
+        state: { ...merge.state, status: "waiting_approval" },
+        effects: [{ type: "request_approval", phase: "merge" }],
+      };
+    }
     if (
       state.phase === "design" &&
       requiresApproval(autonomyFor(config, "design"), "design") &&

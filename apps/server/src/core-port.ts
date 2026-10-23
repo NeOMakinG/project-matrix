@@ -44,6 +44,14 @@ export interface Project {
   baselineWarmup?: boolean;
   idleTimeoutMs?: number;
   implementGuidance?: string;
+  qa?: { surfaces?: NonNullable<QaSettingsInput["surfaces"]>; driver: "none" | "manual" };
+}
+
+/** Per-project QA surfaces (trusted host config, never ticket text). */
+export interface QaSettingsInput {
+  surfaces?: ("host" | "api" | "web" | "android" | "ios")[] | undefined;
+  /** manual: hand off to a human when a device surface has no driver; none (default): block. */
+  driver?: "none" | "manual" | undefined;
 }
 
 export type ModelPhase = "spike" | "design" | "implement" | "review" | "qa";
@@ -99,6 +107,7 @@ export interface CreateProjectInput {
   baselineWarmup?: boolean;
   idleTimeoutMs?: number;
   implementGuidance?: string;
+  qa?: QaSettingsInput;
 }
 /** Per-phase sandbox resources (validated at the HTTP edge, re-checked in mapping). */
 export type PhaseResourcesInput = {
@@ -125,6 +134,8 @@ export interface UpdateProjectInput {
   idleTimeoutMs?: number | null;
   /** null removes it. */
   implementGuidance?: string | null;
+  /** Replaces the QA settings; null removes them. */
+  qa?: QaSettingsInput | null;
 }
 
 export type RunState = "queued" | "running" | "paused" | "awaiting_approval" | RunStatus;

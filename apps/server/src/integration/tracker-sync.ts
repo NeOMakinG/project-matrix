@@ -32,6 +32,8 @@ interface Entry {
   links: StatusLink[];
   orca?: OrcaStatusRef | undefined;
   pullRequest?: StatusLink | undefined;
+  /** Manual QA handoff reason of the draft PR, when QA was handed to a human. */
+  manualQa?: string | undefined;
   /** Latest checks summary vs the base commit ("0 new failures (273 pre-existing ...)"). */
   checks?: string | undefined;
   /** First new failure names of the latest checks run (sanitized, at most 20). */
@@ -130,8 +132,10 @@ export class TrackerSync {
     } else if (event.type === "pull_request.opened") {
       const entry = this.#entry(event.projectId, event.ticketId);
       const link = safeLink(event.branch, event.url);
-      if (!link || entry.pullRequest?.url === link.url) return;
+      if (!link || (entry.pullRequest?.url === link.url && entry.manualQa === event.manualQa))
+        return;
       entry.pullRequest = link;
+      entry.manualQa = event.manualQa;
       this.#schedule(entry);
     } else if (event.type === "run.started") {
       this.#runs.set(event.runId, `${event.projectId}\u0000${event.ticketId}`);
@@ -234,6 +238,7 @@ export class TrackerSync {
       entry.pullRequest,
       entry.checks,
       entry.newFailures,
+      entry.manualQa,
     );
     if (store.upsertComment && entry.sentBody !== body) {
       try {

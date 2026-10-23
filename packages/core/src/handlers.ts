@@ -31,6 +31,12 @@ import {
   scenarioRejectionReason,
 } from "./holdout.js";
 import { findingsOf } from "./machine.js";
+import {
+  acceptanceCriteria,
+  isManualQaHandoff,
+  manualQaPlan,
+  manualQaReceipt,
+} from "./manual-qa.js";
 import { phaseResources, phaseTimeoutMs, resolveModel, selectModel } from "./models.js";
 import type {
   FigmaMcpCapability,
@@ -254,6 +260,14 @@ const spike =
       });
       await deps.holdout.save(ctx.project.id, ctx.ticket.id, scenarios);
       ctx.emit(`stored ${scenarios.length} holdout scenarios`, "log");
+      const qaPlan = manualQaPlan(ctx.project, ctx.ticket, deps.qa?.surfaces);
+      if (qaPlan.mode !== "auto")
+        ctx.emit(
+          qaPlan.mode === "manual"
+            ? `no ${qaPlan.surfaces.join("/")} QA driver on this host: QA will hand off to a human (draft PR + checklist)`
+            : `no ${qaPlan.surfaces.join("/")} QA driver on this host: QA will block (set qa.driver "manual" to hand off)`,
+          "log",
+        );
     } catch (error) {
       const costUsd = (plan.costUsd ?? 0) + scenarioCost;
       const summary = `Private QA scenario preparation failed: ${privateQaCause(error)}`;
@@ -657,6 +671,29 @@ const qa =
   async (ctx) => {
     try {
       await ctx.validateDesign?.();
+      const plan = manualQaPlan(ctx.project, ctx.ticket, deps.qa?.surfaces);
+      if (plan.mode === "unavailable") {
+        const summary = `no ${plan.surfaces.join("/")} QA driver on this host; set the project's qa.driver to "manual" for a manual QA handoff`;
+        ctx.emit(summary, "error");
+        return { ok: false, blocked: true, summary, receipts: [] };
+      }
+      if (plan.mode === "manual" && ctx.designRequired) {
+        const summary =
+          "manual QA handoff cannot verify the approved design (no device screenshots); needs a human";
+        ctx.emit(summary, "error");
+        return { ok: false, blocked: true, summary, receipts: [] };
+      }
+      if (plan.mode === "manual") {
+        // Checks and review already passed; the private scenarios stay hidden (count only).
+        const stored = await deps.holdout.load(ctx.project.id, ctx.ticket.id);
+        const receipt = manualQaReceipt(
+          plan.surfaces,
+          acceptanceCriteria(ctx.ticket.body),
+          stored.length,
+        );
+        ctx.emit(receipt.summary, "log");
+        return { ok: true, summary: receipt.summary, receipts: [receipt], runStatus: "ok" };
+      }
       if (!deps.qa)
         return { ok: false, summary: "no QA driver configured", receipts: [], runStatus: "failed" };
       // Only core's judge may produce a holdout receipt; anything the driver supplies is discarded.
@@ -694,6 +731,7 @@ const qa =
           (receipt) =>
             receipt.kind !== "holdout" &&
             receipt.kind !== "design" &&
+            !isManualQaHandoff(receipt) &&
             (receipt.data as { provenance?: string } | undefined)?.provenance !==
               "matrix:design-comparison:v1",
         )

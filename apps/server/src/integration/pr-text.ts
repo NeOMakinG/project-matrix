@@ -73,7 +73,11 @@ export interface PullRequestBodyInput {
   evidence: PullRequestEvidence[];
   /** Linear identifier line (`Linear: NEO-7`) when the tracker is Linear. */
   linear: boolean;
+  /** Manual QA handoff: surfaces and the ticket's PUBLIC acceptance criteria (never holdout text). */
+  manualQa?: { surfaces: string[]; criteria: string[] } | undefined;
 }
+
+const SURFACE = /^(host|api|web|android|ios)$/;
 
 export function pullRequestBody(input: PullRequestBodyInput): string {
   const lines = [
@@ -81,7 +85,9 @@ export function pullRequestBody(input: PullRequestBodyInput): string {
     "",
     untrustedMarkdown(input.ticket.title, 300),
     "",
-    `Validated head: \`${input.headSha.slice(0, 12)}\` (checks, review and QA passed).`,
+    input.manualQa
+      ? `Validated head: \`${input.headSha.slice(0, 12)}\` (checks and review passed; QA needs a human, see below).`
+      : `Validated head: \`${input.headSha.slice(0, 12)}\` (checks, review and QA passed).`,
   ];
   if (input.evidence.length) {
     lines.push("", "## Evidence", "");
@@ -95,6 +101,22 @@ export function pullRequestBody(input: PullRequestBodyInput): string {
         `- **${item.phase}**: ${summary || "passed"}${links.length ? ` (${links.join(", ")})` : ""}`,
       );
     }
+  }
+  if (input.manualQa) {
+    const surfaces = input.manualQa.surfaces.filter((x) => SURFACE.test(x)).join("/") || "device";
+    lines.push(
+      "",
+      "## Manual QA needed",
+      "",
+      `No ${surfaces} QA driver runs on the Matrix host. Test this branch on a device, tick each item, then merge and approve the merge in Matrix (or comment on the ticket and move it back to Ready).`,
+      "",
+    );
+    const items = input.manualQa.criteria
+      .slice(0, 30)
+      .map((c) => untrustedMarkdown(singleLine(c, 300), 300))
+      .filter(Boolean);
+    if (items.length) for (const item of items) lines.push(`- [ ] ${item}`);
+    else lines.push("- [ ] The ticket's acceptance criteria hold on the device");
   }
   if (input.linear) {
     const id = input.ticket.id.replace(/[^A-Za-z0-9_-]/g, "");

@@ -107,6 +107,13 @@ private state directory (tools, tests) the legacy block is still written.
 - **Resilience:** cursor pagination (100 per page); 429/`RATELIMITED`/5xx/network errors retry
   with backoff (honours `Retry-After`), then surface as `LinearApiError`.
 
+- **Manual QA handoff:** projects with `qa: {surfaces: ["android"], driver: "manual"}` whose
+  ticket needs a device surface with no driver on the host stop at Awaiting merge with a draft PR,
+  a `Manual QA needed` checklist from the ticket's acceptance criteria, the `needs-human` label and
+  a `manual Android QA required — draft PR ready` comment (also in the live status comment).
+  Moving the issue back to Ready with comments is QA feedback: the next run is a review loop. See
+  [manual QA handoff](qa/manual-qa-handoff.md).
+
 ## Live smoke test
 
 Read-only and skipped by default:
