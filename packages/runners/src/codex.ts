@@ -106,6 +106,8 @@ export function codexParser(): EventParser {
       }
       return out;
     },
+    // `codex exec` runs one turn: its completion (or failure) is the end of the run.
+    isComplete: () => completed || failure !== undefined,
     finish() {
       // Success = the final turn completed with no turn.failed and no unrecovered error after it;
       // transient reconnects before the completion do not count (the CLI exit code still does).
