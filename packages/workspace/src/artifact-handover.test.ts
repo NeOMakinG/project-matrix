@@ -181,7 +181,12 @@ async function fixture(
   await trusted.record(workdir, { gitdir, commonDir: gitdir, baseSha: base });
   const port = new WorktreeGitPort({ trusted, executor });
   const scan = vi.fn(async (snapshot: string, binding: { objects: Array<{ path: string }> }) => {
-    expect(binding.objects.map((object) => object.path)).toEqual([...baseEntries.keys()]);
+    // Only blobs new or changed since the trusted BASE are scanned and bound.
+    expect(binding.objects.map((object) => object.path)).toEqual(
+      [...candidateEntries]
+        .filter(([path, sha]) => baseEntries.get(path) !== sha)
+        .map(([path]) => path),
+    );
     expect(await readFile(join(snapshot, "src/answer.ts"), "utf8")).toContain("= 2");
     return { kind: "secret-scan" as const, ok: true, summary: "fake scanner" };
   });
