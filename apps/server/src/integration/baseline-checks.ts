@@ -94,6 +94,9 @@ export function baselineChecks(opts: BaselineChecksOptions): BaselinePort {
       if (!SHA.test(head)) throw new Error("invalid run HEAD");
       const baseSha = await git(gitDir, ["merge-base", `refs/heads/${branch}`, head]);
       if (!SHA.test(baseSha)) throw new Error("no merge-base with the base branch");
+      // The base ref pointing at the run's own HEAD means it moved onto agent work: no baseline.
+      if (baseSha === head)
+        throw new Error("base branch points at the run HEAD; refusing baseline");
       const tree = await git(gitDir, ["ls-tree", "-r", baseSha]);
       const lockHash = createHash("sha256")
         .update(
@@ -196,7 +199,11 @@ async function runOnBase(
       }
       out.push({
         code: res.code,
-        failures: parseCheckOutput(resolveParser(check), res, [workdir, "/work"]),
+        failures: parseCheckOutput(resolveParser(check), res, [
+          workdir,
+          await realpath(workdir).catch(() => workdir),
+          "/work",
+        ]),
       });
     }
     return out;

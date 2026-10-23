@@ -158,4 +158,33 @@ describe("checks phase with a baseline", () => {
       await harness.reconciler.idle();
     }
   });
+  test("exit-code checks stay strict unless explicitly set to compare", async () => {
+    const harness = createHarness({
+      project: { maxAttempts: 5, maxLoops: 1, checks: [{ kind: "test", cmd: ["npm", "test"] }] },
+    });
+    harness.deps.sandbox = {
+      kind: "bwrap",
+      exec: async () => ({ code: 1, stdout: "", stderr: "" }),
+    };
+    let baseRuns = 0;
+    harness.deps.baseline = {
+      defaultMode: () => "compare",
+      run: async () => {
+        baseRuns++;
+        return { baseSha: "b".repeat(40), results: [{ code: 1, failures: null }] };
+      },
+    };
+    try {
+      await harness.setup();
+      const ticket = harness.tickets.add("exit-code");
+      await runUntilIdle(harness);
+      const w = await harness.store.getWorkflow(harness.project.id, ticket.id);
+      expect(baseRuns).toBe(0);
+      // Failed strictly: looped back to implement without consulting the baseline.
+      expect(w?.loops).toBeGreaterThanOrEqual(1);
+    } finally {
+      harness.reconciler.stop();
+      await harness.reconciler.idle();
+    }
+  });
 });

@@ -78,7 +78,13 @@ export function compareToBase(
   });
   if (branch.code === 0) return v(true, [], 0, "passed");
   if (!base || "error" in base)
-    return v(false, branch.failures ?? [], 0, `no baseline (${base?.error ?? "unavailable"})`);
+    return v(
+      false,
+      branch.failures ?? [],
+      0,
+      `no baseline (${base?.error ?? "unavailable"})`,
+      Math.max(1, branch.failures?.length ?? 1),
+    );
   if (base.code === 0)
     return v(
       false,
@@ -112,7 +118,8 @@ export function verdictOf(receipt: Receipt): BaselineVerdict | undefined {
   if (!b || typeof b !== "object") return undefined;
   if (typeof b.newCount !== "number" || typeof b.preExisting !== "number") return undefined;
   if (!Array.isArray(b.newFailures)) return undefined;
-  return b as BaselineVerdict;
+  const newFailures = b.newFailures.filter((f): f is string => typeof f === "string");
+  return { ...(b as BaselineVerdict), newFailures };
 }
 
 const UNIT: Record<string, [string, string]> = {

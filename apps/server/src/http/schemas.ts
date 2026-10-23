@@ -85,7 +85,7 @@ const ChecksSettings = z
           }),
         baseline: z.enum(["compare", "strict"]).optional().openapi({
           description:
-            "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise.",
+            "compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare.",
         }),
       })
       .strict(),

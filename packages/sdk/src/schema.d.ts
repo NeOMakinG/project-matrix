@@ -4309,7 +4309,7 @@ export interface components {
          */
         parser?: "eslint-json" | "tsc" | "node-test-tap" | "vitest-json" | "exit-code";
         /**
-         * @description compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise.
+         * @description compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare.
          * @enum {string}
          */
         baseline?: "compare" | "strict";
@@ -4413,7 +4413,7 @@ export interface components {
          */
         parser?: "eslint-json" | "tsc" | "node-test-tap" | "vitest-json" | "exit-code";
         /**
-         * @description compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise.
+         * @description compare: a failing check is re-run on the base commit and only failures absent there fail it. strict: any failure fails. Unset: compare for existing repos, strict otherwise; exit-code checks stay strict unless set to compare.
          * @enum {string}
          */
         baseline?: "compare" | "strict";

@@ -116,4 +116,13 @@ describe("baselineChecks port", () => {
     await port.run(ctx, [check]);
     expect(n).toBe(2);
   });
+  test("a base ref moved onto the run HEAD is refused (agent work never becomes the base)", async () => {
+    const r = repo();
+    git(r.path, "update-ref", "refs/heads/main", git(r.wt, "rev-parse", "HEAD"));
+    const { port, ctx, execs } = harness(r);
+    await expect(port.run(ctx, [{ kind: "lint", cmd: ["eslint", "."] }])).rejects.toThrow(
+      /run HEAD/,
+    );
+    expect(execs).toHaveLength(0);
+  });
 });

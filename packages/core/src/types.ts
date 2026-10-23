@@ -55,7 +55,7 @@ export interface CheckCommand {
   cmd: string[];
   /** Unset: detected from the argv (eslint, vitest, tsc, node --test), else exit-code. */
   parser?: CheckParser;
-  /** Unset: the baseline port's default (compare for existing repos, strict otherwise). */
+  /** Unset: the baseline port's default (compare for existing repos); exit-code checks: strict. */
   baseline?: BaselineMode;
 }
 

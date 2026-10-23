@@ -600,7 +600,10 @@ async function applyBaseline(
 ): Promise<void> {
   const checks = ctx.project.checks;
   const offset = receipts.length - checks.length;
-  const mode = (i: number) => checks[i]?.baseline ?? port.defaultMode(ctx);
+  // An exit-code-only check cannot tell new failures from old ones: compare only on explicit opt-in.
+  const mode = (i: number) =>
+    checks[i]?.baseline ??
+    (resolveParser(checks[i] as CheckCommand) === "exit-code" ? "strict" : port.defaultMode(ctx));
   const wanted = checks.flatMap((c, i) => (mode(i) === "compare" && runs[i]?.code ? [i] : []));
   let base: Awaited<ReturnType<BaselinePort["run"]>> | undefined;
   let error = "";

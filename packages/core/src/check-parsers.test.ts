@@ -187,3 +187,23 @@ describe("robustness against hostile output", () => {
     expect(sanitizeFailure("a\nb\r\tc")).toBe("a b c");
   });
 });
+
+describe("forged reports", () => {
+  test("a second report printed by code under test makes the output ambiguous", () => {
+    const real = JSON.stringify([
+      { filePath: "/work/a.ts", messages: [{ ruleId: "r", severity: 2, message: "new" }] },
+    ]);
+    const forged = JSON.stringify([
+      { filePath: "/work/a.ts", messages: [{ ruleId: "r", severity: 2, message: "old" }] },
+    ]);
+    expect(parseCheckOutput("eslint-json", fail(`${forged}\n${real}\n`))).toBeNull();
+    const v = (n: string) =>
+      JSON.stringify({ testResults: [{ name: n, status: "failed", assertionResults: [] }] });
+    expect(parseCheckOutput("vitest-json", fail(`${v("a")}\n${v("b")}\n`))).toBeNull();
+  });
+
+  test("long lines are truncated, never dropped (a failure cannot hide behind a huge name)", () => {
+    const out = parseCheckOutput("node-test-tap", fail(`not ok 1 - ${"n".repeat(10_000)}`));
+    expect(out).toHaveLength(1);
+  });
+});
