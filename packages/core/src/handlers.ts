@@ -49,7 +49,14 @@ import type {
   VerifyPort,
 } from "./ports-internal.js";
 import { formatQaEvidence, persistedQaReceipt, scenarioEvidence } from "./qa-evidence.js";
-import { lanePrompt, parseFindings, pickReviewer, reviewReceipt } from "./review.js";
+import {
+  lanePrompt,
+  parseFindings,
+  parseToolingNotes,
+  pickReviewer,
+  reviewReceipt,
+} from "./review.js";
+import { type ReviewContext, splitToolingFindings } from "./review-context.js";
 import type { Store } from "./store.js";
 import type { CheckCommand, PhaseModel, PhaseOutcome, ProjectConfig } from "./types.js";
 import { ticketContext } from "./untrusted.js";
@@ -59,7 +66,7 @@ export type PhaseHandlers = Record<Phase, PhaseHandler> & {
   getDesignCapability?: (project: ProjectConfig) => FigmaMcpCapability | undefined;
 };
 
-export { FactoryToolingError } from "./factory-error.js";
+export { FactoryToolingError, vouchedToolingError } from "./factory-error.js";
 
 export interface HandlerDeps {
   figma?: FigmaDesignPort;
@@ -72,6 +79,8 @@ export interface HandlerDeps {
   deploy?: DeployPort;
   verify?: VerifyPort;
   architecture?: (ctx: PhaseContext) => Promise<Receipt[]>;
+  /** Host-computed change context for review lanes (review sandboxes have no git by design). */
+  reviewContext?: (ctx: PhaseContext) => Promise<ReviewContext>;
   /** Installs dependencies in the worktree right before checks (existing repos). */
   setup?: DependencySetupPort;
   /** Base-commit check results: failures already on base do not fail compare-mode checks. */
@@ -580,19 +589,41 @@ const review =
     const reviewer = pickReviewer(ctx.project, ctx.workflow.implementerModel);
     const receipts: Receipt[] = [];
     let costUsd = 0;
+    let context: ReviewContext | undefined;
+    if (deps.reviewContext) {
+      try {
+        context = await deps.reviewContext(ctx);
+      } catch (error) {
+        ctx.signal.throwIfAborted();
+        ctx.emit(`review context unavailable: ${privateQaCause(error)}`, "error");
+      }
+    }
     for (const lane of ctx.project.reviewLanes) {
       ctx.emit(`review lane ${lane} on ${reviewer.model}`, "log");
       const result = await callModel(
         deps,
         ctx,
         reviewer,
-        lanePrompt(lane, ticketContext(ctx.ticket, ctx.ticketComments), ctx.project.baseBranch),
+        lanePrompt(
+          lane,
+          ticketContext(ctx.ticket, ctx.ticketComments),
+          ctx.project.baseBranch,
+          context,
+        ),
         { readOnly: true },
       );
       costUsd += result.costUsd ?? 0;
       if (result.status !== "ok") return { ...outcomeFrom(result, reviewer, receipts), costUsd };
       try {
-        receipts.push(reviewReceipt(lane, reviewer.model, parseFindings(result.summary)));
+        // Review-environment complaints (missing git/worktree/tooling) never block the change.
+        const split = splitToolingFindings(parseFindings(result.summary), context?.changedFiles);
+        const toolingNotes = [...parseToolingNotes(result.summary), ...split.toolingNotes];
+        if (split.toolingNotes.length)
+          ctx.emit(
+            `${lane}: ${split.toolingNotes.length} review-environment finding(s) kept as tooling notes`,
+            "log",
+          );
+        receipts.push(reviewReceipt(lane, reviewer.model, split.findings, toolingNotes));
       } catch (error) {
         return {
           ok: false,
@@ -605,9 +636,14 @@ const review =
       }
     }
     const p1 = receipts.flatMap(findingsOf).filter((f) => f.severity === "P1").length;
+    const notes = receipts.reduce(
+      (n, r) =>
+        n + ((r.data as { toolingNotes?: string[] } | undefined)?.toolingNotes?.length ?? 0),
+      0,
+    );
     return {
       ok: p1 === 0,
-      summary: `${receipts.length} lanes, ${p1} P1`,
+      summary: `${receipts.length} lanes, ${p1} P1${notes ? `, ${notes} tooling notes (review environment; see receipts)` : ""}`,
       receipts,
       runStatus: "ok",
       model: reviewer.model,
@@ -632,9 +668,15 @@ const qa =
         qaResult = await deps.qa.run(ctx, { scenarios, reviewer: judge });
       } catch (error) {
         if (!(error instanceof FactoryToolingError)) throw error;
+        // Only a driver-vouched cause is published (still redacted, bounded); the message may not be safe.
+        const cause = error.operatorCause
+          ? `: ${privateQaCause(new Error(error.operatorCause))}`
+          : "";
+        const summary = `QA probe preparation failed${cause}; retry QA or contact the operator`;
+        ctx.emit(summary, "error");
         return {
           ok: false,
-          summary: "QA probe preparation failed; retry QA or contact the operator",
+          summary,
           receipts: error.receipts.map(persistedQaReceipt),
           ...(ctx.signal.aborted
             ? { runStatus: "cancelled" as const }

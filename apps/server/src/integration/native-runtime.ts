@@ -44,6 +44,7 @@ import { gatewayModels, type ModelLister } from "./model-plan.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
 import { type OrcaRuntimeBridge, orcaBridge, trustedTicketWorktree } from "./orca-runtime.js";
 import { committedQaSnapshot } from "./qa-snapshot.js";
+import { hostReviewContext } from "./review-context.js";
 import type { Runtime } from "./runtime.js";
 import { scenarioQaDriver } from "./scenario-qa.js";
 import { scanCommittedHistory } from "./secret-scan.js";
@@ -455,6 +456,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
         ];
       },
       runners,
+      reviewContext: (ctx) => hostReviewContext(ctx, git, trusted, opts.dataDir),
       sandbox: checkedSandbox,
       setup,
       // Flaky-test retries start from the same clean committed tree the checks ran on.
