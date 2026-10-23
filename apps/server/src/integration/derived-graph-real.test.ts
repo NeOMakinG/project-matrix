@@ -82,7 +82,8 @@ test.each([
         scan: async (source, binding) => {
           scans++;
           expect(await readFile(join(source, "src/add.ts"), "utf8")).toContain("left + right");
-          expect(await checkGraphDrift(source)).toEqual({ ok: true, stale: [] });
+          // The snapshot holds only blobs changed since BASE (graph files only when they changed).
+          expect(binding.objects.map((object) => object.path)).toContain("src/add.ts");
           if (mode === "scan-cancel") abort.abort(new Error("fixture ownership cancellation"));
           return {
             kind: "secret-scan",

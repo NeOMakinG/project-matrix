@@ -1,13 +1,25 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  link,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rename,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hostExecutor } from "@matrix/sandbox";
 import { describe, expect, test } from "vitest";
 import { scanSourceSnapshot } from "../../../apps/server/src/integration/source-scan.js";
-import { WorktreeGitPort } from "./git-port.js";
+import { SOURCE_READ_LIMIT, WorktreeGitPort } from "./git-port.js";
 import { NativeWorkspace } from "./native.js";
 
 async function fixture(policy?: {
@@ -16,6 +28,7 @@ async function fixture(policy?: {
   config?: string;
   packageRoots?: string[];
   branch?: string;
+  largeFile?: string;
 }) {
   const repo = await mkdtemp(join(tmpdir(), "matrix-handover-test-"));
   const git = (...args: string[]) =>
@@ -40,6 +53,12 @@ async function fixture(policy?: {
       policy?.attributes?.includes("UTF-16LE") ? "utf16le" : "utf8",
     ),
   );
+  if (policy?.largeFile) {
+    // Sparse file above the in-memory source cap: cheap on disk, real bytes for git and hashing.
+    const handle = await open(join(repo, policy.largeFile), "wx");
+    await handle.truncate(SOURCE_READ_LIMIT + 4096);
+    await handle.close();
+  }
   git("add", ".");
   git("commit", "-qm", "fixture");
   const workspace = new NativeWorkspace({
@@ -92,17 +111,8 @@ describe("host-mediated handover (real git, explicitly fake scanner)", () => {
       const result = await port.commitImplementation(prepared.workdir, {
         ...options,
         scan: async (snapshot, binding) => {
-          expect(binding.objects.map((object) => object.path)).toEqual(
-            [
-              ".gitignore",
-              "app/package.json",
-              "backend/package.json",
-              "matrix.config.ts",
-              "package.json",
-              "src/answer.ts",
-              "web/package.json",
-            ].filter((path) => ignored || path !== ".gitignore"),
-          );
+          // Only blobs that differ from the expected HEAD are scanned and bound.
+          expect(binding.objects.map((object) => object.path)).toEqual(["src/answer.ts"]);
           for (const path of artifacts) expect(existsSync(join(snapshot, path))).toBe(false);
           return options.scan();
         },
@@ -468,4 +478,104 @@ describe("generic build directories are not disposable by default", () => {
     });
     expect(scanned).toBe(true);
   }, 30_000);
+
+  describe("tracked files above the in-memory source cap", () => {
+    const large = "src/model.bin";
+
+    test("unchanged large file: fingerprint streams, commit succeeds, scan skips it", async () => {
+      const { prepared, port, options, git } = await fixture({ largeFile: large });
+      const before = await port.treeState(prepared.workdir);
+      expect(await port.treeState(prepared.workdir)).toBe(before);
+      await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+      expect(await port.treeState(prepared.workdir)).not.toBe(before);
+      const committed = await port.commitImplementation(prepared.workdir, {
+        ...options,
+        scan: async (_snapshot, binding) => {
+          expect(binding.objects.map((object) => object.path)).toEqual(["src/answer.ts"]);
+          return options.scan();
+        },
+      });
+      expect(git("cat-file", "-s", `${committed.headSha}:${large}`)).toBe(
+        String(SOURCE_READ_LIMIT + 4096),
+      );
+      expect(await port.cleanForChecks(prepared.workdir)).toBe(committed.headSha);
+    }, 60_000);
+
+    test("hardlinked large file is refused by the fingerprint and the commit", async () => {
+      const { prepared, port, options, head } = await fixture({ largeFile: large });
+      const outside = join(await mkdtemp(join(tmpdir(), "matrix-large-link-")), "outside.bin");
+      await link(join(prepared.workdir, large), outside);
+      await expect(port.treeState(prepared.workdir)).rejects.toThrow(/hardlinked/);
+      await writeFile(join(prepared.workdir, "src/answer.ts"), "export const answer = 2;\n");
+      await expect(port.commitImplementation(prepared.workdir, options)).rejects.toThrow(
+        /hardlinked/,
+      );
+      expect(await port.headSha(prepared.workdir)).toBe(head);
+    }, 60_000);
+
+    test("large file behind a symlinked directory is refused", async () => {
+      const { prepared, port, options, head } = await fixture({ largeFile: large });
+      const outside = await mkdtemp(join(tmpdir(), "matrix-large-symlink-"));
+      const handle = await open(join(outside, "model.bin"), "wx");
+      await handle.truncate(SOURCE_READ_LIMIT + 4096);
+      await handle.close();
+      await rm(join(prepared.workdir, "src"), { recursive: true });
+      await symlink(outside, join(prepared.workdir, "src"));
+      await expect(port.commitImplementation(prepared.workdir, options)).rejects.toThrow(
+        /symlink|tampering/,
+      );
+      expect(await port.headSha(prepared.workdir)).toBe(head);
+    }, 60_000);
+
+    test("renames and out-of-gate commits since BASE stay scanned", async () => {
+      const { prepared, port, options } = await fixture({ largeFile: large });
+      const wt = (...args: string[]) =>
+        execFileSync(
+          "git",
+          ["-C", prepared.workdir, "-c", "user.name=T", "-c", "user.email=t@localhost", ...args],
+          { encoding: "utf8" },
+        ).trim();
+      await writeFile(join(prepared.workdir, "src/outside.ts"), "export const leaked = 1;\n");
+      wt("add", "src/outside.ts");
+      wt("commit", "-qm", "committed outside the gate");
+      await rename(join(prepared.workdir, "src/answer.ts"), join(prepared.workdir, "src/moved.ts"));
+      await port.commitImplementation(prepared.workdir, {
+        ...options,
+        expectedHead: wt("rev-parse", "HEAD"),
+        scan: async (_snapshot, binding) => {
+          expect(binding.objects.map((object) => object.path).sort()).toEqual([
+            "src/moved.ts",
+            "src/outside.ts",
+          ]);
+          return options.scan();
+        },
+      });
+    }, 60_000);
+
+    test("a mode-only change makes a large BASE blob rescanned (refused by the cap)", async () => {
+      const { prepared, port, options, head } = await fixture({ largeFile: large });
+      await chmod(join(prepared.workdir, large), 0o755);
+      await expect(port.commitImplementation(prepared.workdir, options)).rejects.toThrow(
+        /maxBuffer/,
+      );
+      expect(await port.headSha(prepared.workdir)).toBe(head);
+    }, 60_000);
+
+    test("an agent-modified oversized file is still refused", async () => {
+      const { prepared, port, options, head } = await fixture({ largeFile: large });
+      await appendFile(join(prepared.workdir, large), "agent bytes");
+      let scanned = false;
+      await expect(
+        port.commitImplementation(prepared.workdir, {
+          ...options,
+          scan: async () => {
+            scanned = true;
+            return options.scan();
+          },
+        }),
+      ).rejects.toThrow(/maxBuffer/);
+      expect(scanned).toBe(false);
+      expect(await port.headSha(prepared.workdir)).toBe(head);
+    }, 60_000);
+  });
 });

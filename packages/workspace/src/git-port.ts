@@ -1,7 +1,17 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, mkdtemp, open, readlink, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  type FileHandle,
+  lstat,
+  mkdir,
+  mkdtemp,
+  open,
+  readlink,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -25,7 +35,45 @@ export interface CandidateBinding {
   objects: Array<{ path: string; sha: string }>;
 }
 
-async function readSource(root: string, path: string): Promise<Buffer> {
+/** In-memory source reads (staged content, prompts) stay capped; fingerprints and copies stream. */
+export const SOURCE_READ_LIMIT = 64 * 1024 ** 2;
+const CHUNK = 1024 ** 2;
+
+function readSource(root: string, path: string): Promise<Buffer> {
+  return withSource(root, path, SOURCE_READ_LIMIT, (handle) => handle.readFile());
+}
+
+/** Streams a source file through the same anti-tampering checks, without loading it in memory. */
+async function streamSource(
+  root: string,
+  path: string,
+  sink: (chunk: Buffer) => void | Promise<void>,
+): Promise<void> {
+  await withSource(root, path, Number.POSITIVE_INFINITY, async (handle, size) => {
+    const buffer = Buffer.allocUnsafe(CHUNK);
+    let position = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, CHUNK, position);
+      if (bytesRead === 0) break;
+      position += bytesRead;
+      if (position > size) throw new Error("source changed while reading");
+      await sink(Buffer.from(buffer.subarray(0, bytesRead)));
+    }
+    if (position !== size) throw new Error("source changed while reading");
+  });
+}
+
+/**
+ * Opens `root/path` without following symlinks anywhere in the path, requires a regular,
+ * single-link file no larger than `maxBytes`, runs `consume`, then re-checks that the path still
+ * names the same unchanged inode (dev, ino, size, mtime, ctime) and is still not hardlinked.
+ */
+async function withSource<T>(
+  root: string,
+  path: string,
+  maxBytes: number,
+  consume: (handle: FileHandle, size: number) => Promise<T>,
+): Promise<T> {
   const segments = path.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === ".."))
     throw new Error("invalid source path");
@@ -41,10 +89,10 @@ async function readSource(root: string, path: string): Promise<Buffer> {
   const handle = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 64 * 1024 ** 2)
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > maxBytes)
       throw new Error("tampering: non-regular, hardlinked or oversized source");
     await check();
-    const content = await handle.readFile();
+    const content = await consume(handle, stat.size);
     const after = await handle.stat();
     const current = await lstat(full);
     await check();
@@ -317,10 +365,22 @@ export class WorktreeGitPort implements GitPort {
           throw error;
         });
         if (!stat) continue;
-        const content = await readSource(workdir, path);
         const target = join(staging, path);
         await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-        await writeFile(target, content, { mode: stat.mode & 0o777, flag: "wx" });
+        // Streamed: unchanged large tracked files (ML weights, fonts) must not hit the in-memory cap.
+        const output = await open(
+          target,
+          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+          stat.mode & 0o777,
+        );
+        try {
+          await streamSource(workdir, path, async (chunk) => {
+            for (let offset = 0; offset < chunk.length; )
+              offset += (await output.write(chunk, offset)).bytesWritten;
+          });
+        } finally {
+          await output.close();
+        }
       }
       if ((await this.treeState(workdir)) !== state)
         throw new Error("implementation changed while preparing staging");
@@ -376,9 +436,21 @@ export class WorktreeGitPort implements GitPort {
         throw new Error("tampering: non-regular implementation snapshot entries");
       const tree = await candidate("write-tree");
       const records = await candidate("ls-tree", "-r", "-z", tree);
+      // Blobs byte-identical (same path, mode and object id) to the host-recorded BASE predate the
+      // ticket; every blob new or changed since BASE (including commits made in the worktree
+      // outside this gate) is still scanned and bound. This keeps large pre-existing assets (ML
+      // weights, fonts) out of the in-memory scan caps, which still apply to anything else.
+      // Without a trusted BASE the whole tree is scanned, as before.
+      const baseSha = trusted.baseSha;
+      const baseline = new Set(
+        baseSha
+          ? (await candidate("ls-tree", "-r", "-z", baseSha)).split("\0").filter(Boolean)
+          : [],
+      );
       const binding: CandidateBinding = { tree, objects: [] };
       let bytes = 0;
       for (const record of records.split("\0").filter(Boolean)) {
+        if (baseline.has(record)) continue;
         const tab = record.indexOf("\t");
         const [mode, type, sha] = record.slice(0, tab).split(" ");
         const path = record.slice(tab + 1);
@@ -418,7 +490,15 @@ export class WorktreeGitPort implements GitPort {
       if (tree === (await this.#git(workdir, ["rev-parse", "HEAD^{tree}"])).trim())
         return {
           headSha: head,
-          receipt: { ...receipt, data: { scan: receipt.data, headSha: head, ...binding } },
+          receipt: {
+            ...receipt,
+            data: {
+              scan: receipt.data,
+              headSha: head,
+              ...binding,
+              ...(baseSha ? { scannedSince: baseSha } : {}),
+            },
+          },
         };
       options.signal?.throwIfAborted();
       let finalState = state;
@@ -492,7 +572,15 @@ export class WorktreeGitPort implements GitPort {
         throw new Error("implementation changed after commit; clean handover refused");
       return {
         headSha: next,
-        receipt: { ...receipt, data: { scan: receipt.data, headSha: next, ...binding } },
+        receipt: {
+          ...receipt,
+          data: {
+            scan: receipt.data,
+            headSha: next,
+            ...binding,
+            ...(baseSha ? { scannedSince: baseSha } : {}),
+          },
+        },
       };
     } finally {
       await rm(temporary, { recursive: true, force: true });
@@ -573,7 +661,13 @@ export class WorktreeGitPort implements GitPort {
         continue;
       }
       if (stat.isSymbolicLink()) hash.update(`link:${await readlink(full)}`);
-      else if (stat.isFile()) hash.update(await readSource(workdir, path));
+      else if (stat.isFile()) {
+        // Length-prefixed so a streamed body cannot be confused with the next path record.
+        hash.update(`file:${stat.size}\0`);
+        await streamSource(workdir, path, (chunk) => {
+          hash.update(chunk);
+        });
+      }
     }
     hash.update(await this.status(workdir));
     hash.update(
