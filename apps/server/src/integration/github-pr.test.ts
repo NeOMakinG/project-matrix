@@ -270,27 +270,30 @@ test("a manual QA handoff renders the public checklist in the draft PR body", as
   expect(calls.some((c) => c.cmd.includes("merge"))).toBe(false);
 });
 
-test("labels a PR on the project's repo only, creating labels first", async () => {
-  const { calls, executor } = fakeExec(() => ({}));
+test("labels a PR over REST: removals first, a missing label is already removed", async () => {
+  const { calls, executor } = fakeExec((spec) =>
+    spec.cmd.includes("DELETE") ? { code: 1, err: "gh: Label does not exist (HTTP 404)" } : {},
+  );
   const prs = new GitHubPullRequests({ executor, ghBinary: "/usr/bin/gh" });
   await prs.label(project(), PR, ["qa:failed"], ["qa:passed"]);
-  expect(calls.map((c) => c.cmd.slice(1, 3).join(" "))).toEqual([
-    "label create",
-    "label create",
-    "pr edit",
+  expect(calls.map((c) => c.cmd.slice(1))).toEqual([
+    ["api", "-X", "DELETE", "repos/acme/wayline/issues/12/labels/qa%3Apassed", "--silent"],
+    ["label", "create", "qa:failed", "--repo", "acme/wayline", "--force", "--color", "d73a4a"],
+    [
+      "api",
+      "-X",
+      "POST",
+      "repos/acme/wayline/issues/12/labels",
+      "-f",
+      "labels[]=qa:failed",
+      "--silent",
+    ],
   ]);
-  expect(calls.at(-1)?.cmd).toEqual([
-    "/usr/bin/gh",
-    "pr",
-    "edit",
-    "12",
-    "--repo",
-    "acme/wayline",
-    "--add-label",
-    "qa:failed",
-    "--remove-label",
-    "qa:passed",
-  ]);
+  expect(calls.some((c) => c.cmd.includes("edit"))).toBe(false);
+  const failing = fakeExec(() => ({ code: 1, err: "HTTP 502" }));
+  await expect(
+    new GitHubPullRequests({ executor: failing.executor }).label(project(), PR, [], ["qa:passed"]),
+  ).rejects.toThrow(/502/);
   await expect(
     prs.label(project(), "https://github.com/evil/repo/pull/1", ["qa:passed"], []),
   ).rejects.toThrow(/project's repository/);

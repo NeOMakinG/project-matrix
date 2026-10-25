@@ -101,8 +101,18 @@ export class GitHubPullRequests implements PullRequestPort {
       throw new Error("pull request is not on the project's repository");
     const safe = (l: string) => /^[a-z][a-z0-9:-]{0,40}$/.test(l);
     if (![...add, ...remove].every(safe)) throw new Error("invalid PR label");
-    // gh refuses unknown labels, removals included.
-    for (const l of [...add, ...remove])
+    // REST, not `gh pr edit`: its GraphQL query reads classic Projects and fails on repos where
+    // GitHub deprecated them. Removals first, so a failure midway never leaves a stale pass.
+    const issue = `repos/${m[1]}/issues/${m[2]}/labels`;
+    for (const l of remove) {
+      try {
+        await this.#gh(["api", "-X", "DELETE", `${issue}/${encodeURIComponent(l)}`, "--silent"]);
+      } catch (error) {
+        // Only GitHub's own "label not on this issue" answer: a 404 for a wrong PR/repo still fails.
+        if (!/Label does not exist/.test((error as Error).message)) throw error;
+      }
+    }
+    for (const l of add)
       await this.#gh([
         "label",
         "create",
@@ -113,10 +123,15 @@ export class GitHubPullRequests implements PullRequestPort {
         "--color",
         l.endsWith("failed") ? "d73a4a" : "0e8a16",
       ]);
-    const args = ["pr", "edit", m[2], "--repo", m[1]];
-    for (const l of add) args.push("--add-label", l);
-    for (const l of remove) args.push("--remove-label", l);
-    if (add.length || remove.length) await this.#gh(args);
+    if (add.length)
+      await this.#gh([
+        "api",
+        "-X",
+        "POST",
+        issue,
+        ...add.flatMap((l) => ["-f", `labels[]=${l}`]),
+        "--silent",
+      ]);
   }
 
   /** The recorded PR of a ticket, if Matrix opened one. */

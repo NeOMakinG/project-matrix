@@ -42,7 +42,7 @@ function reportOutcome(r: AgentQaReport): AgentQaOutcome {
   };
 }
 
-function agentHarness(outcomes: AgentQaOutcome[], handles = true) {
+function agentHarness(outcomes: AgentQaOutcome[], handles = true, prLabelFails = 0) {
   const published: PullRequestRequest[] = [];
   const requests: AgentQaRequest[] = [];
   const prLabels: { add: string[]; remove: string[] }[] = [];
@@ -60,6 +60,7 @@ function agentHarness(outcomes: AgentQaOutcome[], handles = true) {
         return { url: PR_URL, branch: "matrix-T-1-export" };
       },
       label: async (_project, _url, add, remove) => {
+        if (prLabelFails-- > 0) throw new Error("gh pr edit failed");
         prLabels.push({ add, remove });
       },
     },
@@ -296,4 +297,24 @@ test("a human handoff from before the agent driver runs through the lane once ne
     phase: "merge",
     status: "waiting_approval",
   });
+});
+
+test("a PR-label retry never rewrites ticket labels that landed (needs-human removal sticks)", async () => {
+  const { h, requests, prLabels } = agentHarness(
+    [{ kind: "blocked", reason: "device lane busy" }],
+    true,
+    3,
+  );
+  await h.setup();
+  const t = await addTicket(h);
+  const add = h.tickets.addLabel.bind(h.tickets);
+  let needsHuman = 0;
+  h.tickets.addLabel = async (id: string, label: string) => {
+    if (label === "needs-human") needsHuman++;
+    return add(id, label);
+  };
+  for (let i = 0; i < 5; i++) await h.drain();
+  expect(needsHuman).toBe(1);
+  expect(prLabels).toEqual([{ add: [], remove: ["qa:passed"] }]);
+  expect(requests).toHaveLength(1);
 });
