@@ -22,7 +22,9 @@ need() { [[ "$2" =~ $3 ]] || die 2 "invalid $1"; }
 job_dir() { need job "$1" '^[a-z0-9-]{8,64}$'; echo "$ROOT/jobs/$1"; }
 # Owner-only heartbeat: every step of the lock holder refreshes it, so a live job never goes stale.
 beat() { [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$1" ]] && date +%s >"$LOCK/beat"; true; }
-as_user() { local u="$1"; shift; /usr/sbin/runuser -u "$u" -- env -i HOME="/home/$u" PATH="/usr/local/bin:/usr/bin:/bin:$ANDROID_HOME/platform-tools" \
+# Private TMPDIR per user: shared /tmp caches (Metro) owned by others break builds and leak state.
+as_user() { local u="$1"; shift; /usr/sbin/runuser -u "$u" -- mkdir -p "/home/$u/.tmp"
+  /usr/sbin/runuser -u "$u" -- env -i HOME="/home/$u" TMPDIR="/home/$u/.tmp" PATH="/usr/local/bin:/usr/bin:/bin:$ANDROID_HOME/platform-tools" \
   ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_HOME" LANG=C.UTF-8 "$@"; }
 as_qa() { as_user "$QA_USER" "$@"; }
 as_build() { as_user "$BUILD_USER" "$@"; }
@@ -141,7 +143,7 @@ case "$step" in
     beat "$1"; src=$(cat "$dir/src")
     # Copied out by the build user: root never opens a path inside the build-owned checkout.
     as_build cat "$src/$apk" >"$dir/app.apk" 2>/dev/null || die 21 "build produced no APK at $apk"
-    adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1 || { tail -c 500 "$dir/install.log" >&2; exit 21; }
+    timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1 || { tail -c 500 "$dir/install.log" >&2; exit 21; }
     adb -s "$serial" shell dumpsys package "$app" | sed -n 's/^ *versionName=//p' | head -1
     ;;
   agent)
@@ -160,8 +162,8 @@ JSON
     pkill -KILL -u "$QA_USER" || true
     # Root resolves only the gateway key from Infisical; the agent runs as the QA user with a
     # cleared environment holding that key alone (no other secret, no gh, no root files).
-    secrets run -- sh -c '
-      exec env -i HOME="/home/$1" PATH="/usr/local/bin:/usr/bin:/bin:$4" LANG=C.UTF-8 ANDROID_SERIAL="$3" \
+    timeout -k 30 $((timeout_s + 300)) secrets run -- sh -c '
+      exec env -i HOME="/home/$1" TMPDIR="/home/$1/.tmp" PATH="/usr/local/bin:/usr/bin:/bin:$4" LANG=C.UTF-8 ANDROID_SERIAL="$3" \
         ANTHROPIC_BASE_URL="${MATRIX_QA_GATEWAY:-http://127.0.0.1:8317}" ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY" \
         /usr/sbin/runuser -u "$1" -- timeout -k 30 "$5" claude -p --model "$2" --setting-sources project --strict-mcp-config \
           --allowedTools "Bash(agent-device:*)" "Bash(adb logcat:*)" "Bash(adb shell input:*)" "Bash(adb shell svc:*)" \

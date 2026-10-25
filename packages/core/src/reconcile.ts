@@ -730,8 +730,12 @@ export class Reconciler {
       return;
     }
     if (verdict === "BLOCKED") {
-      // Recorded even if labelling fails: a BLOCKED head must never re-run on every tick.
-      await this.trackerWrite(project.id, id, "label", () => label([NEEDS_HUMAN_LABEL], []));
+      // Recorded even if labelling fails: a BLOCKED head must never re-run on every tick. An
+      // earlier head's pass must not keep advertising itself.
+      await this.trackerWrite(project.id, id, "label", () =>
+        label([NEEDS_HUMAN_LABEL], [QA_PASSED_LABEL]),
+      );
+      await this.trackerWrite(project.id, id, "pr-label", () => prLabel([], [QA_PASSED_LABEL]));
       return;
     }
     // The loop back is what matters; labels are best effort after it.
