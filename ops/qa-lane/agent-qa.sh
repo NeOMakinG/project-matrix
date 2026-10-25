@@ -99,7 +99,10 @@ case "$step" in
     mirror="$ROOT/mirrors/${repo/\//__}.git" work="$ROOT/build/${repo/\//__}"
     install -d -o root -g root -m 755 "$ROOT/mirrors"
     install -d -o "$BUILD_USER" -g "$BUILD_USER" -m 755 "$ROOT/build"
-    {
+    # errexit is ignored inside `cmd || handler`: run the block in a plain subshell instead.
+    set +e
+    (
+      set -e
       # Root-owned bare mirror: the only place root runs git, fetched with root's gh credential.
       [[ -d "$mirror" ]] || git init --quiet --bare "$mirror"
       git --git-dir "$mirror" -c credential.helper= -c "credential.helper=!gh auth git-credential" \
@@ -108,11 +111,14 @@ case "$step" in
         || { echo "PR head moved: $(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr") != $sha"; exit 3; }
       # The QA user checks out and builds in its own working copy (PR code never runs as root).
       as_build bash -c 'set -e; [[ -d "$1/.git" ]] || git init --quiet "$1"; cd "$1"
-        git fetch --quiet --no-tags "file://$2" "$3"
+        git -c "safe.directory=$2" fetch --quiet --no-tags "file://$2" "$3"
         git checkout --quiet --force --detach "$4"; git clean -qfdx -e node_modules
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
       cd "$work" && as_build ABI="$abi" NODE_ENV=production timeout "$timeout_s" nice bash "$dir/build.sh"
-    } >"$dir/build.log" 2>&1 || { pkill -KILL -u "$BUILD_USER" || true; tail -c 1500 "$dir/build.log" >&2; exit 20; }
+    ) >"$dir/build.log" 2>&1
+    rc=$?
+    set -e
+    if (( rc != 0 )); then pkill -KILL -u "$BUILD_USER" || true; tail -c 1500 "$dir/build.log" >&2; exit 20; fi
     # Nothing the build started survives into the QA agent's run.
     pkill -KILL -u "$BUILD_USER" || true
     echo "$work" >"$dir/src"
