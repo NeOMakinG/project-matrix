@@ -108,8 +108,8 @@ export class GitHubPullRequests implements PullRequestPort {
       try {
         await this.#gh(["api", "-X", "DELETE", `${issue}/${encodeURIComponent(l)}`, "--silent"]);
       } catch (error) {
-        // Not on the PR (or not on the repo): already removed.
-        if (!/\b404\b|Label does not exist|Not Found/i.test((error as Error).message)) throw error;
+        // Only GitHub's own "label not on this issue" answer: a 404 for a wrong PR/repo still fails.
+        if (!/Label does not exist/.test((error as Error).message)) throw error;
       }
     }
     for (const l of add)

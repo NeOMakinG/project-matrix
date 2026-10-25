@@ -203,8 +203,8 @@ try: c=json.load(open(p))
 except Exception: c={}
 c.setdefault("projects",{}).setdefault(sys.argv[1],{})["hasTrustDialogAccepted"]=True
 ps=c["projects"]
-for k in [k for k in ps if k.startswith("/srv/matrix-qa/jobs/") and k!=sys.argv[1]]: del ps[k]
-json.dump(c,open(p+".tmp","w")); os.replace(p+".tmp",p)' "$dir"
+for k in [k for k in ps if k.startswith(sys.argv[2]) and k!=sys.argv[1]]: del ps[k]
+json.dump(c,open(p+".tmp","w")); os.replace(p+".tmp",p)' "$dir" "$ROOT/jobs/"
     # Root resolves only the gateway key from Infisical; the agent runs as the QA user with a
     # cleared environment holding that key alone (no other secret, no gh, no root files).
     timeout -k 30 $((timeout_s + 300)) secrets run -- sh -c '
