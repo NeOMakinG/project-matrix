@@ -126,7 +126,7 @@ case "$step" in
         timeout -k 10 300 git fetch --quiet --no-tags "file://$2" "$3"
         git checkout --quiet --force --detach "$4"; git clean -qfdx -e node_modules
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
-      cd "$work" && as_build ABI="$abi" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"
+      cd "$work" && as_build ABI="$abi" VERSION_CODE="$(( $(date +%s) / 60 ))" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"
     ) >"$dir/build.log" 2>&1
     rc=$?
     set -e
@@ -144,18 +144,13 @@ case "$step" in
     # Copied out by the build user: root never opens a path inside the build-owned checkout.
     as_build cat "$src/$apk" >"$dir/app.apk" 2>/dev/null || die 21 "build produced no APK at $apk"
     if ! timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1; then
-      # A newer build is installed. Android keeps the version code of a package uninstalled with
-      # its data (-k), so a release build can only replace it through a full uninstall (its data
-      # is lost). Done only for a sideloaded build (no installer: a previous lane or a developer);
-      # a store install, or a signature mismatch, is never wiped automatically.
-      grep -q INSTALL_FAILED_VERSION_DOWNGRADE "$dir/install.log" || { tail -c 500 "$dir/install.log" >&2; exit 21; }
-      installer=$(adb -s "$serial" shell dumpsys package "$app" | sed -n 's/^ *installerPackageName=//p' | head -1 | tr -d '\r')
-      [[ "$installer" == null ]] \
-        || die 21 "a newer $app from ${installer:-an unknown installer} is installed; uninstall it by hand to QA this build"
-      echo "uninstalling the newer sideloaded $app (its data is lost)" >>"$dir/install.log"
-      adb -s "$serial" uninstall "$app" >>"$dir/install.log" 2>&1 || true
-      timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >>"$dir/install.log" 2>&1 \
-        || { tail -c 500 "$dir/install.log" >&2; exit 21; }
+      # Nothing on the device is ever uninstalled or wiped here: Android keeps the version code of
+      # a package uninstalled with its data, so no data-keeping path exists for a downgrade.
+      # Builds avoid it by using $VERSION_CODE (always above earlier lane builds, see `build`).
+      if grep -q INSTALL_FAILED_VERSION_DOWNGRADE "$dir/install.log"; then
+        die 21 "a newer $app is installed: make the build use \$VERSION_CODE as its Android versionCode, or uninstall $app by hand"
+      fi
+      tail -c 500 "$dir/install.log" >&2; exit 21
     fi
     # The configured app must now BE this artifact: a PR that changes the application id would
     # otherwise install beside it and leave the agent testing an older build of "$app".
