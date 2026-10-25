@@ -559,9 +559,13 @@ export class Reconciler {
       this.trackerFailed(project.id, w.ticketId, "list-comments", error);
       return;
     }
-    const prior = this.agentQaVerdicts.get(key) ?? priorAgentQaVerdict(comments, headSha, qaRun.id);
+    const applied = this.agentQaVerdicts.get(key);
+    if (applied === "PASS" || applied === "FAIL") return;
+    const prior = applied ?? priorAgentQaVerdict(comments, headSha, qaRun.id);
     if (prior === "PASS" || prior === "FAIL") {
+      // The report was posted (e.g. by an earlier process) but its effects may not have landed.
       this.agentQaVerdicts.set(key, prior);
+      await this.applyAgentQaVerdict(project, w, url, prior);
       return;
     }
     const ticket = await tickets.get(w.ticketId).catch(() => null);
@@ -639,8 +643,21 @@ export class Reconciler {
       (await this.latestRun(now, "qa"))?.id !== qaRunId
     )
       return;
-    this.agentQaVerdicts.set(key, rendered.verdict);
+    // The report comment is the durable record; effects are re-applied from it after a restart.
     await this.trackerWrite(project.id, id, "comment", () => tickets.comment(id, rendered.body));
+    this.agentQaVerdicts.set(key, rendered.verdict);
+    await this.applyAgentQaVerdict(project, now, url, rendered.verdict);
+  }
+
+  /** Labels (ticket + PR) and, on FAIL, the loop back to implement. Idempotent. */
+  private async applyAgentQaVerdict(
+    project: ProjectConfig,
+    now: WorkflowState,
+    url: string,
+    verdict: AgentQaVerdict,
+  ): Promise<void> {
+    const tickets = this.o.tickets(project.id);
+    const id = now.ticketId;
     const prLabel = (add: string[], remove: string[]) =>
       this.o.pullRequests?.label
         ? this.trackerWrite(project.id, id, "pr-label", async () =>
@@ -652,12 +669,12 @@ export class Reconciler {
         for (const l of add) await tickets.addLabel?.(id, l);
         for (const l of remove) await tickets.removeLabel?.(id, l);
       });
-    if (rendered.verdict === "PASS") {
+    if (verdict === "PASS") {
       await label([QA_PASSED_LABEL], [QA_FAILED_LABEL, NEEDS_HUMAN_LABEL]);
       await prLabel([QA_PASSED_LABEL], [QA_FAILED_LABEL]);
       return;
     }
-    if (rendered.verdict === "BLOCKED") {
+    if (verdict === "BLOCKED") {
       await label([NEEDS_HUMAN_LABEL], []);
       return;
     }

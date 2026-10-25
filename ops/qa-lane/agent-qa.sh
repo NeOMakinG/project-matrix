@@ -4,14 +4,22 @@
 # unavailable, 12 lane busy, 20 build failed, 21 install failed, 30 agent failed, 2 bad arguments.
 set -euo pipefail
 
-ROOT="${MATRIX_QA_ROOT:-/root/matrix-qa}"
+# Builds and the QA agent run as this unprivileged user: PR code and the agent never see root's
+# credentials (gh, Infisical). Create it once: `useradd --create-home matrixqa`.
+QA_USER="${MATRIX_QA_USER:-matrixqa}"
+ROOT="${MATRIX_QA_ROOT:-/srv/matrix-qa}"
 LOCK=/tmp/matrix-qa-lane.lock
+STALE_S=7200
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}" ANDROID_SDK_ROOT="${ANDROID_HOME:-/opt/android-sdk}"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 
 die() { echo "$2" >&2; exit "$1"; }
 need() { [[ "$2" =~ $3 ]] || die 2 "invalid $1"; }
 job_dir() { need job "$1" '^[a-z0-9-]{8,64}$'; echo "$ROOT/jobs/$1"; }
+# Owner-only heartbeat: every step of the lock holder refreshes it, so a live job never goes stale.
+beat() { [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$1" ]] && date +%s >"$LOCK/beat"; true; }
+as_qa() { runuser -u "$QA_USER" -- env -i HOME="/home/$QA_USER" PATH="/usr/local/bin:/usr/bin:/bin:$ANDROID_HOME/platform-tools" \
+  ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_HOME" LANG=C.UTF-8 "$@"; }
 
 step="${1:-}"; shift || true
 case "$step" in
@@ -43,13 +51,18 @@ case "$step" in
   lock)
     job="$1" wait_s="$2"; need job "$job" '^[a-z0-9-]{8,64}$'; need wait "$wait_s" '^[0-9]{1,5}$'
     deadline=$(( $(date +%s) + wait_s ))
-    while ! mkdir "$LOCK" 2>/dev/null; do
-      started=$(cat "$LOCK/started" 2>/dev/null || echo 0)
-      if (( $(date +%s) - started > 7200 )); then rm -rf "$LOCK"; continue; fi
-      (( $(date +%s) < deadline )) || die 12 "device lane busy (held by $(cat "$LOCK/owner" 2>/dev/null || echo unknown))"
+    while :; do
+      # Build the lock fully, then publish it with one atomic rename: no half-initialized lock.
+      tmp=$(mktemp -d /tmp/matrix-qa-lane.XXXXXX); echo "$job" >"$tmp/owner"; date +%s >"$tmp/beat"
+      if mv -T "$tmp" "$LOCK" 2>/dev/null; then break; fi
+      rm -rf "$tmp"
+      beat_s=$(cat "$LOCK/beat" 2>/dev/null || date +%s)
+      if (( $(date +%s) - beat_s > STALE_S )); then
+        mv -T "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"; continue
+      fi
+      (( $(date +%s) < deadline )) || die 12 "device lane busy (held by $(cat "$LOCK/owner" 2>/dev/null || echo another tenant))"
       sleep 15
     done
-    echo "$job" >"$LOCK/owner"; date +%s >"$LOCK/started"
     ;;
   unlock)
     job="$1"; need job "$job" '^[a-z0-9-]{8,64}$'
@@ -58,23 +71,27 @@ case "$step" in
     ;;
   write)
     dir=$(job_dir "$1"); name="$2"; need name "$name" '^[a-z][a-z0-9._-]{0,40}$'
-    mkdir -p "$dir/shots"; printf %s "$3" | base64 -d >"$dir/$name"
+    beat "$1"; mkdir -p "$dir/shots"; printf %s "$3" | base64 -d >"$dir/$name"; chown -R "$QA_USER:" "$dir"
     ;;
   build)
-    dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" abi="$5"
+    dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" abi="$5" timeout_s="$6"
     need repo "$repo" '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'; need pr "$pr" '^[0-9]{1,9}$'
     need sha "$sha" '^[a-f0-9]{40}$'; need abi "$abi" '^(arm64-v8a|x86_64|armeabi-v7a|x86)$'
+    need timeout "$timeout_s" '^[0-9]{2,5}$'
+    beat "$1"
+    # The clone is fetched with root's gh credential, then owned by the QA user: the build never
+    # runs as root and the checkout holds no credential (https remote, no stored token).
     src="$ROOT/repos/${repo/\//__}"; mkdir -p "$ROOT/repos" "$dir"
     {
-      [[ -d "$src/.git" ]] || gh repo clone "$repo" "$src" -- --filter=blob:none
+      [[ -d "$src/.git" ]] || git clone --quiet --filter=blob:none "https://github.com/$repo.git" "$src"
       cd "$src"
-      git fetch --quiet origin "pull/$pr/head"
+      git -c credential.helper= -c "credential.helper=!gh auth git-credential" fetch --quiet origin "pull/$pr/head"
       [[ "$(git rev-parse FETCH_HEAD)" == "$sha" ]] || { echo "PR head moved: $(git rev-parse FETCH_HEAD) != $sha"; exit 3; }
-      git reset --quiet --hard && git clean -qfdx -e node_modules
-      git checkout --quiet --detach "$sha"
+      git checkout --quiet --force --detach "$sha"
+      git clean -qfdx -e node_modules
       git log -1 --format='commit %H %s'
-      export ABI="$abi" NODE_ENV=production
-      nice bash "$dir/build.sh"
+      chown -R "$QA_USER:" "$src" "$dir"
+      cd "$src" && as_qa ABI="$abi" NODE_ENV=production timeout "$timeout_s" nice bash "$dir/build.sh"
     } >"$dir/build.log" 2>&1 || { tail -c 1500 "$dir/build.log" >&2; exit 20; }
     echo "$src" >"$dir/src"
     ;;
@@ -83,7 +100,7 @@ case "$step" in
     need serial "$serial" '^[A-Za-z0-9._:-]{1,64}$'; need apk "$apk" '^[A-Za-z0-9._/-]{1,200}$'
     need app "$app" '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$'
     [[ "$apk" != *..* ]] || die 2 "invalid apk"
-    src=$(cat "$dir/src"); [[ -f "$src/$apk" ]] || die 21 "build produced no APK at $apk"
+    beat "$1"; src=$(cat "$dir/src"); [[ -f "$src/$apk" ]] || die 21 "build produced no APK at $apk"
     adb -s "$serial" install -r -g "$src/$apk" >"$dir/install.log" 2>&1 || { tail -c 500 "$dir/install.log" >&2; exit 21; }
     adb -s "$serial" shell dumpsys package "$app" | sed -n 's/^ *versionName=//p' | head -1
     ;;
@@ -91,23 +108,28 @@ case "$step" in
     dir=$(job_dir "$1") model="$2" timeout_s="$3" serial="$4"
     need model "$model" '^[a-z0-9.-]{3,60}$'; need timeout "$timeout_s" '^[0-9]{2,5}$'
     need serial "$serial" '^[A-Za-z0-9._:-]{1,64}$'
+    beat "$1"
     mkdir -p "$dir/.claude" "$dir/shots"
-    # Only these tools: the user's broad settings are not loaded (project settings only).
+    # Only these tools, only inside the job dir: the user's broad settings are not loaded.
     cat >"$dir/.claude/settings.json" <<'JSON'
-{"permissions":{"allow":["Bash(agent-device:*)","Bash(adb:*)","Read","Write","Glob"],"deny":["WebFetch","WebSearch","Agent","Task"],"defaultMode":"default"}}
+{"permissions":{"allow":["Bash(agent-device:*)","Bash(adb:*)","Read(./**)","Write(./**)","Glob(./**)"],"deny":["WebFetch","WebSearch","Agent","Task"],"defaultMode":"default"}}
 JSON
+    chown -R "$QA_USER:" "$dir"
     cd "$dir"
-    export ANDROID_SERIAL="$serial"
-    timeout "$timeout_s" secrets run -- sh -c '
-      ANTHROPIC_BASE_URL="${MATRIX_QA_GATEWAY:-http://127.0.0.1:8317}" ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY" \
-      exec claude -p --model "$0" --setting-sources project --strict-mcp-config \
-        --allowedTools "Bash(agent-device:*)" "Bash(adb:*)" Read Write Glob \
-        --disallowedTools WebFetch WebSearch Agent Task \
-        <prompt.md' "$model" >"$dir/agent.log" 2>&1 || { tail -c 800 "$dir/agent.log" >&2; exit 30; }
-    [[ -s "$dir/report.json" ]] || die 30 "QA agent wrote no report.json"
+    # Root resolves only the gateway key from Infisical; the agent runs as the QA user with a
+    # cleared environment holding that key alone (no other secret, no gh, no root files).
+    secrets run -- sh -c '
+      exec env -i HOME="/home/$1" PATH="/usr/local/bin:/usr/bin:/bin:$4" LANG=C.UTF-8 ANDROID_SERIAL="$3" \
+        ANTHROPIC_BASE_URL="${MATRIX_QA_GATEWAY:-http://127.0.0.1:8317}" ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY" \
+        runuser -u "$1" -- timeout "$5" claude -p --model "$2" --setting-sources project --strict-mcp-config \
+          --allowedTools "Bash(agent-device:*)" "Bash(adb:*)" "Read(./**)" "Write(./**)" "Glob(./**)" \
+          --disallowedTools WebFetch WebSearch Agent Task' \
+      sh "$QA_USER" "$model" "$serial" "$ANDROID_HOME/platform-tools" "$timeout_s" \
+      <"$dir/prompt.md" >"$dir/agent.log" 2>&1 || { tail -c 800 "$dir/agent.log" >&2; exit 30; }
+    [[ -s "$dir/report.json" && ! -L "$dir/report.json" ]] || die 30 "QA agent wrote no report.json"
     ;;
   collect)
-    dir=$(job_dir "$1")
+    dir=$(job_dir "$1"); beat "$1"
     printf 'report.json\t%s\n' "$(base64 -w0 "$dir/report.json")"
     n=0
     for f in "$dir"/shots/*.png; do

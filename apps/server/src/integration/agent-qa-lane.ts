@@ -127,6 +127,11 @@ export class SshAgentQaLane implements AgentQaPort {
     if (!project) return { kind: "blocked", reason: "no lane settings for this project" };
     if (project.repo.toLowerCase() !== request.pullRequest.repo.toLowerCase())
       return { kind: "blocked", reason: "the draft PR is not on the lane's repository" };
+    if (request.surfaces.some((s) => s !== "android"))
+      return {
+        kind: "blocked",
+        reason: `the agent QA lane only tests Android; ${request.surfaces.filter((s) => s !== "android").join("/")} needs a human`,
+      };
     if (!/^[a-f0-9]{40}$/.test(request.headSha))
       return { kind: "blocked", reason: "invalid head SHA" };
     const job = `mx-${randomUUID().slice(0, 18)}`;
@@ -173,8 +178,9 @@ export class SshAgentQaLane implements AgentQaPort {
           String(request.pullRequest.number),
           request.headSha,
           project.abi,
+          String(Math.round(c.buildTimeoutMs / 1000)),
         ],
-        c.buildTimeoutMs,
+        c.buildTimeoutMs + 120_000,
         sig,
       );
       const version = (

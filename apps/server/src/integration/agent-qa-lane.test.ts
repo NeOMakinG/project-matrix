@@ -98,6 +98,7 @@ test("runs precheck, lock, build, install, agent, collect, then unlocks", async 
     "3511",
     SHA,
     "arm64-v8a",
+    "3600",
   ]);
   expect(out.kind).toBe("report");
   if (out.kind !== "report") return;
@@ -155,4 +156,15 @@ test("jobs run one at a time", async () => {
   const lane = new SshAgentQaLane(config, { runner, script: "SCRIPT", manual: "M" });
   await Promise.all([lane.run(request()), lane.run(request())]);
   expect(max).toBe(1);
+});
+
+test("non-Android surfaces are BLOCKED, never passed", async () => {
+  const f = fake();
+  const lane = new SshAgentQaLane(config, { runner: f.runner, script: "SCRIPT", manual: "M" });
+  const out = await lane.run(request({ surfaces: ["android", "ios"] }));
+  expect(out).toMatchObject({
+    kind: "blocked",
+    reason: expect.stringMatching(/only tests Android/),
+  });
+  expect(f.steps).toHaveLength(0);
 });

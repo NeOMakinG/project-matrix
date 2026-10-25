@@ -62,15 +62,17 @@ Tailscale) over SSH. All values sent to the remote shell are validated (hex SHA,
 
 Steps, each failure → BLOCKED with a short reason:
 
-1. **Single tenant.** An in-process queue runs one job at a time; the remote script takes an
-   atomic `mkdir` lock (`/tmp/matrix-qa-lane.lock`, owner + start time; stale after 2 h). A lock
+1. **Single tenant.** An in-process queue runs one job at a time; the remote script publishes a
+   fully initialized lock directory with one atomic rename (`/tmp/matrix-qa-lane.lock`, owner +
+   heartbeat). Every step of the holder refreshes the heartbeat; a lock is stale only after 2 h
+   without one (every remote step is capped below that with `timeout`). A lock
    held by someone else (qaexplorer, a human) is waited on for up to `waitMs` (default 20 min),
    then BLOCKED `device lane busy`.
 2. **Host precheck.** `load1 / nproc < 0.8` and `MemAvailable >= 6 GB`, else BLOCKED
    `device host overloaded`. The device (`adb -s <serial>`) must be `device`; with
    `bootEmulator` set the script boots the AVD once (`/root/boot-emulator.sh`) and waits for
    `sys.boot_completed`, else BLOCKED `device unavailable`.
-3. **Build the PR head.** A cached clone per repo under `/root/matrix-qa/repos/<owner>__<name>`,
+3. **Build the PR head.** A cached clone per repo under `/srv/matrix-qa/repos/<owner>__<name>`,
    `git fetch origin pull/<n>/head`, `git checkout --detach <sha>` (the exact SHA Matrix
    validated, refused if the PR head moved). Then the project's build command from the lane
    config (operator-trusted, e.g. wayline: `npm ci` + `expo prebuild` + `gradlew assembleRelease`,
@@ -163,6 +165,16 @@ child process only. Linear stays on the Matrix host.
 
 ## Security
 
+- **Unprivileged build and agent.** Root only fetches (with its `gh` credential, never stored in the
+  checkout) and resolves the gateway key. The build (`npm`/Gradle scripts are PR code) and the QA
+  agent run as the `matrixqa` user (`useradd --create-home matrixqa`) with a cleared environment:
+  they cannot read root's files, Infisical or `gh`. The agent's environment holds the gateway key
+  only.
+- Residual risk, accepted: the agent's `adb` access runs arbitrary shell commands on the **test
+  device** (a dedicated QA phone/emulator), and PR code shares the `matrixqa` home across jobs.
+- Remote steps end on their own (`timeout` on the device host) before the Matrix side gives up, so
+  the lock is not released under a still-running build.
+
 - Ticket text is untrusted: it reaches the QA agent only as quoted data, the agent's tools are an
   allowlist (`agent-device`, `adb`, job-dir files), and the agent never sees the Linear or GitHub
   credential. Its report is parsed and length-bounded; screenshots must be PNG by magic bytes.
@@ -171,4 +183,5 @@ child process only. Linear stays on the Matrix host.
 
 ## Out of scope
 
-iOS (tapflow on the Mac mini), Metro/dev-client builds, video upload, auto-merge on PASS.
+iOS (tapflow on the Mac mini; an iOS surface is BLOCKED, never passed), Metro/dev-client builds,
+video upload, auto-merge on PASS.
