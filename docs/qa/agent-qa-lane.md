@@ -150,7 +150,7 @@ not supported by the tracker the comment lists the screenshot names only.
   "projects": {
     "<project-id>": {
       "repo": "NeOMakinG/wayline",
-      "build": "cd app && npm ci --no-audit --no-fund && npx expo prebuild --platform android --no-install --clean && cd android && ./gradlew assembleRelease -PreactNativeArchitectures=$ABI --no-daemon",
+      "build": "cd app && npm ci --no-audit --no-fund && node -e \"const fs=require('fs');const j=JSON.parse(fs.readFileSync('app.json'));j.expo.android.versionCode=Number(process.env.VERSION_CODE);fs.writeFileSync('app.json',JSON.stringify(j,null,2))\" && npx expo prebuild --platform android --no-install --clean && cd android && ./gradlew assembleRelease -PreactNativeArchitectures=$ABI --no-daemon",
       "apk": "app/android/app/build/outputs/apk/release/app-release.apk",
       "appId": "ai.traveljournal.app",
       "abi": "arm64-v8a"
@@ -158,6 +158,12 @@ not supported by the tracker the comment lists the screenshot names only.
   }
 }
 ```
+
+The build runs with `ABI` and `VERSION_CODE` in its environment. `VERSION_CODE` (minutes since the
+epoch) always exceeds earlier lane builds: use it as the Android `versionCode`, so each PR build
+installs over the previous one keeping the app's data. The lane never uninstalls or wipes an app; a
+newer build from elsewhere (a store or developer build) makes the install BLOCKED until a human
+removes it.
 
 No credential lives in the config: GitHub (`gh`) is logged in on the device host, and the QA agent
 reaches the model gateway (CLIProxyAPI `127.0.0.1:8317` on the device host) with
