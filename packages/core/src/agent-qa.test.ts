@@ -81,3 +81,12 @@ test("prior verdicts are matched per head and QA run, Matrix comments only", () 
   expect(priorAgentQaVerdict([{ body, byMatrix: true }], SHA, "run-2")).toBeUndefined();
   expect(priorAgentQaVerdict([{ body, byMatrix: true }], "b".repeat(40), "run-1")).toBeUndefined();
 });
+
+test("PASS needs a checked step per acceptance criterion", () => {
+  const r = { verdict: "PASS" as const, summary: "", findings: [], steps: [step] };
+  expect(effectiveVerdict(r, 1).verdict).toBe("PASS");
+  expect(effectiveVerdict(r, 2).verdict).toBe("BLOCKED");
+  expect(effectiveVerdict({ ...r, steps: [{ ...step, criterion: false }] }).verdict).toBe(
+    "BLOCKED",
+  );
+});

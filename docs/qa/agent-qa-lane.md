@@ -43,8 +43,9 @@ draft PR, a checklist from the public acceptance criteria. So:
 | FAIL | report comment, `qa:failed` | `qa:failed` | `reject()` → loops back to implement (column Implement), report reaches the implementer as a ticket comment; counted against `maxLoops`; exhausted → blocked + `needs-human` (existing block effect) |
 | BLOCKED | report comment with the reason, `needs-human` | none | stays at Awaiting merge; removing `needs-human` re-runs agent QA on the same head |
 
-Rules: a report that is missing, unparseable, or claims PASS while listing a P1/P2 finding or a
-failed acceptance step is never a pass (invalid → BLOCKED, inconsistent PASS → FAIL). Every
+Rules: a report that is missing, unparseable, claims PASS with fewer checked acceptance steps than
+the ticket has criteria, or claims PASS while listing a P1/P2 finding or a failed step is never a
+pass (invalid → BLOCKED, inconsistent PASS → FAIL). Every
 lane error (busy beyond the wait, host overloaded, device missing, build failed, agent timeout)
 is BLOCKED with that reason. There is no silent pass.
 
@@ -171,11 +172,12 @@ child process only. Linear stays on the Matrix host.
   symlink reaches nothing root-only.
 - **Unprivileged build and agent.** Root only fetches (with its `gh` credential, never stored in the
   checkout) and resolves the gateway key. The build (`npm`/Gradle scripts are PR code) and the QA
-  agent run as the `matrixqa` user (`useradd --create-home matrixqa`) with a cleared environment:
-  they cannot read root's files, Infisical or `gh`. The agent's environment holds the gateway key
-  only.
+  agent run as two different users, `matrixqa-build` and `matrixqa` (homes 0700), with cleared
+  environments: neither reads root's files, Infisical or `gh`, and the build cannot reach the
+  agent's home, key or `out/`. Every process of each user is killed after its step, so nothing a
+  build starts survives into the agent's run. The agent's environment holds the gateway key only.
 - Residual risk, accepted: the agent's `adb` access runs arbitrary shell commands on the **test
-  device** (a dedicated QA phone/emulator), and PR code shares the `matrixqa` home across jobs.
+  device** (a dedicated QA phone/emulator), and PR code shares the `matrixqa-build` home (npm/Gradle caches) across jobs.
 - Remote steps end on their own (`timeout` on the device host) before the Matrix side gives up, so
   the lock is not released under a still-running build.
 

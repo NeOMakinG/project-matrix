@@ -4,9 +4,13 @@
 # unavailable, 12 lane busy, 20 build failed, 21 install failed, 30 agent failed, 2 bad arguments.
 set -euo pipefail
 
-# Builds and the QA agent run as this unprivileged user: PR code and the agent never see root's
-# credentials (gh, Infisical). Create it once: `useradd --create-home matrixqa`.
+# Two unprivileged users: PR build code runs as BUILD_USER, the QA agent (which holds the gateway
+# key) as QA_USER. Neither sees root's credentials (gh, Infisical); the build cannot reach the
+# agent's home, key or output. Create them once:
+#   useradd --create-home matrixqa && useradd --create-home matrixqa-build
+#   chmod 700 /home/matrixqa /home/matrixqa-build
 QA_USER="${MATRIX_QA_USER:-matrixqa}"
+BUILD_USER="${MATRIX_QA_BUILD_USER:-matrixqa-build}"
 ROOT="${MATRIX_QA_ROOT:-/srv/matrix-qa}"
 LOCK=/tmp/matrix-qa-lane.lock
 STALE_S=7200
@@ -18,8 +22,10 @@ need() { [[ "$2" =~ $3 ]] || die 2 "invalid $1"; }
 job_dir() { need job "$1" '^[a-z0-9-]{8,64}$'; echo "$ROOT/jobs/$1"; }
 # Owner-only heartbeat: every step of the lock holder refreshes it, so a live job never goes stale.
 beat() { [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$1" ]] && date +%s >"$LOCK/beat"; true; }
-as_qa() { runuser -u "$QA_USER" -- env -i HOME="/home/$QA_USER" PATH="/usr/local/bin:/usr/bin:/bin:$ANDROID_HOME/platform-tools" \
+as_user() { local u="$1"; shift; runuser -u "$u" -- env -i HOME="/home/$u" PATH="/usr/local/bin:/usr/bin:/bin:$ANDROID_HOME/platform-tools" \
   ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_HOME" LANG=C.UTF-8 "$@"; }
+as_qa() { as_user "$QA_USER" "$@"; }
+as_build() { as_user "$BUILD_USER" "$@"; }
 
 step="${1:-}"; shift || true
 case "$step" in
@@ -74,8 +80,14 @@ case "$step" in
     # root never writes into, or reads through, a path the QA user controls.
     dir=$(job_dir "$1"); name="$2"; need name "$name" '^[a-z][a-z0-9._-]{0,40}$'
     beat "$1"
-    install -d -o root -g root -m 755 "$ROOT" "$ROOT/jobs" "$dir"
-    install -d -o "$QA_USER" -g "$QA_USER" -m 700 "$dir/out" "$dir/out/shots"
+    if [[ ! -d "$dir" ]]; then
+      # Created once, before any PR code runs; root never traverses out/ afterwards.
+      install -d -o root -g root -m 755 "$ROOT" "$ROOT/jobs"
+      mkdir -m 755 "$dir"
+      mkdir -m 700 "$dir/out" && mkdir -m 700 "$dir/out/shots"
+      chown "$QA_USER:" "$dir/out/shots" && chown "$QA_USER:" "$dir/out"
+    fi
+    [[ -d "$dir" && ! -L "$dir" && "$(stat -c %U "$dir")" == root ]] || die 2 "job dir not root-owned"
     printf %s "$3" | base64 -d >"$dir/$name.tmp" && mv -f "$dir/$name.tmp" "$dir/$name"
     ;;
   build)
@@ -86,7 +98,7 @@ case "$step" in
     beat "$1"
     mirror="$ROOT/mirrors/${repo/\//__}.git" work="$ROOT/build/${repo/\//__}"
     install -d -o root -g root -m 755 "$ROOT/mirrors"
-    install -d -o "$QA_USER" -g "$QA_USER" -m 755 "$ROOT/build"
+    install -d -o "$BUILD_USER" -g "$BUILD_USER" -m 755 "$ROOT/build"
     {
       # Root-owned bare mirror: the only place root runs git, fetched with root's gh credential.
       [[ -d "$mirror" ]] || git init --quiet --bare "$mirror"
@@ -95,12 +107,14 @@ case "$step" in
       [[ "$(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr")" == "$sha" ]] \
         || { echo "PR head moved: $(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr") != $sha"; exit 3; }
       # The QA user checks out and builds in its own working copy (PR code never runs as root).
-      as_qa bash -c 'set -e; [[ -d "$1/.git" ]] || git init --quiet "$1"; cd "$1"
+      as_build bash -c 'set -e; [[ -d "$1/.git" ]] || git init --quiet "$1"; cd "$1"
         git fetch --quiet --no-tags "file://$2" "$3"
         git checkout --quiet --force --detach "$4"; git clean -qfdx -e node_modules
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
-      cd "$work" && as_qa ABI="$abi" NODE_ENV=production timeout "$timeout_s" nice bash "$dir/build.sh"
-    } >"$dir/build.log" 2>&1 || { tail -c 1500 "$dir/build.log" >&2; exit 20; }
+      cd "$work" && as_build ABI="$abi" NODE_ENV=production timeout "$timeout_s" nice bash "$dir/build.sh"
+    } >"$dir/build.log" 2>&1 || { pkill -KILL -u "$BUILD_USER" || true; tail -c 1500 "$dir/build.log" >&2; exit 20; }
+    # Nothing the build started survives into the QA agent's run.
+    pkill -KILL -u "$BUILD_USER" || true
     echo "$work" >"$dir/src"
     ;;
   install)
@@ -109,8 +123,8 @@ case "$step" in
     need app "$app" '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$'
     [[ "$apk" != *..* && "$apk" != /* ]] || die 2 "invalid apk"
     beat "$1"; src=$(cat "$dir/src")
-    # Copied out by the QA user: root never opens a path inside the QA-owned checkout.
-    as_qa cat "$src/$apk" >"$dir/app.apk" 2>/dev/null || die 21 "build produced no APK at $apk"
+    # Copied out by the build user: root never opens a path inside the build-owned checkout.
+    as_build cat "$src/$apk" >"$dir/app.apk" 2>/dev/null || die 21 "build produced no APK at $apk"
     adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1 || { tail -c 500 "$dir/install.log" >&2; exit 21; }
     adb -s "$serial" shell dumpsys package "$app" | sed -n 's/^ *versionName=//p' | head -1
     ;;
@@ -127,6 +141,7 @@ case "$step" in
 JSON
     mv -f "$dir/.claude/settings.json.tmp" "$dir/.claude/settings.json"
     cd "$dir"
+    pkill -KILL -u "$QA_USER" || true
     # Root resolves only the gateway key from Infisical; the agent runs as the QA user with a
     # cleared environment holding that key alone (no other secret, no gh, no root files).
     secrets run -- sh -c '
@@ -136,7 +151,9 @@ JSON
           --allowedTools "Bash(agent-device:*)" "Bash(adb:*)" "Read(./**)" "Write(./out/**)" "Glob(./**)" \
           --disallowedTools WebFetch WebSearch Agent Task' \
       sh "$QA_USER" "$model" "$serial" "$ANDROID_HOME/platform-tools" "$timeout_s" \
-      <"$dir/prompt.md" >"$dir/agent.log" 2>&1 || { tail -c 800 "$dir/agent.log" >&2; exit 30; }
+      <"$dir/prompt.md" >"$dir/agent.log" 2>&1 || { pkill -KILL -u "$QA_USER" || true; tail -c 800 "$dir/agent.log" >&2; exit 30; }
+    # No agent process outlives its run (it could rewrite a report after collection).
+    pkill -KILL -u "$QA_USER" || true
     ;;
   collect)
     dir=$(job_dir "$1"); beat "$1"

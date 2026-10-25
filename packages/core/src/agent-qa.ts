@@ -132,15 +132,22 @@ export function parseAgentQaReport(raw: string): AgentQaReport | undefined {
  * a FAIL needs at least one failed step or finding (otherwise the agent could not show a defect:
  * BLOCKED). Nothing here ever upgrades a report to PASS.
  */
-export function effectiveVerdict(report: AgentQaReport): {
-  verdict: AgentQaVerdict;
-  note?: string;
-} {
+export function effectiveVerdict(
+  report: AgentQaReport,
+  criteriaCount = 0,
+): { verdict: AgentQaVerdict; note?: string } {
   const failedSteps = report.steps.filter((s) => !s.ok).length;
   const serious = report.findings.filter((f) => f.severity !== "P3").length;
   if (report.verdict === "PASS") {
     if (!report.steps.length)
       return { verdict: "BLOCKED", note: "the QA agent reported PASS without any checked step" };
+    const checked = report.steps.filter((s) => s.criterion).length;
+    const wanted = Math.max(1, criteriaCount);
+    if (!failedSteps && !serious && checked < wanted)
+      return {
+        verdict: "BLOCKED",
+        note: `the QA agent checked ${checked} of ${wanted} acceptance criteria`,
+      };
     if (failedSteps || serious)
       return {
         verdict: "FAIL",
@@ -199,6 +206,8 @@ export function renderAgentQaReport(
     qaRun: string;
     pullRequestUrl: string;
     images: ReadonlyMap<string, string>;
+    /** Number of acceptance criteria the agent was asked to check. */
+    criteriaCount?: number;
   },
 ): RenderedReport {
   const prLink = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(ctx.pullRequestUrl)
@@ -222,7 +231,7 @@ export function renderAgentQaReport(
     };
   }
   const { report } = outcome;
-  const { verdict, note } = effectiveVerdict(report);
+  const { verdict, note } = effectiveVerdict(report, ctx.criteriaCount ?? 0);
   const image = (name: string | undefined) => {
     if (!name) return "";
     const url = ctx.images.get(name);

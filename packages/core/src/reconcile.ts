@@ -571,6 +571,7 @@ export class Reconciler {
     if (!ticket) return;
     // A BLOCKED report waits until a human removed needs-human (they fixed the cause).
     if (prior === "BLOCKED" && ticket.labels.includes(NEEDS_HUMAN_LABEL)) return;
+    const criteria = manual.criteria.length ? manual.criteria : acceptanceCriteria(ticket.body);
     const pr = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/);
     const job = (async () => {
       let outcome: AgentQaOutcome;
@@ -592,13 +593,13 @@ export class Reconciler {
           pullRequest: { url, number: Number(pr[2]), repo: pr[1] },
           headSha,
           surfaces: manual.surfaces,
-          criteria: manual.criteria.length ? manual.criteria : acceptanceCriteria(ticket.body),
+          criteria,
           signal: AbortSignal.timeout(2 * 60 * 60_000),
         });
       } catch (error) {
         outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
       }
-      await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome);
+      await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome, criteria.length);
     })()
       .catch((error) => this.trackerFailed(project.id, w.ticketId, "agent-qa", error))
       .finally(() => this.agentQaJobs.delete(key));
@@ -613,6 +614,7 @@ export class Reconciler {
     qaRunId: string,
     url: string,
     outcome: AgentQaOutcome,
+    criteriaCount: number,
   ): Promise<void> {
     const tickets = this.o.tickets(project.id);
     const id = started.ticketId;
@@ -630,6 +632,7 @@ export class Reconciler {
       qaRun: qaRunId,
       pullRequestUrl: url,
       images,
+      criteriaCount,
     });
     // The workflow moved on while the lane ran (human feedback, new head): the report is stale.
     const now = await this.o.store.getWorkflow(project.id, id);
