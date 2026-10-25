@@ -189,7 +189,7 @@ case "$step" in
     install -d -o root -g root -m 755 "$dir/.claude"
     # Only these tools; writes only under out/. The user's broad settings are not loaded.
     cat >"$dir/.claude/settings.json.tmp" <<'JSON'
-{"permissions":{"allow":["Bash(agent-device:*)","Bash(adb logcat:*)","Bash(adb shell input:*)","Bash(adb shell svc:*)","Bash(adb shell getprop:*)","Bash(adb shell dumpsys:*)","Bash(adb shell pm list:*)","Bash(adb exec-out screencap:*)","Read(./**)","Edit(./out/**)","Glob(./**)"],"deny":["Bash(agent-device install:*)","Bash(agent-device install-from-source:*)","Bash(adb push:*)","Bash(adb pull:*)","Bash(adb install:*)","WebFetch","WebSearch","Agent","Task"],"defaultMode":"default"}}
+{"permissions":{"allow":["Bash(agent-device:*)","Bash(adb logcat:*)","Bash(adb shell input:*)","Bash(adb shell svc:*)","Bash(adb shell getprop:*)","Bash(adb shell dumpsys:*)","Bash(adb shell pm list:*)","Bash(adb exec-out screencap:*)","Read(./**)","Edit(./out/**)"],"deny":["Bash(agent-device install:*)","Bash(agent-device install-from-source:*)","Bash(adb push:*)","Bash(adb pull:*)","Bash(adb install:*)","WebFetch","WebSearch","Agent","Task"],"defaultMode":"default"}}
 JSON
     mv -f "$dir/.claude/settings.json.tmp" "$dir/.claude/settings.json"
     cd "$dir"
@@ -213,7 +213,7 @@ json.dump(c,open(p+".tmp","w")); os.replace(p+".tmp",p)' "$dir" "$ROOT/jobs/"
         /usr/sbin/runuser -u "$1" -- timeout -k 30 "$5" claude -p --model "$2" --setting-sources project --strict-mcp-config \
           --allowedTools "Bash(agent-device:*)" "Bash(adb logcat:*)" "Bash(adb shell input:*)" "Bash(adb shell svc:*)" \
             "Bash(adb shell getprop:*)" "Bash(adb shell dumpsys:*)" "Bash(adb shell pm list:*)" "Bash(adb exec-out screencap:*)" \
-            "Read(./**)" "Edit(./out/**)" "Glob(./**)" \
+            "Read(./**)" "Edit(./out/**)" \
           --disallowedTools "Bash(agent-device install:*)" "Bash(agent-device install-from-source:*)" \
             "Bash(adb push:*)" "Bash(adb pull:*)" "Bash(adb install:*)" WebFetch WebSearch Agent Task' \
       sh "$QA_USER" "$model" "$serial" "$ANDROID_HOME/platform-tools" "$timeout_s" \
