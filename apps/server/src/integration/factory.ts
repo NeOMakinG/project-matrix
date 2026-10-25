@@ -136,7 +136,7 @@ export async function initProjectRepo(
 }
 
 /** A TicketStore whose backing adapter is resolved per call (the reconciler needs it synchronously). */
-function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
+export function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
   const call =
     <K extends keyof TicketStore>(key: K) =>
     async (...args: unknown[]) => {
@@ -156,6 +156,10 @@ function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
     addLabel: async (id: string, label: string) => (await resolve()).addLabel?.(id, label),
     removeLabel: async (id: string, label: string) => (await resolve()).removeLabel?.(id, label),
     listComments: async (id: string) => (await (await resolve()).listComments?.(id)) ?? [],
+    // Agent QA screenshots. A store without uploads answers "" (not a URL): the report lists the
+    // file names, with no per-screenshot tracker failure.
+    uploadFile: async (id: string, name: string, contentType: string, bytes: Uint8Array) =>
+      (await (await resolve()).uploadFile?.(id, name, contentType, bytes)) ?? "",
   } as TicketStore;
 }
 
