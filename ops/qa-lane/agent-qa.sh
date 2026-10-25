@@ -143,7 +143,14 @@ case "$step" in
     beat "$1"; src=$(cat "$dir/src")
     # Copied out by the build user: root never opens a path inside the build-owned checkout.
     as_build cat "$src/$apk" >"$dir/app.apk" 2>/dev/null || die 21 "build produced no APK at $apk"
-    timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1 || { tail -c 500 "$dir/install.log" >&2; exit 21; }
+    if ! timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1; then
+      # A newer build is installed (another lane, a store build): drop the package but KEEP its
+      # data (-k), then install the PR build. A signature mismatch is never wiped automatically.
+      grep -q INSTALL_FAILED_VERSION_DOWNGRADE "$dir/install.log" || { tail -c 500 "$dir/install.log" >&2; exit 21; }
+      adb -s "$serial" shell pm uninstall -k --user 0 "$app" >>"$dir/install.log" 2>&1 || true
+      timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >>"$dir/install.log" 2>&1 \
+        || { tail -c 500 "$dir/install.log" >&2; exit 21; }
+    fi
     adb -s "$serial" shell dumpsys package "$app" | sed -n 's/^ *versionName=//p' | head -1
     ;;
   agent)
