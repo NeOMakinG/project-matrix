@@ -798,8 +798,13 @@ export class Reconciler {
     this.agentQaLabelsPending.delete(k);
     const tickets = this.o.tickets(project.id);
     try {
-      for (const l of fix.ticket.remove) await tickets.removeLabel?.(fix.ticketId, l);
-      for (const l of fix.ticket.add) await tickets.addLabel?.(fix.ticketId, l);
+      // Ticket labels that landed are never rewritten by a PR-label retry: a human may have
+      // removed needs-human since (their "re-run" signal).
+      if (!fix.ticketDone) {
+        for (const l of fix.ticket.remove) await tickets.removeLabel?.(fix.ticketId, l);
+        for (const l of fix.ticket.add) await tickets.addLabel?.(fix.ticketId, l);
+        fix.ticketDone = true;
+      }
       await this.o.pullRequests?.label?.(project, fix.url, fix.pr.add, fix.pr.remove);
     } catch (error) {
       fix.tries += 1;
@@ -2428,4 +2433,5 @@ interface AgentQaLabelFix {
   ticket: { add: string[]; remove: string[] };
   pr: { add: string[]; remove: string[] };
   tries: number;
+  ticketDone?: boolean;
 }
