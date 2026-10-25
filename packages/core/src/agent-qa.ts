@@ -10,7 +10,7 @@ export type AgentQaVerdict = "PASS" | "FAIL" | "BLOCKED";
 const text = (max: number) =>
   z
     .string()
-    .max(max * 4)
+    .max(20_000)
     .transform((s) => clean(s, max));
 
 const shotName = z
@@ -156,20 +156,29 @@ export function effectiveVerdict(report: AgentQaReport): {
   return { verdict: report.verdict };
 }
 
-export function agentQaHeading(verdict: AgentQaVerdict, headSha: string): string {
-  return `${AGENT_QA_MARKER} ${verdict} for ${headSha.slice(0, 12)}`;
+/** `qaRun` ties the report to one QA run: a loop back that changes nothing gets a fresh run. */
+export function agentQaHeading(verdict: AgentQaVerdict, headSha: string, qaRun: string): string {
+  return `${AGENT_QA_MARKER} ${verdict} for ${headSha.slice(0, 12)} (QA run ${runTag(qaRun)})`;
 }
 
-/** The verdict of an earlier report comment for this head, if Matrix already posted one. */
+function runTag(qaRun: string): string {
+  return qaRun.replace(/[^A-Za-z0-9-]/g, "").slice(0, 12) || "unknown";
+}
+
+/** The verdict of an earlier report comment for this head and QA run, if Matrix posted one. */
 export function priorAgentQaVerdict(
   comments: readonly { body: string; byMatrix: boolean }[],
   headSha: string,
+  qaRun: string,
 ): AgentQaVerdict | undefined {
   let found: AgentQaVerdict | undefined;
   for (const c of comments) {
     if (!c.byMatrix) continue;
-    const m = c.body.match(/^Matrix agent QA (PASS|FAIL|BLOCKED) for ([a-f0-9]{7,40})\b/);
-    if (m && headSha.startsWith(m[2] ?? "-")) found = m[1] as AgentQaVerdict;
+    const m = c.body.match(
+      /^Matrix agent QA (PASS|FAIL|BLOCKED) for ([a-f0-9]{7,40}) \(QA run ([A-Za-z0-9-]+)\)/,
+    );
+    if (m && headSha.startsWith(m[2] ?? "-") && m[3] === runTag(qaRun))
+      found = m[1] as AgentQaVerdict;
   }
   return found;
 }
@@ -185,7 +194,12 @@ export interface RenderedReport {
  */
 export function renderAgentQaReport(
   outcome: AgentQaOutcome,
-  ctx: { headSha: string; pullRequestUrl: string; images: ReadonlyMap<string, string> },
+  ctx: {
+    headSha: string;
+    qaRun: string;
+    pullRequestUrl: string;
+    images: ReadonlyMap<string, string>;
+  },
 ): RenderedReport {
   const prLink = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(ctx.pullRequestUrl)
     ? `[draft PR](${ctx.pullRequestUrl})`
@@ -200,7 +214,7 @@ export function renderAgentQaReport(
     return {
       verdict: "BLOCKED",
       body: [
-        `${agentQaHeading("BLOCKED", ctx.headSha)} (${prLink})`,
+        `${agentQaHeading("BLOCKED", ctx.headSha, ctx.qaRun)} (${prLink})`,
         `Device: ${device} · Build: ${build}`,
         `The agent QA lane could not test this change: ${md(outcome.reason, 400)}`,
         "Nothing passed. Fix the cause, then remove the `needs-human` label to re-run agent QA on the same commit (or test it yourself and approve the merge in Matrix).",
@@ -217,7 +231,7 @@ export function renderAgentQaReport(
       : ` (screenshot ${md(name, 80)})`;
   };
   const lines = [
-    `${agentQaHeading(verdict, ctx.headSha)} (${prLink})`,
+    `${agentQaHeading(verdict, ctx.headSha, ctx.qaRun)} (${prLink})`,
     `Device: ${device} · Build: ${build} · ${Math.max(1, Math.round(outcome.durationMs / 60_000))} min`,
     `Summary: ${md(report.summary, 600)}`,
   ];

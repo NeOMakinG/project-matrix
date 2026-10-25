@@ -546,8 +546,10 @@ export class Reconciler {
     } catch {
       return;
     }
-    const key = `${project.id}\u0000${w.ticketId}\u0000${headSha}`;
-    const url = this.publishedUrls.get(key);
+    const qaRun = await this.latestRun(w, "qa");
+    if (!qaRun) return;
+    const url = this.publishedUrls.get(`${project.id}\u0000${w.ticketId}\u0000${headSha}`);
+    const key = `${project.id}\u0000${w.ticketId}\u0000${headSha}\u0000${qaRun.id}`;
     if (!url || this.agentQaJobs.has(key)) return;
     const tickets = this.o.tickets(project.id);
     let comments: TicketComment[] = [];
@@ -557,7 +559,7 @@ export class Reconciler {
       this.trackerFailed(project.id, w.ticketId, "list-comments", error);
       return;
     }
-    const prior = this.agentQaVerdicts.get(key) ?? priorAgentQaVerdict(comments, headSha);
+    const prior = this.agentQaVerdicts.get(key) ?? priorAgentQaVerdict(comments, headSha, qaRun.id);
     if (prior === "PASS" || prior === "FAIL") {
       this.agentQaVerdicts.set(key, prior);
       return;
@@ -593,7 +595,7 @@ export class Reconciler {
       } catch (error) {
         outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
       }
-      await this.finishAgentQa(project, w, key, headSha, url, outcome);
+      await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome);
     })()
       .catch((error) => this.trackerFailed(project.id, w.ticketId, "agent-qa", error))
       .finally(() => this.agentQaJobs.delete(key));
@@ -605,6 +607,7 @@ export class Reconciler {
     started: WorkflowState,
     key: string,
     headSha: string,
+    qaRunId: string,
     url: string,
     outcome: AgentQaOutcome,
   ): Promise<void> {
@@ -619,7 +622,12 @@ export class Reconciler {
           this.trackerFailed(project.id, id, "upload-file", error);
         }
       }
-    const rendered = renderAgentQaReport(outcome, { headSha, pullRequestUrl: url, images });
+    const rendered = renderAgentQaReport(outcome, {
+      headSha,
+      qaRun: qaRunId,
+      pullRequestUrl: url,
+      images,
+    });
     // The workflow moved on while the lane ran (human feedback, new head): the report is stale.
     const now = await this.o.store.getWorkflow(project.id, id);
     if (
@@ -627,7 +635,8 @@ export class Reconciler {
       now.status !== "waiting_approval" ||
       now.phase !== "merge" ||
       !now.workdir ||
-      (await this.o.git.headSha(now.workdir)) !== headSha
+      (await this.o.git.headSha(now.workdir)) !== headSha ||
+      (await this.latestRun(now, "qa"))?.id !== qaRunId
     )
       return;
     this.agentQaVerdicts.set(key, rendered.verdict);
