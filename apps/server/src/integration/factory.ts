@@ -136,7 +136,7 @@ export async function initProjectRepo(
 }
 
 /** A TicketStore whose backing adapter is resolved per call (the reconciler needs it synchronously). */
-function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
+export function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
   const call =
     <K extends keyof TicketStore>(key: K) =>
     async (...args: unknown[]) => {
@@ -156,6 +156,12 @@ function lazyTickets(resolve: () => Promise<TicketStore>): TicketStore {
     addLabel: async (id: string, label: string) => (await resolve()).addLabel?.(id, label),
     removeLabel: async (id: string, label: string) => (await resolve()).removeLabel?.(id, label),
     listComments: async (id: string) => (await (await resolve()).listComments?.(id)) ?? [],
+    // Agent QA screenshots: a store without uploads throws, so reports fall back to file names.
+    uploadFile: async (id: string, name: string, contentType: string, bytes: Uint8Array) => {
+      const store = await resolve();
+      if (!store.uploadFile) throw new Error("this tracker cannot upload files");
+      return store.uploadFile(id, name, contentType, bytes);
+    },
   } as TicketStore;
 }
 
