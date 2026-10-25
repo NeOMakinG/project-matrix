@@ -57,7 +57,8 @@ case "$step" in
     echo "load=$load cores=$cores mem_mb=$mem"
     ;;
   lock)
-    job="$1" wait_s="$2"; need job "$job" '^[a-z0-9-]{8,64}$'; need wait "$wait_s" '^[0-9]{1,5}$'
+    job="$1" wait_s="$2" holder="${3:-unknown}"; need job "$job" '^[a-z0-9-]{8,64}$'; need wait "$wait_s" '^[0-9]{1,5}$'
+    need holder "$holder" '^[A-Za-z0-9._@-]{1,64}$'
     deadline=$(( $(date +%s) + wait_s ))
     # Acquisition and stale reclamation are serialized by a kernel lock: no waiter can act on an
     # observation another waiter already invalidated.
@@ -65,7 +66,7 @@ case "$step" in
     while :; do
       flock 9
       # Build the lock fully, then publish it with one atomic rename: no half-initialized lock.
-      tmp=$(mktemp -d /tmp/matrix-qa-lane.XXXXXX); echo "$job" >"$tmp/owner"; date +%s >"$tmp/beat"
+      tmp=$(mktemp -d /tmp/matrix-qa-lane.XXXXXX); echo "$job" >"$tmp/owner"; echo "$holder" >"$tmp/holder"; date +%s >"$tmp/beat"
       if mv -T "$tmp" "$LOCK" 2>/dev/null; then flock -u 9; break; fi
       rm -rf "$tmp"
       beat_s=$(cat "$LOCK/beat" 2>/dev/null || date +%s)
@@ -76,6 +77,24 @@ case "$step" in
       (( $(date +%s) < deadline )) || die 12 "device lane busy (held by $(cat "$LOCK/owner" 2>/dev/null || echo another tenant))"
       sleep 15
     done
+    ;;
+  reclaim)
+    # The Matrix process named <holder> just started: a lock it holds belongs to a predecessor that
+    # died mid-job (its ssh session is gone, its remote step may still run). Kill that job's
+    # processes and release the lock now instead of after the 2 h stale limit. Locks of any other
+    # holder (qaexplorer, a human, another Matrix host) are never touched.
+    holder="$1"; need holder "$holder" '^[A-Za-z0-9._@-]{1,64}$'
+    exec 9>/tmp/matrix-qa-lane.flock; flock 9
+    if [[ -d "$LOCK" && "$(cat "$LOCK/holder" 2>/dev/null || true)" == "$holder" ]]; then
+      owner=$(cat "$LOCK/owner" 2>/dev/null || echo unknown)
+      # The dead job's own root steps first (so none starts a new build or agent), then its users.
+      [[ "$owner" =~ ^[a-z0-9-]{8,64}$ ]] && { pkill -KILL -f "^bash -s -- [a-z]+ $owner( |\$)" || true; }
+      pkill -KILL -u "$BUILD_USER" || true; pkill -KILL -u "$QA_USER" || true
+      rm -rf "$LOCK"
+      [[ "$owner" =~ ^[a-z0-9-]{8,64}$ ]] && rm -rf "$ROOT/jobs/$owner"
+      echo "reclaimed $owner"
+    fi
+    flock -u 9
     ;;
   unlock)
     job="$1"; need job "$job" '^[a-z0-9-]{8,64}$'
@@ -124,7 +143,7 @@ case "$step" in
       as_build bash -c 'set -e; [[ -d "$1/.git" ]] || git init --quiet "$1"; cd "$1"
         git config --global --get-all safe.directory | grep -qxF "$2" || git config --global --add safe.directory "$2"
         timeout -k 10 300 git fetch --quiet --no-tags "file://$2" "$3"
-        git checkout --quiet --force --detach "$4"; git clean -qfdx -e node_modules
+        git checkout --quiet --force --detach "$4"; git clean -qffdx
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
       cd "$work" && as_build ABI="$abi" VERSION_CODE="$(( $(date +%s) / 60 ))" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"
     ) >"$dir/build.log" 2>&1

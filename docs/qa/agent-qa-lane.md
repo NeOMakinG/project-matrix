@@ -43,11 +43,19 @@ draft PR, a checklist from the public acceptance criteria. So:
 | FAIL | report comment, `qa:failed` | `qa:failed` | `reject()` → loops back to implement (column Implement), report reaches the implementer as a ticket comment; counted against `maxLoops`; exhausted → blocked + `needs-human` (existing block effect) |
 | BLOCKED | report comment with the reason, `needs-human` | none | stays at Awaiting merge; removing `needs-human` re-runs agent QA on the same head |
 
-Rules: a report that is missing, unparseable, claims PASS with fewer checked acceptance steps than
+Rules: a ticket with no acceptance criteria (so an empty PR checklist) is BLOCKED `no acceptance
+criteria` before the lane runs, and a PASS is never kept without criteria to check. A report that is missing, unparseable, claims PASS with fewer checked acceptance steps than
 the ticket has criteria, or claims PASS while listing a P1/P2 finding or a failed step is never a
 pass (invalid → BLOCKED, inconsistent PASS → FAIL). Every
 lane error (busy beyond the wait, host overloaded, device missing, build failed, agent timeout)
 is BLOCKED with that reason. There is no silent pass.
+
+Labels: removals are written before additions (a failure midway never leaves `qa:passed` beside a
+FAIL), and a failed label write is retried on every tick whatever the workflow's phase, until it
+lands or a newer verdict for the ticket replaces it.
+
+Handover: a ticket whose QA run handed off to a human before the project switched to
+`driver: "agent"` goes through the lane once a human removes its `needs-human` label.
 
 Idempotency across restarts: every report comment starts with
 `Matrix agent QA <VERDICT> for <sha>`. Before running, the reconciler reads the ticket comments:
@@ -68,13 +76,17 @@ Steps, each failure → BLOCKED with a short reason:
    heartbeat). Every step of the holder refreshes the heartbeat; a lock is stale only after 2 h
    without one (every remote step is capped below that with `timeout`). A lock
    held by someone else (qaexplorer, a human) is waited on for up to `waitMs` (default 20 min),
-   then BLOCKED `device lane busy`.
+   then BLOCKED `device lane busy`. The lock also names its holder (`matrix-server@<host>` for the
+   server); a restarted server reclaims a lock its dead predecessor still holds on startup (kills
+   that job's steps and lane-user processes) instead of waiting out the 2 h stale limit. Locks of
+   other holders are never reclaimed.
 2. **Host precheck.** `load1 / nproc < 0.8` and `MemAvailable >= 6 GB`, else BLOCKED
    `device host overloaded`. The device (`adb -s <serial>`) must be `device`; with
    `bootEmulator` set the script boots the AVD once (`/root/boot-emulator.sh`) and waits for
    `sys.boot_completed`, else BLOCKED `device unavailable`.
 3. **Build the PR head.** A cached clone per repo under `/srv/matrix-qa/repos/<owner>__<name>`,
-   `git fetch origin pull/<n>/head`, `git checkout --detach <sha>` (the exact SHA Matrix
+   `git fetch origin pull/<n>/head`, `git checkout --detach <sha>`, `git clean -ffdx` (nothing,
+`node_modules` included, carries over from an earlier checkout) (the exact SHA Matrix
    validated, refused if the PR head moved). Then the project's build command from the lane
    config (operator-trusted, e.g. wayline: `npm ci` + `expo prebuild` + `gradlew assembleRelease`,
    the proven path from `/root/wayline-android/build-main.sh`). The build is a release APK

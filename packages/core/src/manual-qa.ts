@@ -146,7 +146,12 @@ export function isManualQaHandoff(receipt: Receipt): boolean {
 
 /** A handoff still honours the project config: same tester opt-in kept, surfaces still configured. */
 export function manualQaStillAllowed(project: ProjectConfig, data: ManualQaData): boolean {
-  if (handoffTester(project) !== (data.tester ?? "human") || !data.surfaces.length) return false;
+  const tester = handoffTester(project);
+  // A human handoff stays valid when the project later moved to the agent driver (a human still
+  // tests or hands it to the lane); an agent handoff never survives a move back to manual.
+  const was = data.tester ?? "human";
+  const kept = tester === was || (tester === "agent" && was === "human");
+  if (!kept || !data.surfaces.length) return false;
   return data.surfaces.every((s) => UI_DEVICE_SURFACES.has(s) && project.qa?.surfaces?.includes(s));
 }
 
