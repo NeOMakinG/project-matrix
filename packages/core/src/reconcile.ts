@@ -72,6 +72,7 @@ import {
 import {
   type Actor,
   type ApprovalRecord,
+  type LabelRetry,
   type RunRecord,
   type Store,
   VersionConflictError,
@@ -273,6 +274,8 @@ export class Reconciler {
   private readonly agentQaLabelsPending = new Map<string, AgentQaLabelFix>();
   /** The newest label fix per ticket (older ones in flight never re-queue over it). */
   private readonly agentQaLabelsLatest = new Map<string, AgentQaLabelFix>();
+  /** Label writes queued by an earlier process were reloaded from the store. */
+  private agentQaLabelsResumed = false;
   readonly ownerId: string;
   private readonly active = new Map<string, ActiveRun>();
   private readonly clock: () => Date;
@@ -374,6 +377,7 @@ export class Reconciler {
       else if (result === "replayed") report.replayed.push(w.ticketId);
       else if (result === "approval") report.awaitingApproval.push(w.ticketId);
     }
+    await this.resumeAgentQaLabels();
     for (const fix of [...this.agentQaLabelsPending.values()]) {
       const project = byId.get(fix.projectId);
       if (project) await this.writeAgentQaLabels(project, fix);
@@ -739,6 +743,7 @@ export class Reconciler {
     verdict: AgentQaVerdict,
   ): Promise<void> {
     const fix = (ticket: [string[], string[]], pr: [string[], string[]]): AgentQaLabelFix => ({
+      id: this.ids(),
       projectId: project.id,
       ticketId: now.ticketId,
       url,
@@ -793,6 +798,8 @@ export class Reconciler {
         for (const old of this.agentQaLabelsLatest.keys())
           if (!this.agentQaLabelsPending.has(old)) this.agentQaLabelsLatest.delete(old);
       this.agentQaLabelsLatest.set(k, fix);
+      // Write-ahead: a restart mid-write resumes it (label writes are idempotent).
+      await this.persistAgentQaLabels(fix);
     }
     if (this.agentQaLabelsLatest.get(k) !== fix) return;
     this.agentQaLabelsPending.delete(k);
@@ -809,8 +816,59 @@ export class Reconciler {
     } catch (error) {
       fix.tries += 1;
       // Kept until it lands or a newer verdict replaces it (one entry per ticket at most).
-      if (this.agentQaLabelsLatest.get(k) === fix) this.agentQaLabelsPending.set(k, fix);
+      if (this.agentQaLabelsLatest.get(k) === fix) {
+        this.agentQaLabelsPending.set(k, fix);
+        await this.persistAgentQaLabels(fix);
+      }
       this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
+      return;
+    }
+    try {
+      // Only this fix's row: a newer verdict's queued write stays.
+      await this.o.store.deleteLabelRetry(fix.projectId, fix.ticketId, fix.id);
+    } catch (error) {
+      // A leftover row only replays idempotent label writes after a restart.
+      this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels-dequeue", error);
+    }
+  }
+
+  /** Saves a queued label write so a restart resumes it; best effort (memory still retries). */
+  private async persistAgentQaLabels(fix: AgentQaLabelFix): Promise<void> {
+    try {
+      await this.o.store.saveLabelRetry(structuredClone(fix));
+    } catch (error) {
+      this.trackerFailed(fix.projectId, fix.ticketId, "agent-qa-labels-persist", error);
+    }
+  }
+
+  /**
+   * Once per process: reloads label writes queued by an earlier process (lost on restart
+   * otherwise). A fix this process already made for the ticket is newer and wins.
+   */
+  private async resumeAgentQaLabels(): Promise<void> {
+    if (this.agentQaLabelsResumed) return;
+    let queued: LabelRetry[];
+    try {
+      queued = await this.o.store.listLabelRetries();
+    } catch (error) {
+      this.o.bus.publish({
+        type: "tracker.failed",
+        projectId: "*",
+        ticketId: "*",
+        operation: "agent-qa-labels-resume",
+        message: error instanceof Error ? error.message : String(error),
+        at: this.clock().toISOString(),
+      });
+      return;
+    }
+    this.agentQaLabelsResumed = true;
+    for (const fix of queued) {
+      const k = `${fix.projectId}\u0000${fix.ticketId}`;
+      if (this.agentQaLabelsLatest.has(k)) continue;
+      // Not a new verdict: the retry path must not re-persist or re-supersede it.
+      const resumed = { ...fix, tries: Math.max(1, fix.tries) };
+      this.agentQaLabelsLatest.set(k, resumed);
+      this.agentQaLabelsPending.set(k, resumed);
     }
   }
 
@@ -2426,12 +2484,4 @@ export class Reconciler {
   }
 }
 
-interface AgentQaLabelFix {
-  projectId: string;
-  ticketId: string;
-  url: string;
-  ticket: { add: string[]; remove: string[] };
-  pr: { add: string[]; remove: string[] };
-  tries: number;
-  ticketDone?: boolean;
-}
+type AgentQaLabelFix = LabelRetry;

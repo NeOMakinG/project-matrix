@@ -19,6 +19,19 @@ const stateOf = (fake: ReturnType<typeof fakeLinear>, id: string) =>
   fake.issues.get(id)?.state.name;
 
 describe("LinearTicketStore", () => {
+  test("uploadFile refuses non-evidence files before asking Linear for an upload URL", async () => {
+    const { fake, store } = make();
+    const a = await store.create({ title: "Alpha", body: "" });
+    const html = new TextEncoder().encode("<script>alert(1)</script>");
+    await expect(store.uploadFile(a.id, "x.html", "text/html", html)).rejects.toThrow(
+      /not allowed/,
+    );
+    await expect(store.uploadFile(a.id, "x.png", "image/png", html)).rejects.toThrow(
+      /not image\/png/,
+    );
+    expect(fake.calls.some((c) => /upload/i.test(c.op))).toBe(false);
+  });
+
   test("create adds project label, list/get are scoped and paginated", async () => {
     const { fake, store } = make();
     const a = await store.create({

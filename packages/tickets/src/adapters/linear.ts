@@ -14,7 +14,12 @@ import {
   type TrackerPhase,
 } from "../types.js";
 import { matches } from "./beads.js";
-import { LinearApiError, LinearClient, type LinearClientOptions } from "./linear-client.js";
+import {
+  checkEvidenceUpload,
+  LinearApiError,
+  LinearClient,
+  type LinearClientOptions,
+} from "./linear-client.js";
 import {
   columnFor,
   DEFAULT_PHASE_COLUMNS,
@@ -525,7 +530,7 @@ export class LinearTicketStore implements TicketStore {
     await this.#must(id);
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(name))
       throw new Error("invalid upload file name");
-    if (bytes.byteLength > 10 * 1024 * 1024) throw new Error("upload larger than 10 MB");
+    checkEvidenceUpload(name, contentType, bytes);
     return this.#client.upload(name, contentType, bytes);
   }
 

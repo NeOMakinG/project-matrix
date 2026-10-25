@@ -226,6 +226,10 @@ export class LinearClient {
     if (!data.fileUpload.success || !file) throw new Error("Linear fileUpload failed");
     if (!/^https:\/\//.test(file.uploadUrl) || !/^https:\/\/[^\s()<>]+$/.test(file.assetUrl))
       throw new Error("Linear fileUpload returned a non-https URL");
+    // The asset URL is embedded in a comment: only Linear's own upload host, never a
+    // look-alike (`uploads.linear.app.evil`, `user@host`, an explicit port).
+    if (!isLinearAssetUrl(file.assetUrl))
+      throw new Error("Linear fileUpload returned an asset URL outside Linear's upload host");
     const headers: Record<string, string> = {
       "Content-Type": contentType,
       "Cache-Control": "public, max-age=31536000",
@@ -241,6 +245,71 @@ export class LinearClient {
     if (!res.ok) throw new Error(`Linear file upload PUT failed with HTTP ${res.status}`);
     return file.assetUrl;
   }
+}
+
+/** Linear serves uploaded files from this host only. */
+export const LINEAR_UPLOAD_HOST = "uploads.linear.app";
+
+/** True for a plain `https://uploads.linear.app/...` URL (no credentials, port or look-alike). */
+export function isLinearAssetUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return (
+    url.protocol === "https:" &&
+    url.hostname === LINEAR_UPLOAD_HOST &&
+    url.port === "" &&
+    url.username === "" &&
+    url.password === "" &&
+    value.startsWith(`https://${LINEAR_UPLOAD_HOST}/`)
+  );
+}
+
+/**
+ * The evidence the QA lane uploads, nothing else: screenshots and plain-text logs. Extension,
+ * declared type and (for images) the file signature must agree; each type has a size cap.
+ */
+const EVIDENCE_TYPES: Record<
+  string,
+  { ext: string[]; maxBytes: number; magic?: (b: Uint8Array) => boolean }
+> = {
+  "image/png": {
+    ext: ["png"],
+    maxBytes: 10 * 1024 * 1024,
+    magic: (b) => startsWith(b, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+  },
+  "image/jpeg": {
+    ext: ["jpg", "jpeg"],
+    maxBytes: 10 * 1024 * 1024,
+    magic: (b) => startsWith(b, [0xff, 0xd8, 0xff]),
+  },
+  "image/webp": {
+    ext: ["webp"],
+    maxBytes: 10 * 1024 * 1024,
+    magic: (b) =>
+      startsWith(b, [0x52, 0x49, 0x46, 0x46]) &&
+      startsWith(b.subarray(8), [0x57, 0x45, 0x42, 0x50]),
+  },
+  "text/plain": { ext: ["txt", "log"], maxBytes: 1024 * 1024 },
+};
+
+const startsWith = (bytes: Uint8Array, prefix: number[]) =>
+  bytes.byteLength >= prefix.length && prefix.every((v, i) => bytes[i] === v);
+
+/** Throws unless `name`/`contentType`/`bytes` is an allowed QA evidence file within its cap. */
+export function checkEvidenceUpload(name: string, contentType: string, bytes: Uint8Array): void {
+  const type = EVIDENCE_TYPES[contentType.trim().toLowerCase()];
+  if (!type) throw new Error(`upload type ${JSON.stringify(contentType)} is not allowed`);
+  const ext = name.toLowerCase().split(".").pop() ?? "";
+  if (!name.includes(".") || !type.ext.includes(ext))
+    throw new Error(`upload name does not match ${contentType}`);
+  if (bytes.byteLength === 0) throw new Error("upload is empty");
+  if (bytes.byteLength > type.maxBytes)
+    throw new Error(`upload larger than ${type.maxBytes / (1024 * 1024)} MB for ${contentType}`);
+  if (type.magic && !type.magic(bytes)) throw new Error(`upload content is not ${contentType}`);
 }
 
 export { sanitizeUntrusted } from "../sanitize.js";
