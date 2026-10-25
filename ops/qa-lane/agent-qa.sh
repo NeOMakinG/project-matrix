@@ -22,7 +22,7 @@ need() { [[ "$2" =~ $3 ]] || die 2 "invalid $1"; }
 job_dir() { need job "$1" '^[a-z0-9-]{8,64}$'; echo "$ROOT/jobs/$1"; }
 # Owner-only heartbeat: every step of the lock holder refreshes it, so a live job never goes stale.
 beat() { [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$1" ]] && date +%s >"$LOCK/beat"; true; }
-as_user() { local u="$1"; shift; runuser -u "$u" -- env -i HOME="/home/$u" PATH="/usr/local/bin:/usr/bin:/bin:$ANDROID_HOME/platform-tools" \
+as_user() { local u="$1"; shift; /usr/sbin/runuser -u "$u" -- env -i HOME="/home/$u" PATH="/usr/local/bin:/usr/bin:/bin:$ANDROID_HOME/platform-tools" \
   ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_HOME" LANG=C.UTF-8 "$@"; }
 as_qa() { as_user "$QA_USER" "$@"; }
 as_build() { as_user "$BUILD_USER" "$@"; }
@@ -57,15 +57,20 @@ case "$step" in
   lock)
     job="$1" wait_s="$2"; need job "$job" '^[a-z0-9-]{8,64}$'; need wait "$wait_s" '^[0-9]{1,5}$'
     deadline=$(( $(date +%s) + wait_s ))
+    # Acquisition and stale reclamation are serialized by a kernel lock: no waiter can act on an
+    # observation another waiter already invalidated.
+    exec 9>/tmp/matrix-qa-lane.flock
     while :; do
+      flock 9
       # Build the lock fully, then publish it with one atomic rename: no half-initialized lock.
       tmp=$(mktemp -d /tmp/matrix-qa-lane.XXXXXX); echo "$job" >"$tmp/owner"; date +%s >"$tmp/beat"
-      if mv -T "$tmp" "$LOCK" 2>/dev/null; then break; fi
+      if mv -T "$tmp" "$LOCK" 2>/dev/null; then flock -u 9; break; fi
       rm -rf "$tmp"
       beat_s=$(cat "$LOCK/beat" 2>/dev/null || date +%s)
       if (( $(date +%s) - beat_s > STALE_S )); then
-        mv -T "$LOCK" "$LOCK.stale.$$" 2>/dev/null && rm -rf "$LOCK.stale.$$"; continue
+        rm -rf "$LOCK"; flock -u 9; continue
       fi
+      flock -u 9
       (( $(date +%s) < deadline )) || die 12 "device lane busy (held by $(cat "$LOCK/owner" 2>/dev/null || echo another tenant))"
       sleep 15
     done
@@ -148,7 +153,7 @@ case "$step" in
     install -d -o root -g root -m 755 "$dir/.claude"
     # Only these tools; writes only under out/. The user's broad settings are not loaded.
     cat >"$dir/.claude/settings.json.tmp" <<'JSON'
-{"permissions":{"allow":["Bash(agent-device:*)","Bash(adb:*)","Read(./**)","Write(./out/**)","Glob(./**)"],"deny":["WebFetch","WebSearch","Agent","Task"],"defaultMode":"default"}}
+{"permissions":{"allow":["Bash(agent-device:*)","Bash(adb logcat:*)","Bash(adb shell input:*)","Bash(adb shell svc:*)","Bash(adb shell getprop:*)","Bash(adb shell dumpsys:*)","Bash(adb shell pm list:*)","Bash(adb exec-out screencap:*)","Read(./**)","Write(./out/**)","Glob(./**)"],"deny":["Bash(agent-device install:*)","Bash(agent-device install-from-source:*)","Bash(adb push:*)","Bash(adb pull:*)","Bash(adb install:*)","WebFetch","WebSearch","Agent","Task"],"defaultMode":"default"}}
 JSON
     mv -f "$dir/.claude/settings.json.tmp" "$dir/.claude/settings.json"
     cd "$dir"
@@ -158,9 +163,12 @@ JSON
     secrets run -- sh -c '
       exec env -i HOME="/home/$1" PATH="/usr/local/bin:/usr/bin:/bin:$4" LANG=C.UTF-8 ANDROID_SERIAL="$3" \
         ANTHROPIC_BASE_URL="${MATRIX_QA_GATEWAY:-http://127.0.0.1:8317}" ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY" \
-        runuser -u "$1" -- timeout -k 30 "$5" claude -p --model "$2" --setting-sources project --strict-mcp-config \
-          --allowedTools "Bash(agent-device:*)" "Bash(adb:*)" "Read(./**)" "Write(./out/**)" "Glob(./**)" \
-          --disallowedTools WebFetch WebSearch Agent Task' \
+        /usr/sbin/runuser -u "$1" -- timeout -k 30 "$5" claude -p --model "$2" --setting-sources project --strict-mcp-config \
+          --allowedTools "Bash(agent-device:*)" "Bash(adb logcat:*)" "Bash(adb shell input:*)" "Bash(adb shell svc:*)" \
+            "Bash(adb shell getprop:*)" "Bash(adb shell dumpsys:*)" "Bash(adb shell pm list:*)" "Bash(adb exec-out screencap:*)" \
+            "Read(./**)" "Write(./out/**)" "Glob(./**)" \
+          --disallowedTools "Bash(agent-device install:*)" "Bash(agent-device install-from-source:*)" \
+            "Bash(adb push:*)" "Bash(adb pull:*)" "Bash(adb install:*)" WebFetch WebSearch Agent Task' \
       sh "$QA_USER" "$model" "$serial" "$ANDROID_HOME/platform-tools" "$timeout_s" \
       <"$dir/prompt.md" >"$dir/agent.log" 2>&1 || { pkill -KILL -u "$QA_USER" || true; tail -c 800 "$dir/agent.log" >&2; exit 30; }
     # No agent process outlives its run (it could rewrite a report after collection).

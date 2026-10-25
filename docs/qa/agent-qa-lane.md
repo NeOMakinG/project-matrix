@@ -176,8 +176,17 @@ child process only. Linear stays on the Matrix host.
   environments: neither reads root's files, Infisical or `gh`, and the build cannot reach the
   agent's home, key or `out/`. Every process of each user is killed after its step, so nothing a
   build starts survives into the agent's run. The agent's environment holds the gateway key only.
-- Residual risk, accepted: the agent's `adb` access runs arbitrary shell commands on the **test
+- The agent's tools are `agent-device` (minus `install`) and a few read/drive-only `adb`
+  subcommands (`logcat`, `shell input|svc|getprop|dumpsys|pm list`, `exec-out screencap`); no
+  `adb push/pull/install`, so it cannot move host files to or from the device. The build user is
+  kept off the adb server (`iptables -A OUTPUT -o lo -p tcp --dport 5037 -m owner --uid-owner
+  matrixqa-build -j REJECT`, operator step, persist it with the host's firewall config).
+- Residual risk, accepted: `agent-device`/`adb shell input` drive arbitrary UI on the **test
   device** (a dedicated QA phone/emulator), and PR code shares the `matrixqa-build` home (npm/Gradle caches) across jobs.
+- Lock acquisition and stale reclamation run under `flock`; `unlock` kills every process of both
+  lane users before releasing the lock.
+- Deferred: an abort mid-step does not interrupt the remote step (it ends at its own hard
+  timeout, at most 90 min); reconciler shutdown does not cancel a running lane job.
 - Remote steps end on their own (`timeout` on the device host) before the Matrix side gives up, so
   the lock is not released under a still-running build.
 
