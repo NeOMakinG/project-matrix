@@ -4284,7 +4284,7 @@ export interface components {
       qa?: {
         surfaces?: ("host" | "api" | "web" | "android" | "ios")[];
         /** @enum {string} */
-        driver: "none" | "manual";
+        driver: "none" | "manual" | "agent";
       };
     };
     /** @enum {string} */
@@ -4344,10 +4344,10 @@ export interface components {
         /** @description Surfaces QA must exercise for this project (trusted config) */
         surfaces?: ("host" | "api" | "web" | "android" | "ios")[];
         /**
-         * @description manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block.
+         * @description manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. agent: the draft PR is tested by the agent QA lane on a device and its verdict drives the ticket (merge stays human). none (default): block.
          * @enum {string}
          */
-        driver?: "none" | "manual";
+        driver?: "none" | "manual" | "agent";
       };
     };
     LinearTickets: {
@@ -4489,10 +4489,10 @@ export interface components {
         /** @description Surfaces QA must exercise for this project (trusted config) */
         surfaces?: ("host" | "api" | "web" | "android" | "ios")[];
         /**
-         * @description manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block.
+         * @description manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. agent: the draft PR is tested by the agent QA lane on a device and its verdict drives the ticket (merge stays human). none (default): block.
          * @enum {string}
          */
-        driver?: "none" | "manual";
+        driver?: "none" | "manual" | "agent";
       } | null;
     };
     TrackerFailure: {

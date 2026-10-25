@@ -8,6 +8,15 @@ import {
   type TicketStatus,
   type TicketStore,
 } from "@matrix/tickets";
+import {
+  type AgentQaOutcome,
+  type AgentQaPort,
+  type AgentQaVerdict,
+  priorAgentQaVerdict,
+  QA_FAILED_LABEL,
+  QA_PASSED_LABEL,
+  renderAgentQaReport,
+} from "./agent-qa.js";
 import type { EventBus } from "./bus.js";
 import {
   canonicalFigmaFile,
@@ -33,6 +42,7 @@ import {
   type Transition,
 } from "./machine.js";
 import {
+  acceptanceCriteria,
   type ManualQaData,
   manualQaData,
   manualQaReason,
@@ -103,6 +113,8 @@ export interface ReconcilerOptions {
    * draft PR opened right before the merge approval is requested (retried on later ticks).
    */
   pullRequests?: PullRequestPort;
+  /** Agent QA lane for projects with `qa.driver: "agent"`: tests the published draft PR. */
+  agentQa?: AgentQaPort;
   clock?: () => Date;
   ids?: () => string;
 }
@@ -242,6 +254,12 @@ const ACTIVE_STATUSES = ["pending", "running", "waiting_approval"] as const;
 export class Reconciler {
   /** Heads whose draft PR is published (skips repeat work on later ticks). */
   private readonly published = new Set<string>();
+  /** PR url per published `${project}\0${ticket}\0${head}` key (agent QA needs it). */
+  private readonly publishedUrls = new Map<string, string>();
+  /** In-flight agent QA jobs by the same key. */
+  private readonly agentQaJobs = new Map<string, Promise<void>>();
+  /** Last agent QA verdict per key (PASS/FAIL are final for a head; BLOCKED waits for a human). */
+  private readonly agentQaVerdicts = new Map<string, AgentQaVerdict>();
   readonly ownerId: string;
   private readonly active = new Map<string, ActiveRun>();
   private readonly clock: () => Date;
@@ -271,6 +289,11 @@ export class Reconciler {
     while (this.active.size > 0) {
       await Promise.allSettled([...this.active.values()].map((r) => r.promise));
     }
+  }
+
+  /** Waits for in-flight agent QA jobs (tests and graceful shutdown). */
+  async agentQaIdle(): Promise<void> {
+    while (this.agentQaJobs.size > 0) await Promise.allSettled([...this.agentQaJobs.values()]);
   }
 
   stop(): void {
@@ -343,6 +366,7 @@ export class Reconciler {
       if (!project || w.phase !== "merge" || this.isActive(w)) continue;
       if (this.o.pullRequests) await this.publishPullRequest(project, w);
       await this.observeHandoff(project, w);
+      await this.maybeRunAgentQa(project, w);
     }
     return report;
   }
@@ -358,6 +382,7 @@ export class Reconciler {
       const headSha = await this.o.git.headSha(w.workdir);
       const key = `${project.id}\u0000${w.ticketId}\u0000${headSha}`;
       if (this.published.has(key)) return;
+      this.publishedUrls.delete(key);
       // Only the exact commit QA validated, with every earlier gate still holding, is published.
       const qa = await this.candidateRun(w, "merge");
       if (!qa?.headSha || qa.headSha !== headSha)
@@ -376,8 +401,12 @@ export class Reconciler {
         ...(manual ? { manualQa: { surfaces: manual.surfaces, criteria: manual.criteria } } : {}),
       });
       if (published) {
-        if (this.published.size > 5_000) this.published.clear();
+        if (this.published.size > 5_000) {
+          this.published.clear();
+          this.publishedUrls.clear();
+        }
         this.published.add(key);
+        this.publishedUrls.set(key, published.url);
       }
       if (published)
         this.o.bus.publish({
@@ -386,9 +415,14 @@ export class Reconciler {
           ticketId: w.ticketId,
           url: published.url,
           branch: published.branch,
-          ...(manual ? { manualQa: manualQaReason(manual.surfaces) } : {}),
+          ...(manual ? { manualQa: manualQaReason(manual.surfaces, manual.tester) } : {}),
         });
-      if (published && manual && !(await this.announced(project, w.ticketId, published.url)))
+      if (
+        published &&
+        manual &&
+        manual.tester !== "agent" &&
+        !(await this.announced(project, w.ticketId, published.url))
+      )
         await this.announceManualQa(project, w, manual, published.url);
     } catch (error) {
       this.trackerFailed(project.id, w.ticketId, "pull-request", error);
@@ -448,32 +482,14 @@ export class Reconciler {
     // Still in Ready since the handoff (e.g. the column move failed): not a human's feedback.
     const qaRun = await this.latestRun(w, "qa");
     if (!qaRun || !this.handoffLeftReady.delete(this.handoffKey(w, qaRun.id))) return false;
-    const fresh = (await this.o.store.getProject(project.id)) ?? project;
-    const t = reject(
+    const saved = await this.loopBackFromQa(
+      project,
       w,
-      fresh,
       "manual QA feedback: a human moved the ticket back to Ready; address their ticket comments",
+      "manual QA feedback",
     );
-    let saved: WorkflowState;
-    try {
-      saved = await this.o.store.saveWorkflow(t.state);
-    } catch (error) {
-      if (error instanceof VersionConflictError) return true;
-      throw error;
-    }
-    for (const a of await this.o.store.listApprovals(w.projectId, w.ticketId, "merge"))
-      if (a.status === "pending")
-        await this.o.store
-          .decideApproval(
-            a.id,
-            "rejected",
-            { id: this.ownerId, kind: "agent" },
-            "manual QA feedback",
-          )
-          .catch(() => undefined);
-    await this.applyEffects(fresh, saved, { ...t, state: saved });
-    // Loop limit reached: the block effect already labelled and explained it.
-    if (saved.status === "blocked") return true;
+    // Loop limit reached (or lost a race): the block effect already labelled and explained it.
+    if (!saved || saved.status === "blocked") return true;
     const tickets = this.o.tickets(project.id);
     if (tickets.removeLabel)
       await this.trackerWrite(project.id, ticketId, "removeLabel", async () =>
@@ -486,6 +502,164 @@ export class Reconciler {
       ),
     );
     return true;
+  }
+
+  /**
+   * QA said the change is not good: withdraws the pending merge approval and loops back to
+   * implement (a review loop, counted against maxLoops). Undefined when another writer won.
+   */
+  private async loopBackFromQa(
+    project: ProjectConfig,
+    w: WorkflowState,
+    reason: string,
+    approvalNote: string,
+  ): Promise<WorkflowState | undefined> {
+    const fresh = (await this.o.store.getProject(project.id)) ?? project;
+    const t = reject(w, fresh, reason);
+    let saved: WorkflowState;
+    try {
+      saved = await this.o.store.saveWorkflow(t.state);
+    } catch (error) {
+      if (error instanceof VersionConflictError) return undefined;
+      throw error;
+    }
+    for (const a of await this.o.store.listApprovals(w.projectId, w.ticketId, "merge"))
+      if (a.status === "pending")
+        await this.o.store
+          .decideApproval(a.id, "rejected", { id: this.ownerId, kind: "agent" }, approvalNote)
+          .catch(() => undefined);
+    await this.applyEffects(fresh, saved, { ...t, state: saved });
+    return saved;
+  }
+
+  /**
+   * Starts the agent QA lane on a published draft PR (projects with `qa.driver: "agent"`), once
+   * per head. The job runs in the background; its verdict drives the ticket (see agent-qa.ts).
+   */
+  private async maybeRunAgentQa(project: ProjectConfig, w: WorkflowState): Promise<void> {
+    if (!w.workdir) return;
+    const manual = await this.latestManualQa(w);
+    if (manual?.tester !== "agent") return;
+    let headSha: string;
+    try {
+      headSha = await this.o.git.headSha(w.workdir);
+    } catch {
+      return;
+    }
+    const key = `${project.id}\u0000${w.ticketId}\u0000${headSha}`;
+    const url = this.publishedUrls.get(key);
+    if (!url || this.agentQaJobs.has(key)) return;
+    const tickets = this.o.tickets(project.id);
+    let comments: TicketComment[] = [];
+    try {
+      comments = (await tickets.listComments?.(w.ticketId)) ?? [];
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "list-comments", error);
+      return;
+    }
+    const prior = this.agentQaVerdicts.get(key) ?? priorAgentQaVerdict(comments, headSha);
+    if (prior === "PASS" || prior === "FAIL") {
+      this.agentQaVerdicts.set(key, prior);
+      return;
+    }
+    const ticket = await tickets.get(w.ticketId).catch(() => null);
+    if (!ticket) return;
+    // A BLOCKED report waits until a human removed needs-human (they fixed the cause).
+    if (prior === "BLOCKED" && ticket.labels.includes(NEEDS_HUMAN_LABEL)) return;
+    const pr = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/);
+    const job = (async () => {
+      let outcome: AgentQaOutcome;
+      try {
+        if (!pr?.[1] || !pr[2]) throw new Error("the draft PR is not a GitHub pull request");
+        if (!this.o.agentQa?.handles(project))
+          throw new Error("no agent QA lane is configured for this project on the Matrix host");
+        outcome = await this.o.agentQa.run({
+          project,
+          ticket: {
+            id: ticket.id,
+            title: ticket.title,
+            body: ticket.body,
+            comments: comments
+              .filter((c) => !c.byMatrix)
+              .slice(-20)
+              .map((c) => c.body.slice(0, 2_000)),
+          },
+          pullRequest: { url, number: Number(pr[2]), repo: pr[1] },
+          headSha,
+          surfaces: manual.surfaces,
+          criteria: manual.criteria.length ? manual.criteria : acceptanceCriteria(ticket.body),
+          signal: AbortSignal.timeout(2 * 60 * 60_000),
+        });
+      } catch (error) {
+        outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
+      }
+      await this.finishAgentQa(project, w, key, headSha, url, outcome);
+    })()
+      .catch((error) => this.trackerFailed(project.id, w.ticketId, "agent-qa", error))
+      .finally(() => this.agentQaJobs.delete(key));
+    this.agentQaJobs.set(key, job);
+  }
+
+  private async finishAgentQa(
+    project: ProjectConfig,
+    started: WorkflowState,
+    key: string,
+    headSha: string,
+    url: string,
+    outcome: AgentQaOutcome,
+  ): Promise<void> {
+    const tickets = this.o.tickets(project.id);
+    const id = started.ticketId;
+    const images = new Map<string, string>();
+    if (outcome.kind === "report" && tickets.uploadFile)
+      for (const shot of outcome.screenshots.slice(0, 12)) {
+        try {
+          images.set(shot.name, await tickets.uploadFile(id, shot.name, "image/png", shot.bytes));
+        } catch (error) {
+          this.trackerFailed(project.id, id, "upload-file", error);
+        }
+      }
+    const rendered = renderAgentQaReport(outcome, { headSha, pullRequestUrl: url, images });
+    // The workflow moved on while the lane ran (human feedback, new head): the report is stale.
+    const now = await this.o.store.getWorkflow(project.id, id);
+    if (
+      !now ||
+      now.status !== "waiting_approval" ||
+      now.phase !== "merge" ||
+      !now.workdir ||
+      (await this.o.git.headSha(now.workdir)) !== headSha
+    )
+      return;
+    this.agentQaVerdicts.set(key, rendered.verdict);
+    await this.trackerWrite(project.id, id, "comment", () => tickets.comment(id, rendered.body));
+    const prLabel = (add: string[], remove: string[]) =>
+      this.o.pullRequests?.label
+        ? this.trackerWrite(project.id, id, "pr-label", async () =>
+            this.o.pullRequests?.label?.(project, url, add, remove),
+          )
+        : Promise.resolve();
+    const label = (add: string[], remove: string[]) =>
+      this.trackerWrite(project.id, id, "label", async () => {
+        for (const l of add) await tickets.addLabel?.(id, l);
+        for (const l of remove) await tickets.removeLabel?.(id, l);
+      });
+    if (rendered.verdict === "PASS") {
+      await label([QA_PASSED_LABEL], [QA_FAILED_LABEL, NEEDS_HUMAN_LABEL]);
+      await prLabel([QA_PASSED_LABEL], [QA_FAILED_LABEL]);
+      return;
+    }
+    if (rendered.verdict === "BLOCKED") {
+      await label([NEEDS_HUMAN_LABEL], []);
+      return;
+    }
+    await label([QA_FAILED_LABEL], [QA_PASSED_LABEL]);
+    await prLabel([QA_FAILED_LABEL], [QA_PASSED_LABEL]);
+    await this.loopBackFromQa(
+      project,
+      now,
+      "agent QA failed on the draft PR; fix the findings in the agent QA report comment",
+      "agent QA failed",
+    );
   }
 
   /** True when Matrix already posted the handoff comment for this PR (e.g. an earlier process). */

@@ -37,14 +37,23 @@ export function requiredDeviceSurfaces(
   return declared.length ? configured.filter((s) => declared.includes(s)) : configured;
 }
 
+/** Who tests a handed-off draft PR: a human, or the agent QA lane (`qa.driver: "agent"`). */
+export type QaTester = "human" | "agent";
+
+export function handoffTester(project: ProjectConfig): QaTester | undefined {
+  if (project.qa?.driver === "manual") return "human";
+  if (project.qa?.driver === "agent") return "agent";
+  return undefined;
+}
+
 export type ManualQaPlan =
   | { mode: "auto" }
-  | { mode: "manual"; surfaces: QaSurface[] }
+  | { mode: "manual"; surfaces: QaSurface[]; tester: QaTester }
   | { mode: "unavailable"; surfaces: QaSurface[] };
 
 /**
- * `manual` only when the operator opted in (`qa.driver: "manual"` in project config) and a
- * required device surface has no driver on this host. With a driver for every surface QA runs
+ * `manual` only when the operator opted in (`qa.driver: "manual"` or `"agent"` in project config)
+ * and a required device surface has no driver on this host. With a driver for every surface QA runs
  * automatically; without the opt-in a missing driver blocks with a clear reason.
  */
 export function manualQaPlan(
@@ -56,8 +65,9 @@ export function manualQaPlan(
     (s) => !driverSurfaces.includes(s),
   );
   if (!missing.length) return { mode: "auto" };
-  return project.qa?.driver === "manual"
-    ? { mode: "manual", surfaces: missing }
+  const tester = handoffTester(project);
+  return tester
+    ? { mode: "manual", surfaces: missing, tester }
     : { mode: "unavailable", surfaces: missing };
 }
 
@@ -92,23 +102,30 @@ export interface ManualQaData {
   surfaces: QaSurface[];
   criteria: string[];
   scenarioCount: number;
+  /** Absent on receipts written before the agent lane: a human tester. */
+  tester?: QaTester;
 }
 
 export function manualQaReceipt(
   surfaces: QaSurface[],
   criteria: string[],
   scenarioCount: number,
+  tester: QaTester = "human",
 ): Receipt {
   const data: ManualQaData = {
     provenance: MANUAL_QA_PROVENANCE,
     surfaces,
     criteria,
     scenarioCount,
+    tester,
   };
   return {
     kind: "log",
     ok: true,
-    summary: `manual ${surfaces.join("/")} QA required: no driver on this host; ${scenarioCount} private scenarios stay hidden`,
+    summary:
+      tester === "agent"
+        ? `agent ${surfaces.join("/")} QA on the draft PR: the agent QA lane tests it on a device; ${scenarioCount} private scenarios stay hidden`
+        : `manual ${surfaces.join("/")} QA required: no driver on this host; ${scenarioCount} private scenarios stay hidden`,
     data,
   };
 }
@@ -118,6 +135,8 @@ export function manualQaData(receipt: Receipt): ManualQaData | undefined {
   const data = receipt.data as Partial<ManualQaData> | undefined;
   if (receipt.kind !== "log" || data?.provenance !== MANUAL_QA_PROVENANCE) return undefined;
   if (!Array.isArray(data.surfaces) || !Array.isArray(data.criteria)) return undefined;
+  if (data.tester !== undefined && data.tester !== "human" && data.tester !== "agent")
+    return undefined;
   return data as ManualQaData;
 }
 
@@ -125,9 +144,9 @@ export function isManualQaHandoff(receipt: Receipt): boolean {
   return manualQaData(receipt) !== undefined;
 }
 
-/** A handoff still honours the project config: manual opt-in kept, surfaces still configured. */
+/** A handoff still honours the project config: same tester opt-in kept, surfaces still configured. */
 export function manualQaStillAllowed(project: ProjectConfig, data: ManualQaData): boolean {
-  if (project.qa?.driver !== "manual" || !data.surfaces.length) return false;
+  if (handoffTester(project) !== (data.tester ?? "human") || !data.surfaces.length) return false;
   return data.surfaces.every((s) => UI_DEVICE_SURFACES.has(s) && project.qa?.surfaces?.includes(s));
 }
 
@@ -139,6 +158,9 @@ const SURFACE_NAMES: Record<QaSurface, string> = {
   ios: "iOS",
 };
 
-export function manualQaReason(surfaces: readonly QaSurface[]): string {
-  return `manual ${surfaces.map((s) => SURFACE_NAMES[s]).join("/")} QA required — draft PR ready`;
+export function manualQaReason(surfaces: readonly QaSurface[], tester: QaTester = "human"): string {
+  const names = surfaces.map((s) => SURFACE_NAMES[s]).join("/");
+  return tester === "agent"
+    ? `agent ${names} QA running on the draft PR`
+    : `manual ${names} QA required — draft PR ready`;
 }

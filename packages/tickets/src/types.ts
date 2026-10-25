@@ -75,6 +75,11 @@ export interface TicketStore {
   ensureScope?(): Promise<void>;
   /** Optional: add one label to the ticket (created on the tracker when missing). */
   addLabel?(id: string, label: string): Promise<void>;
+  /**
+   * Optional: upload a file for embedding in a later comment; returns its https asset URL.
+   * Trackers without uploads leave it undefined (callers then list file names only).
+   */
+  uploadFile?(id: string, name: string, contentType: string, bytes: Uint8Array): Promise<string>;
   /** Optional: remove one label from the ticket; a missing label is a no-op. */
   removeLabel?(id: string, label: string): Promise<void>;
   /**

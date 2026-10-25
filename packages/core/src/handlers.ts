@@ -264,8 +264,10 @@ const spike =
       if (qaPlan.mode !== "auto")
         ctx.emit(
           qaPlan.mode === "manual"
-            ? `no ${qaPlan.surfaces.join("/")} QA driver on this host: QA will hand off to a human (draft PR + checklist)`
-            : `no ${qaPlan.surfaces.join("/")} QA driver on this host: QA will block (set qa.driver "manual" to hand off)`,
+            ? qaPlan.tester === "agent"
+              ? `no in-run ${qaPlan.surfaces.join("/")} QA driver: the agent QA lane will test the draft PR on a device`
+              : `no ${qaPlan.surfaces.join("/")} QA driver on this host: QA will hand off to a human (draft PR + checklist)`
+            : `no ${qaPlan.surfaces.join("/")} QA driver on this host: QA will block (set qa.driver "manual" or "agent" to hand off)`,
           "log",
         );
     } catch (error) {
@@ -673,7 +675,7 @@ const qa =
       await ctx.validateDesign?.();
       const plan = manualQaPlan(ctx.project, ctx.ticket, deps.qa?.surfaces);
       if (plan.mode === "unavailable") {
-        const summary = `no ${plan.surfaces.join("/")} QA driver on this host; set the project's qa.driver to "manual" for a manual QA handoff`;
+        const summary = `no ${plan.surfaces.join("/")} QA driver on this host; set the project's qa.driver to "manual" (human) or "agent" (agent QA lane) to test the draft PR`;
         ctx.emit(summary, "error");
         return { ok: false, blocked: true, summary, receipts: [] };
       }
@@ -690,6 +692,7 @@ const qa =
           plan.surfaces,
           acceptanceCriteria(ctx.ticket.body),
           stored.length,
+          plan.tester,
         );
         ctx.emit(receipt.summary, "log");
         return { ok: true, summary: receipt.summary, receipts: [receipt], runStatus: "ok" };

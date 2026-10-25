@@ -149,7 +149,7 @@ export class MemoryCore implements CorePort {
         ? {
             qa: {
               ...validQaSettings(patch.qa),
-              driver: patch.qa.driver === "manual" ? "manual" : "none",
+              driver: patch.qa.driver ?? "none",
             },
           }
         : {}),

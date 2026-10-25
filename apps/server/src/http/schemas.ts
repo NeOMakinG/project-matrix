@@ -79,7 +79,7 @@ export const Project = z
     qa: z
       .object({
         surfaces: z.array(z.enum(["host", "api", "web", "android", "ios"])).optional(),
-        driver: z.enum(["none", "manual"]),
+        driver: z.enum(["none", "manual", "agent"]),
       })
       .optional(),
   })
@@ -199,9 +199,9 @@ const QaSettings = z
       .max(5)
       .optional()
       .openapi({ description: "Surfaces QA must exercise for this project (trusted config)" }),
-    driver: z.enum(["none", "manual"]).optional().openapi({
+    driver: z.enum(["none", "manual", "agent"]).optional().openapi({
       description:
-        "manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block.",
+        "manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. agent: the draft PR is tested by the agent QA lane on a device and its verdict drives the ticket (merge stays human). none (default): block.",
     }),
   })
   .strict();
