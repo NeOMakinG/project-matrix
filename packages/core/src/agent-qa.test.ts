@@ -75,11 +75,24 @@ test("agent text cannot inject links, images, headings or mentions", () => {
 });
 
 test("prior verdicts are matched per head and QA run, Matrix comments only", () => {
-  const body = `Matrix agent QA FAIL for ${SHA.slice(0, 12)} (QA run run-1) (draft PR)`;
+  const body = `Matrix agent QA FAIL for ${SHA} (QA run run-1) (draft PR)`;
   expect(priorAgentQaVerdict([{ body, byMatrix: true }], SHA, "run-1")).toBe("FAIL");
   expect(priorAgentQaVerdict([{ body, byMatrix: false }], SHA, "run-1")).toBeUndefined();
   expect(priorAgentQaVerdict([{ body, byMatrix: true }], SHA, "run-2")).toBeUndefined();
   expect(priorAgentQaVerdict([{ body, byMatrix: true }], "b".repeat(40), "run-1")).toBeUndefined();
+});
+
+test("a marked comment by someone else, or a short SHA, is not a prior verdict", () => {
+  const body = `Matrix agent QA PASS for ${SHA} (QA run run-1) (draft PR)`;
+  // Linear app mode: `byMatrix` trusts the marker, `authoredByMatrix` the author.
+  expect(
+    priorAgentQaVerdict([{ body, byMatrix: true, authoredByMatrix: false }], SHA, "run-1"),
+  ).toBeUndefined();
+  expect(
+    priorAgentQaVerdict([{ body, byMatrix: true, authoredByMatrix: true }], SHA, "run-1"),
+  ).toBe("PASS");
+  const short = `Matrix agent QA PASS for ${SHA.slice(0, 12)} (QA run run-1) (draft PR)`;
+  expect(priorAgentQaVerdict([{ body: short, byMatrix: true }], SHA, "run-1")).toBeUndefined();
 });
 
 test("PASS needs a checked step per acceptance criterion", () => {
@@ -101,4 +114,16 @@ test("two steps on criterion 1 do not cover criterion 2", () => {
     parseAgentQaReport(JSON.stringify({ ...r, steps: [{ ...step, criterion: true }] }))?.steps[0]
       ?.criterion,
   ).toBeUndefined();
+});
+
+test("with collected shots, a criterion needs a passing step whose screenshot was collected", () => {
+  const r = {
+    verdict: "PASS" as const,
+    summary: "",
+    findings: [],
+    steps: [{ ...step, screenshot: "s1.png" }],
+  };
+  expect(effectiveVerdict(r, 1, new Set(["s1.png"])).verdict).toBe("PASS");
+  expect(effectiveVerdict(r, 1, new Set()).verdict).toBe("BLOCKED");
+  expect(effectiveVerdict({ ...r, steps: [step] }, 1, new Set(["s1.png"])).verdict).toBe("BLOCKED");
 });

@@ -698,6 +698,7 @@ export class LinearTicketStore implements TicketStore {
         id: c.id,
         body: sanitizeUntrusted(c.body),
         byMatrix: this.appMode ? own || marked : own && marked,
+        authoredByMatrix: own && marked,
         ...(author ? { author: sanitizeUntrusted(author) } : {}),
         ...(c.createdAt ? { createdAt: c.createdAt } : {}),
       });

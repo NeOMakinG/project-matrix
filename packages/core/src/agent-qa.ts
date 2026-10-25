@@ -139,6 +139,9 @@ export function parseAgentQaReport(raw: string): AgentQaReport | undefined {
 export function effectiveVerdict(
   report: AgentQaReport,
   criteriaCount = 0,
+  /** Screenshot files the lane actually collected; when given, a criterion counts as checked only
+   * by a passing step whose screenshot is among them (evidence, not just the agent's word). */
+  shots?: ReadonlySet<string>,
 ): { verdict: AgentQaVerdict; note?: string } {
   const failedSteps = report.steps.filter((s) => !s.ok).length;
   const serious = report.findings.filter((f) => f.severity !== "P3").length;
@@ -146,13 +149,17 @@ export function effectiveVerdict(
     if (!report.steps.length)
       return { verdict: "BLOCKED", note: "the QA agent reported PASS without any checked step" };
     // Every acceptance criterion needs its own passing step (by number), not just any N steps.
-    const covered = new Set(report.steps.flatMap((s) => (s.criterion ? [s.criterion] : [])));
+    const evidenced = (s: AgentQaReport["steps"][number]) =>
+      !shots || (s.screenshot !== undefined && shots.has(s.screenshot));
+    const covered = new Set(
+      report.steps.flatMap((s) => (s.criterion && evidenced(s) ? [s.criterion] : [])),
+    );
     const wanted = Math.max(1, criteriaCount);
     const missing = Array.from({ length: wanted }, (_, i) => i + 1).filter((n) => !covered.has(n));
     if (!failedSteps && !serious && missing.length)
       return {
         verdict: "BLOCKED",
-        note: `the QA agent did not check acceptance criteria ${missing.join(", ")}`,
+        note: `the QA agent did not check acceptance criteria ${missing.join(", ")} with a collected screenshot`,
       };
     if (failedSteps || serious)
       return {
@@ -171,7 +178,7 @@ export function effectiveVerdict(
 
 /** `qaRun` ties the report to one QA run: a loop back that changes nothing gets a fresh run. */
 export function agentQaHeading(verdict: AgentQaVerdict, headSha: string, qaRun: string): string {
-  return `${AGENT_QA_MARKER} ${verdict} for ${headSha.slice(0, 12)} (QA run ${runTag(qaRun)})`;
+  return `${AGENT_QA_MARKER} ${verdict} for ${headSha} (QA run ${runTag(qaRun)})`;
 }
 
 function runTag(qaRun: string): string {
@@ -180,18 +187,19 @@ function runTag(qaRun: string): string {
 
 /** The verdict of an earlier report comment for this head and QA run, if Matrix posted one. */
 export function priorAgentQaVerdict(
-  comments: readonly { body: string; byMatrix: boolean }[],
+  comments: readonly { body: string; byMatrix: boolean; authoredByMatrix?: boolean }[],
   headSha: string,
   qaRun: string,
 ): AgentQaVerdict | undefined {
   let found: AgentQaVerdict | undefined;
   for (const c of comments) {
-    if (!c.byMatrix) continue;
+    // A marker in the body is forgeable by any commenter: only Matrix's own comments count.
+    if (!(c.authoredByMatrix ?? c.byMatrix)) continue;
     const m = c.body.match(
-      /^Matrix agent QA (PASS|FAIL|BLOCKED) for ([a-f0-9]{7,40}) \(QA run ([A-Za-z0-9-]+)\)/,
+      /^Matrix agent QA (PASS|FAIL|BLOCKED) for ([a-f0-9]{40}) \(QA run ([A-Za-z0-9-]+)\)/,
     );
-    if (m && headSha.startsWith(m[2] ?? "-") && m[3] === runTag(qaRun))
-      found = m[1] as AgentQaVerdict;
+    // The full head SHA: a short prefix could be matched by a crafted commit.
+    if (m && headSha === m[2] && m[3] === runTag(qaRun)) found = m[1] as AgentQaVerdict;
   }
   return found;
 }
@@ -237,7 +245,11 @@ export function renderAgentQaReport(
     };
   }
   const { report } = outcome;
-  const { verdict, note } = effectiveVerdict(report, ctx.criteriaCount ?? 0);
+  const { verdict, note } = effectiveVerdict(
+    report,
+    ctx.criteriaCount ?? 0,
+    new Set(outcome.screenshots.map((s) => s.name)),
+  );
   const image = (name: string | undefined) => {
     if (!name) return "";
     const url = ctx.images.get(name);

@@ -106,6 +106,12 @@ export interface TicketComment {
   body: string;
   /** True for comments Matrix itself posted; callers must not feed them back into prompts. */
   byMatrix: boolean;
+  /**
+   * True only when the Matrix identity itself posted it (and it carries the marker). `byMatrix`
+   * also accepts marked legacy comments, so any commenter can forge it; authority decisions (a
+   * prior QA verdict) must use this instead. Absent: the store cannot tell, use `byMatrix`.
+   */
+  authoredByMatrix?: boolean;
   author?: string;
   createdAt?: string;
 }
