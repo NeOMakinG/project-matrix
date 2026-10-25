@@ -751,6 +751,19 @@ export class PgStore implements Store {
       });
   }
 
+  async updateLabelRetry(retry: LabelRetry) {
+    await this.db
+      .update(s.labelRetries)
+      .set({ fix: retry, updatedAt: new Date() })
+      .where(
+        and(
+          eq(s.labelRetries.projectId, retry.projectId),
+          eq(s.labelRetries.ticketId, retry.ticketId),
+          eq(s.labelRetries.id, retry.id),
+        ),
+      );
+  }
+
   async deleteLabelRetry(projectId: string, ticketId: string, id: string) {
     await this.db
       .delete(s.labelRetries)

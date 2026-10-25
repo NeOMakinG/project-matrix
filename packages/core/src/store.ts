@@ -216,6 +216,8 @@ export interface Store {
 
   /** Upserts the queued label write for its ticket (one per ticket; a newer one replaces it). */
   saveLabelRetry(retry: LabelRetry): Promise<void>;
+  /** Records retry progress, only if the ticket's row is still `retry.id` (never resurrects). */
+  updateLabelRetry(retry: LabelRetry): Promise<void>;
   /** Deletes the ticket's queued label write, only if it is still `id` (a newer one is kept). */
   deleteLabelRetry(projectId: string, ticketId: string, id: string): Promise<void>;
   listLabelRetries(): Promise<LabelRetry[]>;
@@ -500,6 +502,10 @@ export class MemoryStore implements Store {
   }
   async saveLabelRetry(retry: LabelRetry) {
     this.labelRetries.set(key(retry.projectId, retry.ticketId), clone(retry));
+  }
+  async updateLabelRetry(retry: LabelRetry) {
+    const k = key(retry.projectId, retry.ticketId);
+    if (this.labelRetries.get(k)?.id === retry.id) this.labelRetries.set(k, clone(retry));
   }
   async deleteLabelRetry(projectId: string, ticketId: string, id: string) {
     const k = key(projectId, ticketId);

@@ -276,6 +276,8 @@ export class Reconciler {
   private readonly agentQaLabelsLatest = new Map<string, AgentQaLabelFix>();
   /** Label writes queued by an earlier process were reloaded from the store. */
   private agentQaLabelsResumed = false;
+  /** Tail of each ticket's label-retry store writes (keeps them in issue order). */
+  private readonly labelRetryOps = new Map<string, Promise<void>>();
   readonly ownerId: string;
   private readonly active = new Map<string, ActiveRun>();
   private readonly clock: () => Date;
@@ -799,7 +801,7 @@ export class Reconciler {
           if (!this.agentQaLabelsPending.has(old)) this.agentQaLabelsLatest.delete(old);
       this.agentQaLabelsLatest.set(k, fix);
       // Write-ahead: a restart mid-write resumes it (label writes are idempotent).
-      await this.persistAgentQaLabels(fix);
+      await this.queueLabelRetryOp(fix, "persist", (st, f) => st.saveLabelRetry(f));
     }
     if (this.agentQaLabelsLatest.get(k) !== fix) return;
     this.agentQaLabelsPending.delete(k);
@@ -818,27 +820,41 @@ export class Reconciler {
       // Kept until it lands or a newer verdict replaces it (one entry per ticket at most).
       if (this.agentQaLabelsLatest.get(k) === fix) {
         this.agentQaLabelsPending.set(k, fix);
-        await this.persistAgentQaLabels(fix);
+        // Progress only: never overwrites (or resurrects) a newer verdict's row.
+        await this.queueLabelRetryOp(fix, "persist", (st, f) => st.updateLabelRetry(f));
       }
       this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
       return;
     }
-    try {
-      // Only this fix's row: a newer verdict's queued write stays.
-      await this.o.store.deleteLabelRetry(fix.projectId, fix.ticketId, fix.id);
-    } catch (error) {
-      // A leftover row only replays idempotent label writes after a restart.
-      this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels-dequeue", error);
-    }
+    // Only this fix's row: a newer verdict's queued write stays. A leftover row only replays
+    // idempotent label writes after a restart.
+    await this.queueLabelRetryOp(fix, "dequeue", (st, f) =>
+      st.deleteLabelRetry(f.projectId, f.ticketId, f.id),
+    );
   }
 
-  /** Saves a queued label write so a restart resumes it; best effort (memory still retries). */
-  private async persistAgentQaLabels(fix: AgentQaLabelFix): Promise<void> {
-    try {
-      await this.o.store.saveLabelRetry(structuredClone(fix));
-    } catch (error) {
-      this.trackerFailed(fix.projectId, fix.ticketId, "agent-qa-labels-persist", error);
-    }
+  /**
+   * Runs one label-retry store write after the ticket's previous ones (they land in the order
+   * they were issued, so an older verdict's write never lands after a newer one's). Best effort:
+   * the in-memory queue still retries if the store is down.
+   */
+  private async queueLabelRetryOp(
+    fix: AgentQaLabelFix,
+    what: "persist" | "dequeue",
+    op: (store: Store, snapshot: AgentQaLabelFix) => Promise<void>,
+  ): Promise<void> {
+    const k = `${fix.projectId}\u0000${fix.ticketId}`;
+    const snapshot = structuredClone(fix);
+    const run = (this.labelRetryOps.get(k) ?? Promise.resolve()).then(async () => {
+      try {
+        await op(this.o.store, snapshot);
+      } catch (error) {
+        this.trackerFailed(fix.projectId, fix.ticketId, `agent-qa-labels-${what}`, error);
+      }
+    });
+    this.labelRetryOps.set(k, run);
+    await run;
+    if (this.labelRetryOps.get(k) === run) this.labelRetryOps.delete(k);
   }
 
   /**

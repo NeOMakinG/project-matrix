@@ -382,8 +382,10 @@ test("a write that lands deletes only its own queued row; a newer verdict's row 
     ticket: { add: ["qa:failed"], remove: ["qa:passed"] },
     pr: { add: ["qa:failed"], remove: ["qa:passed"] },
   });
+  // An older fix's progress or landing never touches the newer verdict's row.
+  await h.store.updateLabelRetry({ ...stale, tries: 3 });
   await h.store.deleteLabelRetry("pilot", t.id, "old");
-  expect((await h.store.listLabelRetries()).map((r) => r.id)).toEqual(["new"]);
+  expect(await h.store.listLabelRetries()).toMatchObject([{ id: "new", tries: 0 }]);
   await h.reconciler.tick();
   expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:failed");
   expect(h.tickets.tickets.get(t.id)?.labels).not.toContain("qa:passed");

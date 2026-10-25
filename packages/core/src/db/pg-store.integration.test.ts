@@ -308,7 +308,9 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     };
     await store.saveLabelRetry(retry);
     await store.saveLabelRetry({ ...retry, id: "fix-2", tries: 0, ticketDone: true });
+    await store.updateLabelRetry({ ...retry, tries: 5 });
     await store.deleteLabelRetry(projectId, "T-1", "fix-1");
+    await store.updateLabelRetry({ ...retry, id: "gone", ticketId: "T-2" });
     const other = await PgStore.connect(url as string);
     try {
       const mine = (await other.listLabelRetries()).filter((r) => r.projectId === projectId);
@@ -316,6 +318,8 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
     } finally {
       await other.close();
     }
+    await store.updateLabelRetry({ ...retry, id: "fix-2", tries: 2, ticketDone: true });
+    expect((await store.listLabelRetries()).find((r) => r.projectId === projectId)?.tries).toBe(2);
     await store.deleteLabelRetry(projectId, "T-1", "fix-2");
     expect((await store.listLabelRetries()).some((r) => r.projectId === projectId)).toBe(false);
   });
