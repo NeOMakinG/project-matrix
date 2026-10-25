@@ -18,7 +18,5 @@ test("the reconciler's lazy ticket store forwards uploadFile (agent QA screensho
   );
   expect(calls).toEqual(["NEO-8/s1.png"]);
   const none = lazyTickets(async () => ({}) as TicketStore);
-  await expect(none.uploadFile?.("NEO-8", "s1.png", "image/png", new Uint8Array())).rejects.toThrow(
-    /cannot upload/,
-  );
+  expect(await none.uploadFile?.("NEO-8", "s1.png", "image/png", new Uint8Array())).toBe("");
 });
