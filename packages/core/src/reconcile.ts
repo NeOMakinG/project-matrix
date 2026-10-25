@@ -789,7 +789,9 @@ export class Reconciler {
     const k = `${fix.projectId}\u0000${fix.ticketId}`;
     // A newer verdict for the ticket supersedes any older fix, queued or in flight.
     if (fix.tries === 0) {
-      if (this.agentQaLabelsLatest.size > 5_000) this.agentQaLabelsLatest.clear();
+      if (this.agentQaLabelsLatest.size > 5_000)
+        for (const old of this.agentQaLabelsLatest.keys())
+          if (!this.agentQaLabelsPending.has(old)) this.agentQaLabelsLatest.delete(old);
       this.agentQaLabelsLatest.set(k, fix);
     }
     if (this.agentQaLabelsLatest.get(k) !== fix) return;
@@ -801,8 +803,8 @@ export class Reconciler {
       await this.o.pullRequests?.label?.(project, fix.url, fix.pr.add, fix.pr.remove);
     } catch (error) {
       fix.tries += 1;
-      if (fix.tries <= 50 && this.agentQaLabelsLatest.get(k) === fix)
-        this.agentQaLabelsPending.set(k, fix);
+      // Kept until it lands or a newer verdict replaces it (one entry per ticket at most).
+      if (this.agentQaLabelsLatest.get(k) === fix) this.agentQaLabelsPending.set(k, fix);
       this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
     }
   }

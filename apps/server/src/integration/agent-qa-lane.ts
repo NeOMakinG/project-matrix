@@ -70,7 +70,8 @@ class LaneError extends Error {}
 
 /** A holder id the remote script accepts (`^[A-Za-z0-9._@-]{1,64}$`). */
 export function laneHolder(raw: string): string {
-  return raw.replace(/[^A-Za-z0-9._@-]/g, "-").slice(0, 64) || "matrix";
+  // Never a shared fallback: two lanes with one holder would reclaim each other's lock.
+  return raw.replace(/[^A-Za-z0-9._@-]/g, "-").slice(0, 64) || `matrix-${randomUUID().slice(0, 8)}`;
 }
 
 /**
