@@ -240,3 +240,60 @@ test("report comment fails: nothing applied, the post is retried without re-runn
   expect(reports(h)[0]).toMatch(/^Matrix agent QA FAIL/);
   expect((await h.store.getWorkflow("pilot", t.id))?.loops).toBe(1);
 });
+
+test("a failed label write after FAIL is retried; a stale qa:passed never stays", async () => {
+  const fail = report({
+    verdict: "FAIL",
+    steps: [{ action: "Tap", expected: "a", actual: "b", ok: false, criterion: 1 }],
+  });
+  const { h } = agentHarness([reportOutcome(fail)]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.tickets.addLabel(t.id, "qa:passed");
+  const add = h.tickets.addLabel.bind(h.tickets);
+  let failures = 2;
+  h.tickets.addLabel = async (id: string, label: string) => {
+    if (label === "qa:failed" && failures-- > 0) throw new Error("linear down");
+    return add(id, label);
+  };
+  await h.drain();
+  const labels = h.tickets.tickets.get(t.id)?.labels ?? [];
+  expect(failures).toBeLessThan(0);
+  expect(labels).toContain("qa:failed");
+  expect(labels).not.toContain("qa:passed");
+});
+
+test("no acceptance criteria: BLOCKED before any device time, never a pass", async () => {
+  const { h, requests } = agentHarness([reportOutcome(report())]);
+  await h.setup();
+  const t = h.tickets.add("Trip PDF export");
+  h.tickets.tickets.set(t.id, { ...t, body: "Export a trip as PDF.\nQA: Surface: android" });
+  await h.drain();
+  expect(requests).toHaveLength(0);
+  expect(reports(h)[0]).toMatch(/^Matrix agent QA BLOCKED/);
+  expect(reports(h)[0]).toContain("no acceptance criteria");
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("needs-human");
+});
+
+test("a human handoff from before the agent driver runs through the lane once needs-human is removed", async () => {
+  const { h, requests } = agentHarness([reportOutcome(report())]);
+  await h.setup();
+  await h.store.upsertProject({ ...h.project, qa: { surfaces: ["android"], driver: "manual" } });
+  const t = await addTicket(h);
+  await h.drain();
+  expect(h.tickets.comments.some((c) => c.body.startsWith("Matrix needs a human"))).toBe(true);
+  expect(requests).toHaveLength(0);
+  await h.store.upsertProject({ ...h.project, qa: { surfaces: ["android"], driver: "agent" } });
+  await h.drain();
+  // needs-human from the handoff still says "a human tests this".
+  expect(requests).toHaveLength(0);
+  await h.tickets.removeLabel(t.id, "needs-human");
+  await h.drain();
+  expect(requests).toHaveLength(1);
+  expect(reports(h)[0]).toMatch(/^Matrix agent QA PASS/);
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:passed");
+  expect(await h.store.getWorkflow("pilot", t.id)).toMatchObject({
+    phase: "merge",
+    status: "waiting_approval",
+  });
+});

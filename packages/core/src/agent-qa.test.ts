@@ -26,7 +26,7 @@ test("parses and bounds the agent report; rejects garbage", () => {
 
 test("never upgrades to PASS; inconsistent reports are downgraded", () => {
   const base = { summary: "", findings: [] };
-  expect(effectiveVerdict({ ...base, verdict: "PASS", steps: [step] }).verdict).toBe("PASS");
+  expect(effectiveVerdict({ ...base, verdict: "PASS", steps: [step] }, 1).verdict).toBe("PASS");
   expect(effectiveVerdict({ ...base, verdict: "PASS", steps: [] }).verdict).toBe("BLOCKED");
   expect(
     effectiveVerdict({ ...base, verdict: "PASS", steps: [{ ...step, ok: false }] }).verdict,
@@ -40,12 +40,15 @@ test("never upgrades to PASS; inconsistent reports are downgraded", () => {
     }).verdict,
   ).toBe("FAIL");
   expect(
-    effectiveVerdict({
-      verdict: "PASS",
-      summary: "",
-      steps: [step],
-      findings: [{ severity: "P3", title: "t", steps: "", expected: "", actual: "" }],
-    }).verdict,
+    effectiveVerdict(
+      {
+        verdict: "PASS",
+        summary: "",
+        steps: [step],
+        findings: [{ severity: "P3", title: "t", steps: "", expected: "", actual: "" }],
+      },
+      1,
+    ).verdict,
   ).toBe("PASS");
   expect(effectiveVerdict({ ...base, verdict: "FAIL", steps: [step] }).verdict).toBe("BLOCKED");
 });
@@ -126,4 +129,14 @@ test("with collected shots, a criterion needs a passing step whose screenshot wa
   expect(effectiveVerdict(r, 1, new Set(["s1.png"])).verdict).toBe("PASS");
   expect(effectiveVerdict(r, 1, new Set()).verdict).toBe("BLOCKED");
   expect(effectiveVerdict({ ...r, steps: [step] }, 1, new Set(["s1.png"])).verdict).toBe("BLOCKED");
+});
+
+test("a ticket without acceptance criteria never passes on one checked step", () => {
+  const r = { verdict: "PASS" as const, summary: "", findings: [], steps: [step] };
+  expect(effectiveVerdict(r, 0)).toMatchObject({
+    verdict: "BLOCKED",
+    note: expect.stringContaining("no acceptance criteria"),
+  });
+  // A defect found without criteria still fails.
+  expect(effectiveVerdict({ ...r, steps: [{ ...step, ok: false }] }, 0).verdict).toBe("FAIL");
 });

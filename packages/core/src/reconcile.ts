@@ -12,6 +12,7 @@ import {
   type AgentQaOutcome,
   type AgentQaPort,
   type AgentQaVerdict,
+  NO_CRITERIA,
   priorAgentQaVerdict,
   QA_FAILED_LABEL,
   QA_PASSED_LABEL,
@@ -43,6 +44,7 @@ import {
 } from "./machine.js";
 import {
   acceptanceCriteria,
+  handoffTester,
   type ManualQaData,
   manualQaData,
   manualQaReason,
@@ -264,6 +266,13 @@ export class Reconciler {
   private readonly agentQaUnposted = new Map<string, { body: string; verdict: AgentQaVerdict }>();
   /** BLOCKED keys whose needs-human label was seen on the ticket (removal then means retry). */
   private readonly agentQaBlockedSeen = new Set<string>();
+  /**
+   * Agent QA label writes that failed, by `${project}\0${ticket}`: retried every tick whatever the
+   * workflow's phase (a FAIL already looped back), so a stale `qa:passed` never outlives a FAIL.
+   */
+  private readonly agentQaLabelsPending = new Map<string, AgentQaLabelFix>();
+  /** The newest label fix per ticket (older ones in flight never re-queue over it). */
+  private readonly agentQaLabelsLatest = new Map<string, AgentQaLabelFix>();
   readonly ownerId: string;
   private readonly active = new Map<string, ActiveRun>();
   private readonly clock: () => Date;
@@ -364,6 +373,10 @@ export class Reconciler {
       if (result === "dispatched") report.dispatched.push(w.ticketId);
       else if (result === "replayed") report.replayed.push(w.ticketId);
       else if (result === "approval") report.awaitingApproval.push(w.ticketId);
+    }
+    for (const fix of [...this.agentQaLabelsPending.values()]) {
+      const project = byId.get(fix.projectId);
+      if (project) await this.writeAgentQaLabels(project, fix);
     }
     for (const w of await this.o.store.listWorkflows({ status: ["waiting_approval"] })) {
       const project = byId.get(w.projectId);
@@ -543,7 +556,13 @@ export class Reconciler {
   private async maybeRunAgentQa(project: ProjectConfig, w: WorkflowState): Promise<void> {
     if (!w.workdir) return;
     const manual = await this.latestManualQa(w);
-    if (manual?.tester !== "agent") return;
+    if (!manual) return;
+    // A human handoff from before the project switched to the agent driver: the lane may take it,
+    // but only once a human removed needs-human (the handoff's "a human tests this" stays the
+    // default until someone hands it over).
+    const handedOver = manual.tester !== "agent";
+    if (handedOver && (handoffTester(project) !== "agent" || !this.o.agentQa?.handles(project)))
+      return;
     let headSha: string;
     try {
       headSha = await this.o.git.headSha(w.workdir);
@@ -578,6 +597,7 @@ export class Reconciler {
     }
     const ticket = await tickets.get(w.ticketId).catch(() => null);
     if (!ticket) return;
+    if (handedOver && prior === undefined && ticket.labels.includes(NEEDS_HUMAN_LABEL)) return;
     // A BLOCKED report waits until a human removed needs-human (they fixed the cause).
     if (prior === "BLOCKED" && ticket.labels.includes(NEEDS_HUMAN_LABEL)) {
       this.agentQaBlockedSeen.add(key);
@@ -597,6 +617,8 @@ export class Reconciler {
       let outcome: AgentQaOutcome;
       try {
         if (!pr?.[1] || !pr[2]) throw new Error("the draft PR is not a GitHub pull request");
+        // The PR checklist is these criteria: with none there is nothing a pass could stand on.
+        if (!criteria.length) throw new Error(NO_CRITERIA);
         if (!this.o.agentQa?.handles(project))
           throw new Error("no agent QA lane is configured for this project on the Matrix host");
         outcome = await this.o.agentQa.run({
@@ -716,29 +738,34 @@ export class Reconciler {
     url: string,
     verdict: AgentQaVerdict,
   ): Promise<void> {
-    const tickets = this.o.tickets(project.id);
-    const id = now.ticketId;
-    const prLabel = async (add: string[], remove: string[]) =>
-      this.o.pullRequests?.label?.(project, url, add, remove);
-    const label = async (add: string[], remove: string[]) => {
-      for (const l of add) await tickets.addLabel?.(id, l);
-      for (const l of remove) await tickets.removeLabel?.(id, l);
-    };
+    const fix = (ticket: [string[], string[]], pr: [string[], string[]]): AgentQaLabelFix => ({
+      projectId: project.id,
+      ticketId: now.ticketId,
+      url,
+      ticket: { add: ticket[0], remove: ticket[1] },
+      pr: { add: pr[0], remove: pr[1] },
+      tries: 0,
+    });
     if (verdict === "PASS") {
-      await label([QA_PASSED_LABEL], [QA_FAILED_LABEL, NEEDS_HUMAN_LABEL]);
-      await prLabel([QA_PASSED_LABEL], [QA_FAILED_LABEL]);
+      await this.writeAgentQaLabels(
+        project,
+        fix(
+          [[QA_PASSED_LABEL], [QA_FAILED_LABEL, NEEDS_HUMAN_LABEL]],
+          [[QA_PASSED_LABEL], [QA_FAILED_LABEL]],
+        ),
+      );
       return;
     }
     if (verdict === "BLOCKED") {
-      // Recorded even if labelling fails: a BLOCKED head must never re-run on every tick. An
-      // earlier head's pass must not keep advertising itself.
-      await this.trackerWrite(project.id, id, "label", () =>
-        label([NEEDS_HUMAN_LABEL], [QA_PASSED_LABEL]),
+      // Recorded even if labelling fails (retried every tick): a BLOCKED head must never re-run
+      // on every tick. An earlier head's pass must not keep advertising itself.
+      await this.writeAgentQaLabels(
+        project,
+        fix([[NEEDS_HUMAN_LABEL], [QA_PASSED_LABEL]], [[], [QA_PASSED_LABEL]]),
       );
-      await this.trackerWrite(project.id, id, "pr-label", () => prLabel([], [QA_PASSED_LABEL]));
       return;
     }
-    // The loop back is what matters; labels are best effort after it.
+    // The loop back is what matters; labels follow it and are retried until they land.
     const saved = await this.loopBackFromQa(
       project,
       now,
@@ -747,12 +774,37 @@ export class Reconciler {
     );
     // Lost a race with another writer: not applied, the next tick re-reads and retries.
     if (!saved) throw new Error("workflow changed while applying the agent QA FAIL; retrying");
-    await this.trackerWrite(project.id, id, "label", () =>
-      label([QA_FAILED_LABEL], [QA_PASSED_LABEL]),
+    await this.writeAgentQaLabels(
+      project,
+      fix([[QA_FAILED_LABEL], [QA_PASSED_LABEL]], [[QA_FAILED_LABEL], [QA_PASSED_LABEL]]),
     );
-    await this.trackerWrite(project.id, id, "pr-label", () =>
-      prLabel([QA_FAILED_LABEL], [QA_PASSED_LABEL]),
-    );
+  }
+
+  /**
+   * Writes one verdict's labels (ticket, then PR). Removals go first, so a write failing midway
+   * never leaves `qa:passed` beside a FAIL; a failure queues the whole fix for the next tick. A
+   * newer verdict for the ticket replaces any queued fix.
+   */
+  private async writeAgentQaLabels(project: ProjectConfig, fix: AgentQaLabelFix): Promise<void> {
+    const k = `${fix.projectId}\u0000${fix.ticketId}`;
+    // A newer verdict for the ticket supersedes any older fix, queued or in flight.
+    if (fix.tries === 0) {
+      if (this.agentQaLabelsLatest.size > 5_000) this.agentQaLabelsLatest.clear();
+      this.agentQaLabelsLatest.set(k, fix);
+    }
+    if (this.agentQaLabelsLatest.get(k) !== fix) return;
+    this.agentQaLabelsPending.delete(k);
+    const tickets = this.o.tickets(project.id);
+    try {
+      for (const l of fix.ticket.remove) await tickets.removeLabel?.(fix.ticketId, l);
+      for (const l of fix.ticket.add) await tickets.addLabel?.(fix.ticketId, l);
+      await this.o.pullRequests?.label?.(project, fix.url, fix.pr.add, fix.pr.remove);
+    } catch (error) {
+      fix.tries += 1;
+      if (fix.tries <= 50 && this.agentQaLabelsLatest.get(k) === fix)
+        this.agentQaLabelsPending.set(k, fix);
+      this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
+    }
   }
 
   /** True when Matrix already posted the handoff comment for this PR (e.g. an earlier process). */
@@ -2365,4 +2417,13 @@ export class Reconciler {
     }
     return outcome;
   }
+}
+
+interface AgentQaLabelFix {
+  projectId: string;
+  ticketId: string;
+  url: string;
+  ticket: { add: string[]; remove: string[] };
+  pr: { add: string[]; remove: string[] };
+  tries: number;
 }

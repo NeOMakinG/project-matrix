@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -67,6 +68,11 @@ export function loadLaneConfig(path: string): LaneConfig {
 
 class LaneError extends Error {}
 
+/** A holder id the remote script accepts (`^[A-Za-z0-9._@-]{1,64}$`). */
+export function laneHolder(raw: string): string {
+  return raw.replace(/[^A-Za-z0-9._@-]/g, "-").slice(0, 64) || "matrix";
+}
+
 /**
  * Agent QA lane on a device host over SSH (`ops/qa-lane/agent-qa.sh`). One job at a time in this
  * process; the remote lock keeps other tenants (qaexplorer, humans, other Matrix hosts) out.
@@ -76,16 +82,42 @@ export class SshAgentQaLane implements AgentQaPort {
   readonly #runner: CommandRunner;
   readonly #script: string;
 
+  /** Names this lane's locks on the device host; a restarted holder reclaims its own stale lock. */
+  readonly holder: string;
+
   constructor(
     private readonly config: LaneConfig,
-    options: { runner?: CommandRunner; script?: string; manual?: string } = {},
+    options: {
+      runner?: CommandRunner;
+      script?: string;
+      manual?: string;
+      /** Stable per Matrix server (default: unique per process, never reclaimed by another). */
+      holder?: string;
+      /** Release a lock left by a dead predecessor with the same holder before the first job. */
+      reclaimOnStart?: boolean;
+    } = {},
   ) {
     this.#runner = options.runner ?? sshRunner(config.host, localRunner());
+    this.holder = laneHolder(options.holder ?? `${hostname()}-${process.pid}`);
     this.#script =
       options.script ?? readFileSync(join(REPO_ROOT, "ops", "qa-lane", "agent-qa.sh"), "utf8");
     this.manual =
       options.manual ??
       readFileSync(join(REPO_ROOT, "skills", "qa-tester-manual", "SKILL.md"), "utf8");
+    if (options.reclaimOnStart) this.#queue = this.reclaim();
+  }
+
+  /**
+   * Releases the device lock if this holder still holds it: only a dead predecessor can (one lane
+   * per process, and this one has no job yet), e.g. a server restarted mid-job. Best effort.
+   */
+  async reclaim(): Promise<void> {
+    try {
+      const out = await this.#step(["reclaim", this.holder], 60_000, new AbortController().signal);
+      if (out.trim()) console.error(`[agent-qa-lane] ${out.trim().slice(0, 120)}`);
+    } catch (error) {
+      console.error(`[agent-qa-lane] reclaim failed: ${(error as Error).message.slice(0, 200)}`);
+    }
   }
 
   private readonly manual: string;
@@ -162,7 +194,11 @@ export class SshAgentQaLane implements AgentQaPort {
       const android = info.match(/^android=(.{1,20})$/m)?.[1];
       if (model) device.model = model;
       if (android) device.android = android;
-      await this.#step(["lock", job, String(Math.round(c.waitMs / 1000))], c.waitMs + 60_000, sig);
+      await this.#step(
+        ["lock", job, String(Math.round(c.waitMs / 1000)), this.holder],
+        c.waitMs + 60_000,
+        sig,
+      );
       locked = true;
       const b64 = (s: string) => Buffer.from(s).toString("base64");
       await this.#step(

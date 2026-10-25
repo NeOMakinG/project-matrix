@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { createCompoundHandler } from "@matrix/compound";
@@ -215,7 +216,11 @@ async function createOwnedFactory(
   const agentQa =
     options.agentQa ??
     (options.agentQaLaneConfig
-      ? new SshAgentQaLane(loadLaneConfig(options.agentQaLaneConfig))
+      ? new SshAgentQaLane(loadLaneConfig(options.agentQaLaneConfig), {
+          // One server per host: a restarted server owns (and releases) its predecessor's lock.
+          holder: `matrix-server@${hostname()}`,
+          reclaimOnStart: true,
+        })
       : undefined);
   const handlers = {
     ...createDefaultHandlers({

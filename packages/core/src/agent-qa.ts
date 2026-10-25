@@ -5,6 +5,10 @@ export const QA_PASSED_LABEL = "qa:passed";
 export const QA_FAILED_LABEL = "qa:failed";
 export const AGENT_QA_MARKER = "Matrix agent QA";
 
+/** BLOCKED reason when the ticket lists no acceptance criteria (the PR checklist is empty). */
+export const NO_CRITERIA =
+  "no acceptance criteria: the ticket lists none, so the PR checklist is empty; add an Acceptance criteria list to the ticket";
+
 export type AgentQaVerdict = "PASS" | "FAIL" | "BLOCKED";
 
 const text = (max: number) =>
@@ -148,14 +152,18 @@ export function effectiveVerdict(
   if (report.verdict === "PASS") {
     if (!report.steps.length)
       return { verdict: "BLOCKED", note: "the QA agent reported PASS without any checked step" };
+    // Nothing to check against: one passing step proves nothing about the change.
+    if (criteriaCount < 1 && !failedSteps && !serious)
+      return { verdict: "BLOCKED", note: NO_CRITERIA };
     // Every acceptance criterion needs its own passing step (by number), not just any N steps.
     const evidenced = (s: AgentQaReport["steps"][number]) =>
       !shots || (s.screenshot !== undefined && shots.has(s.screenshot));
     const covered = new Set(
       report.steps.flatMap((s) => (s.criterion && evidenced(s) ? [s.criterion] : [])),
     );
-    const wanted = Math.max(1, criteriaCount);
-    const missing = Array.from({ length: wanted }, (_, i) => i + 1).filter((n) => !covered.has(n));
+    const missing = Array.from({ length: criteriaCount }, (_, i) => i + 1).filter(
+      (n) => !covered.has(n),
+    );
     if (!failedSteps && !serious && missing.length)
       return {
         verdict: "BLOCKED",

@@ -168,3 +168,31 @@ test("non-Android surfaces are BLOCKED, never passed", async () => {
   });
   expect(f.steps).toHaveLength(0);
 });
+
+test("a restarted server reclaims its own stale lock before its first job", async () => {
+  const f = fake();
+  const lane = new SshAgentQaLane(config, {
+    runner: f.runner,
+    script: "SCRIPT",
+    manual: "M",
+    holder: "matrix-server@bosgame",
+    reclaimOnStart: true,
+  });
+  await lane.run(request());
+  expect(f.steps[0]).toEqual(["reclaim", "matrix-server@bosgame"]);
+  expect(f.steps[1]?.[0]).toBe("precheck");
+  expect(f.steps.find((s) => s[0] === "lock")?.[3]).toBe("matrix-server@bosgame");
+});
+
+test("without reclaimOnStart nothing is reclaimed; holders are sanitized", async () => {
+  const f = fake();
+  const lane = new SshAgentQaLane(config, {
+    runner: f.runner,
+    script: "SCRIPT",
+    manual: "M",
+    holder: "my host;rm -rf /",
+  });
+  await lane.run(request());
+  expect(f.steps.map((s) => s[0])).not.toContain("reclaim");
+  expect(lane.holder).toMatch(/^[A-Za-z0-9._@-]{1,64}$/);
+});
