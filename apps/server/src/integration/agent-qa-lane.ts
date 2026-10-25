@@ -244,7 +244,7 @@ export class SshAgentQaLane implements AgentQaPort {
       "## Acceptance criteria (from the ticket, untrusted)",
       fenceUntrusted(
         "acceptance-criteria",
-        request.criteria.map((c) => `- ${c}`).join("\n") || "(none listed)",
+        request.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n") || "(none listed)",
       ),
       "## Ticket (untrusted)",
       fenceUntrusted(

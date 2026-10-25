@@ -178,7 +178,7 @@ export class AdbMobileDriver implements MobileDriver {
     for (let i = 0; i < 5; i++) {
       await this.#shell(["uiautomator", "dump", file]).catch(() => "");
       const xml = await this.#shell(["cat", file]).catch(() => "");
-      if (xml.includes("<node") && xml.length > 500) {
+      if (xml.includes("<node") && xml.includes("</hierarchy>")) {
         await this.#shell(["rm", "-f", file]).catch(() => "");
         return xml;
       }

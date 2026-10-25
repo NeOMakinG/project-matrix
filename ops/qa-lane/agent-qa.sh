@@ -105,17 +105,17 @@ case "$step" in
       set -e
       # Root-owned bare mirror: the only place root runs git, fetched with root's gh credential.
       [[ -d "$mirror" ]] || git init --quiet --bare "$mirror"
-      git --git-dir "$mirror" -c credential.helper= -c "credential.helper=!gh auth git-credential" \
+      timeout -k 10 900 git --git-dir "$mirror" -c credential.helper= -c "credential.helper=!gh auth git-credential" \
         fetch --quiet "https://github.com/$repo.git" "+refs/pull/$pr/head:refs/matrix/pr-$pr"
       [[ "$(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr")" == "$sha" ]] \
         || { echo "PR head moved: $(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr") != $sha"; exit 3; }
       # The QA user checks out and builds in its own working copy (PR code never runs as root).
       as_build bash -c 'set -e; [[ -d "$1/.git" ]] || git init --quiet "$1"; cd "$1"
         git config --global --get-all safe.directory | grep -qxF "$2" || git config --global --add safe.directory "$2"
-        git fetch --quiet --no-tags "file://$2" "$3"
+        timeout -k 10 900 git fetch --quiet --no-tags "file://$2" "$3"
         git checkout --quiet --force --detach "$4"; git clean -qfdx -e node_modules
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
-      cd "$work" && as_build ABI="$abi" NODE_ENV=production timeout "$timeout_s" nice bash "$dir/build.sh"
+      cd "$work" && as_build ABI="$abi" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"
     ) >"$dir/build.log" 2>&1
     rc=$?
     set -e
@@ -154,7 +154,7 @@ JSON
     secrets run -- sh -c '
       exec env -i HOME="/home/$1" PATH="/usr/local/bin:/usr/bin:/bin:$4" LANG=C.UTF-8 ANDROID_SERIAL="$3" \
         ANTHROPIC_BASE_URL="${MATRIX_QA_GATEWAY:-http://127.0.0.1:8317}" ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY" \
-        runuser -u "$1" -- timeout "$5" claude -p --model "$2" --setting-sources project --strict-mcp-config \
+        runuser -u "$1" -- timeout -k 30 "$5" claude -p --model "$2" --setting-sources project --strict-mcp-config \
           --allowedTools "Bash(agent-device:*)" "Bash(adb:*)" "Read(./**)" "Write(./out/**)" "Glob(./**)" \
           --disallowedTools WebFetch WebSearch Agent Task' \
       sh "$QA_USER" "$model" "$serial" "$ANDROID_HOME/platform-tools" "$timeout_s" \

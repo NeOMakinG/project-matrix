@@ -31,7 +31,11 @@ export const agentQaReportSchema = z.object({
         expected: text(300).default(""),
         actual: text(300).default(""),
         ok: z.boolean(),
-        criterion: z.boolean().default(false),
+        /** 1-based number of the acceptance criterion this step checks; false/absent: none. */
+        criterion: z
+          .union([z.boolean(), z.number().int().min(1).max(30)])
+          .default(false)
+          .transform((c) => (typeof c === "number" ? c : undefined)),
         screenshot: shotName,
       }),
     )
@@ -141,12 +145,14 @@ export function effectiveVerdict(
   if (report.verdict === "PASS") {
     if (!report.steps.length)
       return { verdict: "BLOCKED", note: "the QA agent reported PASS without any checked step" };
-    const checked = report.steps.filter((s) => s.criterion).length;
+    // Every acceptance criterion needs its own passing step (by number), not just any N steps.
+    const covered = new Set(report.steps.flatMap((s) => (s.criterion ? [s.criterion] : [])));
     const wanted = Math.max(1, criteriaCount);
-    if (!failedSteps && !serious && checked < wanted)
+    const missing = Array.from({ length: wanted }, (_, i) => i + 1).filter((n) => !covered.has(n));
+    if (!failedSteps && !serious && missing.length)
       return {
         verdict: "BLOCKED",
-        note: `the QA agent checked ${checked} of ${wanted} acceptance criteria`,
+        note: `the QA agent did not check acceptance criteria ${missing.join(", ")}`,
       };
     if (failedSteps || serious)
       return {
@@ -253,7 +259,7 @@ export function renderAgentQaReport(
       report.steps
         .map(
           (s, i) =>
-            `${i + 1}. ${s.ok ? "PASS" : "FAIL"}${s.criterion ? " (acceptance)" : ""}: ${md(s.action)}. Expected: ${md(s.expected) || "n/a"}. Actual: ${md(s.actual) || "n/a"}.${image(s.screenshot)}`,
+            `${i + 1}. ${s.ok ? "PASS" : "FAIL"}${s.criterion ? ` (acceptance #${s.criterion})` : ""}: ${md(s.action)}. Expected: ${md(s.expected) || "n/a"}. Actual: ${md(s.actual) || "n/a"}.${image(s.screenshot)}`,
         )
         .join("\n"),
     );

@@ -22,7 +22,7 @@ const REPORT = JSON.stringify({
   verdict: "PASS",
   summary: "ok",
   steps: [
-    { action: "a", expected: "b", actual: "b", ok: true, criterion: true, screenshot: "s1.png" },
+    { action: "a", expected: "b", actual: "b", ok: true, criterion: 1, screenshot: "s1.png" },
   ],
 });
 

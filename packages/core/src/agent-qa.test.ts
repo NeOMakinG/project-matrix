@@ -7,7 +7,7 @@ import {
 } from "./agent-qa.js";
 
 const SHA = "a".repeat(40);
-const step = { action: "Tap", expected: "x", actual: "x", ok: true, criterion: true };
+const step = { action: "Tap", expected: "x", actual: "x", ok: true, criterion: 1 };
 
 test("parses and bounds the agent report; rejects garbage", () => {
   expect(parseAgentQaReport("not json")).toBeUndefined();
@@ -86,7 +86,19 @@ test("PASS needs a checked step per acceptance criterion", () => {
   const r = { verdict: "PASS" as const, summary: "", findings: [], steps: [step] };
   expect(effectiveVerdict(r, 1).verdict).toBe("PASS");
   expect(effectiveVerdict(r, 2).verdict).toBe("BLOCKED");
-  expect(effectiveVerdict({ ...r, steps: [{ ...step, criterion: false }] }).verdict).toBe(
+  expect(effectiveVerdict({ ...r, steps: [{ ...step, criterion: undefined }] }).verdict).toBe(
     "BLOCKED",
   );
+});
+
+test("two steps on criterion 1 do not cover criterion 2", () => {
+  const r = { verdict: "PASS" as const, summary: "", findings: [], steps: [step, step] };
+  expect(effectiveVerdict(r, 2)).toMatchObject({
+    verdict: "BLOCKED",
+    note: expect.stringContaining("2"),
+  });
+  expect(
+    parseAgentQaReport(JSON.stringify({ ...r, steps: [{ ...step, criterion: true }] }))?.steps[0]
+      ?.criterion,
+  ).toBeUndefined();
 });

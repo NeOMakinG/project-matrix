@@ -694,12 +694,14 @@ export class Reconciler {
       return;
     }
     // The loop back is what matters; labels are best effort after it.
-    await this.loopBackFromQa(
+    const saved = await this.loopBackFromQa(
       project,
       now,
       "agent QA failed on the draft PR; fix the findings in the agent QA report comment",
       "agent QA failed",
     );
+    // Lost a race with another writer: not applied, the next tick re-reads and retries.
+    if (!saved) throw new Error("workflow changed while applying the agent QA FAIL; retrying");
     await this.trackerWrite(project.id, id, "label", () =>
       label([QA_FAILED_LABEL], [QA_PASSED_LABEL]),
     );

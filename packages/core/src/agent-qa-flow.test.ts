@@ -22,7 +22,7 @@ function report(over: Partial<AgentQaReport> = {}): AgentQaReport {
         expected: "share sheet",
         actual: "share sheet",
         ok: true,
-        criterion: true,
+        criterion: 1,
         screenshot: "s1.png",
       },
     ],
@@ -130,7 +130,7 @@ test("FAIL: qa:failed on ticket and PR, loops back to implement with the report"
   const fail = report({
     verdict: "FAIL",
     steps: [
-      { action: "Tap Export", expected: "sheet", actual: "nothing", ok: false, criterion: true },
+      { action: "Tap Export", expected: "sheet", actual: "nothing", ok: false, criterion: 1 },
     ],
     findings: [{ severity: "P1", title: "Export dead tap", steps: "", expected: "", actual: "" }],
   });
@@ -155,7 +155,7 @@ test("FAIL until the loop cap: blocked with needs-human", async () => {
     reportOutcome(
       report({
         verdict: "FAIL",
-        steps: [{ action: "Tap", expected: "a", actual: "b", ok: false, criterion: true }],
+        steps: [{ action: "Tap", expected: "a", actual: "b", ok: false, criterion: 1 }],
       }),
     );
   const { h } = agentHarness([fail(), fail(), fail(), fail(), fail()]);
@@ -198,7 +198,7 @@ test("no lane for the project: BLOCKED, not a silent pass", async () => {
 
 test("PASS claimed with a failed step is treated as FAIL", async () => {
   const lying = report({
-    steps: [{ action: "Tap", expected: "a", actual: "b", ok: false, criterion: true }],
+    steps: [{ action: "Tap", expected: "a", actual: "b", ok: false, criterion: 1 }],
   });
   const { h } = agentHarness([reportOutcome(lying), reportOutcome(report())]);
   await h.setup();

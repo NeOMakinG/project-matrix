@@ -37,7 +37,8 @@ write one report. You never change code, never open the PR, never contact anyone
 
 Follow `agent-device help manual-qa`: `snapshot -i` for refs, `press`/`fill` with `--settle`,
 verify named expectations with `wait text`, `get`, `is`, `find` or the settled diff. A bare
-screenshot is not verification. For each criterion record a step with `criterion: true`:
+screenshot is not verification. For each criterion record a step with `criterion: <its number>` (criteria are numbered 1..N in your
+prompt; every number needs a step, or the run cannot pass):
 the exact action, the expected result, the actual result, `ok`, and one screenshot of the
 result.
 
@@ -102,7 +103,7 @@ steps becomes BLOCKED.
       "expected": "the photo picker opens",
       "actual": "the picker opened with the device gallery",
       "ok": true,
-      "criterion": true,
+      "criterion": 1,
       "screenshot": "s03-picker.png"
     }
   ],
