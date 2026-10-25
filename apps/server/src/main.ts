@@ -74,6 +74,7 @@ const factory = await createFactory({
   },
   ...(env.MATRIX_DATABASE_URL ? { databaseUrl: env.MATRIX_DATABASE_URL } : {}),
   repoRoots: parseRepoRoots(env.MATRIX_REPO_ROOTS),
+  ...(env.MATRIX_QA_LANE_CONFIG ? { agentQaLaneConfig: env.MATRIX_QA_LANE_CONFIG } : {}),
   dataDir,
   host: env.MATRIX_NODE_NAME ?? "localhost",
   ...(env.MATRIX_QUOTA ? { quota: parseQuotaEnv(env.MATRIX_QUOTA) } : {}),

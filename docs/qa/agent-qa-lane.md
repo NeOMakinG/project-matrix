@@ -2,6 +2,11 @@
 
 Status: spike 2026-10-25, implemented in the same PR.
 
+Operator quick start: set the project's `qa` to `{"surfaces":["android"],"driver":"agent"}`, write
+the lane config below, start the server with `MATRIX_QA_LANE_CONFIG=/path/lane.json`. The Matrix
+host needs key-based SSH to the device host; the device host needs `adb`, `agent-device`,
+`claude`, `gh` (logged in), `secrets` (Infisical) and the Android SDK.
+
 ## Problem
 
 A ticket whose QA surface is a device (Android today) cannot be verified by Matrix's host

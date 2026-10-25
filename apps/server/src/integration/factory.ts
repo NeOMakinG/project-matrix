@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { createCompoundHandler } from "@matrix/compound";
 import type { QuotaConfig } from "@matrix/config";
 import {
+  type AgentQaPort,
   createDefaultHandlers,
   EventBus,
   MemoryStore,
@@ -19,6 +20,7 @@ import { fileProposals, runWatch, SeenStore } from "@matrix/watch";
 import { OrcaWorkspace } from "@matrix/workspace";
 import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
+import { loadLaneConfig, SshAgentQaLane } from "./agent-qa-lane.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
 import { repoKnowledge } from "./knowledge.js";
 import type { StoredProject } from "./mapping.js";
@@ -66,6 +68,10 @@ export interface FactoryOptions {
   repoRoots?: string[];
   /** Test seam: replaces the GitHub draft-PR publisher. */
   pullRequests?: GitHubPullRequests;
+  /** `MATRIX_QA_LANE_CONFIG`: device-host agent QA lane settings (qa.driver "agent" projects). */
+  agentQaLaneConfig?: string;
+  /** Test seam: replaces the agent QA lane. */
+  agentQa?: AgentQaPort;
 }
 
 const run = promisify(execFile);
@@ -206,6 +212,11 @@ async function createOwnedFactory(
               scanCommittedHistory(repo, range, options.native?.gitleaksBinary),
           }),
     });
+  const agentQa =
+    options.agentQa ??
+    (options.agentQaLaneConfig
+      ? new SshAgentQaLane(loadLaneConfig(options.agentQaLaneConfig))
+      : undefined);
   const handlers = {
     ...createDefaultHandlers({
       ...runtime.deps,
@@ -256,6 +267,7 @@ async function createOwnedFactory(
     host: options.host,
     scratchRoot: join(options.dataDir, "scratch"),
     pullRequests: stateOwner.fence(pullRequests),
+    ...(agentQa ? { agentQa } : {}),
   });
 
   const llm: LlmClient =
