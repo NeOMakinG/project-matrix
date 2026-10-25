@@ -217,6 +217,7 @@ test("blocked-ticket labels reach Linear: the project ticket store forwards addL
   expect(store.addLabel).toBeTypeOf("function");
   expect(store.removeLabel).toBeTypeOf("function");
   expect(store.listComments).toBeTypeOf("function");
+  expect(store.uploadFile).toBeTypeOf("function");
   const ticket = await store.create({ title: "Choose photos does nothing", body: "" });
   await store.addLabel?.(ticket.id, "needs-human");
   expect((await store.get(ticket.id))?.labels).toContain("needs-human");

@@ -269,6 +269,8 @@ export class RealCore implements CorePort {
         });
     }
     if (store.listComments) indexed.listComments = store.listComments.bind(store);
+    // Agent QA reports embed their screenshots through this; without it they list file names only.
+    if (store.uploadFile) indexed.uploadFile = store.uploadFile.bind(store);
     if (store.ensureScope) indexed.ensureScope = store.ensureScope.bind(store);
     const owned = this.o.stateOwner?.fence(indexed) ?? indexed;
     this.ticketStores.set(projectId, owned);
