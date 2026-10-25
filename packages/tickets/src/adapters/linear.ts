@@ -516,6 +516,19 @@ export class LinearTicketStore implements TicketStore {
     for (const dep of deps) if (!have.has(dep)) await this.link(dep, issue.identifier, "blocks");
   }
 
+  async uploadFile(
+    id: string,
+    name: string,
+    contentType: string,
+    bytes: Uint8Array,
+  ): Promise<string> {
+    await this.#must(id);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/.test(name))
+      throw new Error("invalid upload file name");
+    if (bytes.byteLength > 10 * 1024 * 1024) throw new Error("upload larger than 10 MB");
+    return this.#client.upload(name, contentType, bytes);
+  }
+
   async comment(id: string, body: string): Promise<void> {
     await this.#createComment(await this.#must(id), body);
   }

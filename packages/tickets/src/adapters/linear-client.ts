@@ -17,6 +17,18 @@ export type FetchLike = (
   text(): Promise<string>;
 }>;
 
+export type UploadFetch = (
+  url: string,
+  init: { method: "PUT"; headers: Record<string, string>; body: Uint8Array; signal?: AbortSignal },
+) => Promise<{ ok: boolean; status: number }>;
+
+const FILE_UPLOAD = `mutation MatrixFileUpload($contentType: String!, $filename: String!, $size: Int!) {
+  fileUpload(contentType: $contentType, filename: $filename, size: $size) {
+    success
+    uploadFile { uploadUrl assetUrl headers { key value } }
+  }
+}`;
+
 export interface LinearClientOptions {
   /** Name of the host env var holding the personal API key. Default `LINEAR_API_KEY`. */
   apiKeyEnv?: string;
@@ -31,6 +43,8 @@ export interface LinearClientOptions {
   /** Environment to read the key from. Default `process.env`. */
   env?: Record<string, string | undefined>;
   fetch?: FetchLike;
+  /** Binary PUT for file uploads (tests). Default `globalThis.fetch`. */
+  uploadFetch?: UploadFetch;
   endpoint?: string;
   signal?: AbortSignal;
   /** Retries on 429 / 5xx / network errors. Default 4. */
@@ -194,6 +208,38 @@ export class LinearClient {
       if (!parsed?.data) throw new LinearApiError("Linear response had no data", response.status);
       return parsed.data;
     }
+  }
+
+  /** Uploads a file to Linear storage (signed PUT) and returns its https asset URL. */
+  async upload(filename: string, contentType: string, bytes: Uint8Array): Promise<string> {
+    const data = await this.request<{
+      fileUpload: {
+        success: boolean;
+        uploadFile: {
+          uploadUrl: string;
+          assetUrl: string;
+          headers: { key: string; value: string }[];
+        } | null;
+      };
+    }>(FILE_UPLOAD, { contentType, filename, size: bytes.byteLength });
+    const file = data.fileUpload.uploadFile;
+    if (!data.fileUpload.success || !file) throw new Error("Linear fileUpload failed");
+    if (!/^https:\/\//.test(file.uploadUrl) || !/^https:\/\/[^\s()<>]+$/.test(file.assetUrl))
+      throw new Error("Linear fileUpload returned a non-https URL");
+    const headers: Record<string, string> = {
+      "Content-Type": contentType,
+      "Cache-Control": "public, max-age=31536000",
+    };
+    for (const h of file.headers) headers[h.key] = h.value;
+    const put = this.#o.uploadFetch ?? (globalThis.fetch as unknown as UploadFetch);
+    const res = await put(file.uploadUrl, {
+      method: "PUT",
+      headers,
+      body: bytes,
+      signal: AbortSignal.timeout(this.#o.timeoutMs ?? 30_000),
+    });
+    if (!res.ok) throw new Error(`Linear file upload PUT failed with HTTP ${res.status}`);
+    return file.assetUrl;
   }
 }
 
