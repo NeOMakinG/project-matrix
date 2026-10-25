@@ -260,6 +260,10 @@ export class Reconciler {
   private readonly agentQaJobs = new Map<string, Promise<void>>();
   /** Last agent QA verdict per key (PASS/FAIL are final for a head; BLOCKED waits for a human). */
   private readonly agentQaVerdicts = new Map<string, AgentQaVerdict>();
+  /** Finished reports whose comment could not be posted yet: retried, never re-run. */
+  private readonly agentQaUnposted = new Map<string, { body: string; verdict: AgentQaVerdict }>();
+  /** BLOCKED keys whose needs-human label was seen on the ticket (removal then means retry). */
+  private readonly agentQaBlockedSeen = new Set<string>();
   readonly ownerId: string;
   private readonly active = new Map<string, ActiveRun>();
   private readonly clock: () => Date;
@@ -559,6 +563,11 @@ export class Reconciler {
       this.trackerFailed(project.id, w.ticketId, "list-comments", error);
       return;
     }
+    const unposted = this.agentQaUnposted.get(key);
+    if (unposted) {
+      await this.postAgentQaReport(project, w, key, url, unposted);
+      return;
+    }
     const applied = this.agentQaVerdicts.get(key);
     if (applied === "PASS" || applied === "FAIL") return;
     const prior = applied ?? priorAgentQaVerdict(comments, headSha, qaRun.id);
@@ -570,7 +579,18 @@ export class Reconciler {
     const ticket = await tickets.get(w.ticketId).catch(() => null);
     if (!ticket) return;
     // A BLOCKED report waits until a human removed needs-human (they fixed the cause).
-    if (prior === "BLOCKED" && ticket.labels.includes(NEEDS_HUMAN_LABEL)) return;
+    if (prior === "BLOCKED" && ticket.labels.includes(NEEDS_HUMAN_LABEL)) {
+      this.agentQaBlockedSeen.add(key);
+      return;
+    }
+    // Our own label write never landed: retry it instead of reading its absence as a retry request.
+    if (prior === "BLOCKED" && applied === "BLOCKED" && !this.agentQaBlockedSeen.has(key)) {
+      await this.trackerWrite(project.id, w.ticketId, "label", async () =>
+        tickets.addLabel?.(w.ticketId, NEEDS_HUMAN_LABEL),
+      );
+      if (tickets.addLabel) return;
+    }
+    this.agentQaBlockedSeen.delete(key);
     const criteria = manual.criteria.length ? manual.criteria : acceptanceCriteria(ticket.body);
     const pr = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/);
     const job = (async () => {
@@ -645,9 +665,30 @@ export class Reconciler {
       (await this.latestRun(now, "qa"))?.id !== qaRunId
     )
       return;
-    // The report comment is the durable record; effects are re-applied from it after a restart.
-    await this.trackerWrite(project.id, id, "comment", () => tickets.comment(id, rendered.body));
-    await this.applyAgentQaVerdict(project, now, key, url, rendered.verdict);
+    await this.postAgentQaReport(project, now, key, url, rendered);
+  }
+
+  /**
+   * The report comment is the durable record (effects are re-applied from it after a restart), so
+   * nothing is applied before it is posted; a failed post is retried on later ticks.
+   */
+  private async postAgentQaReport(
+    project: ProjectConfig,
+    w: WorkflowState,
+    key: string,
+    url: string,
+    report: { body: string; verdict: AgentQaVerdict },
+  ): Promise<void> {
+    try {
+      await this.o.tickets(project.id).comment(w.ticketId, report.body);
+    } catch (error) {
+      if (this.agentQaUnposted.size > 1_000) this.agentQaUnposted.clear();
+      this.agentQaUnposted.set(key, report);
+      this.trackerFailed(project.id, w.ticketId, "comment", error);
+      return;
+    }
+    this.agentQaUnposted.delete(key);
+    await this.applyAgentQaVerdict(project, w, key, url, report.verdict);
   }
 
   /**

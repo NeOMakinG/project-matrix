@@ -215,3 +215,28 @@ test("lane with nothing to report: BLOCKED with its reason", async () => {
   expect(reports(h)[0]).toContain("BLOCKED");
   expect(h.tickets.tickets.get(t.id)?.labels).toContain("needs-human");
 });
+
+test("report comment fails: nothing applied, the post is retried without re-running QA", async () => {
+  const fail = report({
+    verdict: "FAIL",
+    steps: [{ action: "Tap", expected: "a", actual: "b", ok: false, criterion: 1 }],
+  });
+  const { h, requests } = agentHarness([reportOutcome(fail), reportOutcome(report())]);
+  const original = h.tickets.comment.bind(h.tickets);
+  let broken = true;
+  h.tickets.comment = async (id: string, body: string) => {
+    if (broken && body.startsWith("Matrix agent QA")) throw new Error("linear down");
+    return original(id, body);
+  };
+  await h.setup();
+  const t = await addTicket(h);
+  await h.drain();
+  expect(requests).toHaveLength(1);
+  expect(await h.store.getWorkflow("pilot", t.id)).toMatchObject({ phase: "merge", loops: 0 });
+  expect(h.tickets.tickets.get(t.id)?.labels).not.toContain("qa:failed");
+  broken = false;
+  await h.drain();
+  expect(requests).toHaveLength(2);
+  expect(reports(h)[0]).toMatch(/^Matrix agent QA FAIL/);
+  expect((await h.store.getWorkflow("pilot", t.id))?.loops).toBe(1);
+});

@@ -13,7 +13,7 @@ QA_USER="${MATRIX_QA_USER:-matrixqa}"
 BUILD_USER="${MATRIX_QA_BUILD_USER:-matrixqa-build}"
 ROOT="${MATRIX_QA_ROOT:-/srv/matrix-qa}"
 LOCK=/tmp/matrix-qa-lane.lock
-STALE_S=7200
+STALE_S=7200 # > longest step: 2 x 300 s git + 5400 s build (+ kill grace)
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}" ANDROID_SDK_ROOT="${ANDROID_HOME:-/opt/android-sdk}"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 
@@ -72,7 +72,11 @@ case "$step" in
     ;;
   unlock)
     job="$1"; need job "$job" '^[a-z0-9-]{8,64}$'
-    [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$job" ]] && rm -rf "$LOCK"
+    if [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$job" ]]; then
+      # Nothing of this job survives the lock: a build or agent still running (caller gave up) dies.
+      pkill -KILL -u "$BUILD_USER" || true; pkill -KILL -u "$QA_USER" || true
+      rm -rf "$LOCK"
+    fi
     true
     ;;
   write)
@@ -94,7 +98,7 @@ case "$step" in
     dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" abi="$5" timeout_s="$6"
     need repo "$repo" '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'; need pr "$pr" '^[0-9]{1,9}$'
     need sha "$sha" '^[a-f0-9]{40}$'; need abi "$abi" '^(arm64-v8a|x86_64|armeabi-v7a|x86)$'
-    need timeout "$timeout_s" '^[0-9]{2,4}$'; (( timeout_s <= 6000 )) || die 2 "timeout above the lock's stale limit"
+    need timeout "$timeout_s" '^[0-9]{2,4}$'; (( timeout_s <= 5400 )) || die 2 "timeout above the lock's stale limit"
     beat "$1"
     mirror="$ROOT/mirrors/${repo/\//__}.git" work="$ROOT/build/${repo/\//__}"
     install -d -o root -g root -m 755 "$ROOT/mirrors"
@@ -105,14 +109,14 @@ case "$step" in
       set -e
       # Root-owned bare mirror: the only place root runs git, fetched with root's gh credential.
       [[ -d "$mirror" ]] || git init --quiet --bare "$mirror"
-      timeout -k 10 900 git --git-dir "$mirror" -c credential.helper= -c "credential.helper=!gh auth git-credential" \
+      timeout -k 10 300 git --git-dir "$mirror" -c credential.helper= -c "credential.helper=!gh auth git-credential" \
         fetch --quiet "https://github.com/$repo.git" "+refs/pull/$pr/head:refs/matrix/pr-$pr"
       [[ "$(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr")" == "$sha" ]] \
         || { echo "PR head moved: $(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr") != $sha"; exit 3; }
       # The QA user checks out and builds in its own working copy (PR code never runs as root).
       as_build bash -c 'set -e; [[ -d "$1/.git" ]] || git init --quiet "$1"; cd "$1"
         git config --global --get-all safe.directory | grep -qxF "$2" || git config --global --add safe.directory "$2"
-        timeout -k 10 900 git fetch --quiet --no-tags "file://$2" "$3"
+        timeout -k 10 300 git fetch --quiet --no-tags "file://$2" "$3"
         git checkout --quiet --force --detach "$4"; git clean -qfdx -e node_modules
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
       cd "$work" && as_build ABI="$abi" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"
@@ -138,7 +142,7 @@ case "$step" in
   agent)
     dir=$(job_dir "$1") model="$2" timeout_s="$3" serial="$4"
     need model "$model" '^[a-z0-9.-]{3,60}$'; need timeout "$timeout_s" '^[0-9]{2,4}$'
-    (( timeout_s <= 6000 )) || die 2 "timeout above the lock's stale limit"
+    (( timeout_s <= 5400 )) || die 2 "timeout above the lock's stale limit"
     need serial "$serial" '^[A-Za-z0-9._:-]{1,64}$'
     beat "$1"
     install -d -o root -g root -m 755 "$dir/.claude"

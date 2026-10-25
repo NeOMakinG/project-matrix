@@ -48,13 +48,13 @@ export const laneConfigSchema = z.object({
     .number()
     .int()
     .min(60_000)
-    .max(3 * 3_600_000)
+    .max(90 * 60_000)
     .default(25 * 60_000),
   buildTimeoutMs: z
     .number()
     .int()
     .min(60_000)
-    .max(3 * 3_600_000)
+    .max(90 * 60_000)
     .default(60 * 60_000),
   projects: z.record(z.string(), projectSchema),
 });
@@ -180,7 +180,7 @@ export class SshAgentQaLane implements AgentQaPort {
           project.abi,
           String(Math.round(c.buildTimeoutMs / 1000)),
         ],
-        c.buildTimeoutMs + 120_000,
+        c.buildTimeoutMs + 15 * 60_000,
         sig,
       );
       const version = (
