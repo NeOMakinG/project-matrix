@@ -152,7 +152,7 @@ not supported by the tracker the comment lists the screenshot names only.
       "repo": "NeOMakinG/wayline",
       "build": "cd app && npm ci --no-audit --no-fund && npx expo prebuild --platform android --no-install --clean && cd android && ./gradlew assembleRelease -PreactNativeArchitectures=$ABI --no-daemon",
       "apk": "app/android/app/build/outputs/apk/release/app-release.apk",
-      "appId": "com.wayline.app",
+      "appId": "ai.traveljournal.app",
       "abi": "arm64-v8a"
     }
   }

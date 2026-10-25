@@ -151,6 +151,13 @@ case "$step" in
       timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >>"$dir/install.log" 2>&1 \
         || { tail -c 500 "$dir/install.log" >&2; exit 21; }
     fi
+    # The configured app must now BE this artifact: a PR that changes the application id would
+    # otherwise install beside it and leave the agent testing an older build of "$app".
+    installed=$(adb -s "$serial" shell pm path "$app" 2>/dev/null | sed -n 's/^package://p' | grep 'base\.apk$' | head -1 | tr -d '\r')
+    [[ "$installed" =~ ^/[A-Za-z0-9._/=~+-]+$ ]] || die 21 "$app is not installed after install (application id changed?)"
+    want=$(sha256sum "$dir/app.apk" | cut -d' ' -f1)
+    got=$(adb -s "$serial" shell sha256sum "$installed" 2>/dev/null | tr -d '\r' | cut -d' ' -f1)
+    [[ "$got" == "$want" ]] || die 21 "installed $app does not match the built APK (application id changed?)"
     adb -s "$serial" shell dumpsys package "$app" | sed -n 's/^ *versionName=//p' | head -1
     ;;
   agent)
