@@ -157,11 +157,16 @@ export function validQaSettings(input: QaSettingsInput): NonNullable<StoredProje
   for (const surface of surfaces)
     if (!(QA_SURFACES as readonly string[]).includes(surface))
       throw new CoreError("invalid_request", `unknown qa surface ${String(surface).slice(0, 20)}`);
-  if (input.driver !== undefined && input.driver !== "none" && input.driver !== "manual")
-    throw new CoreError("invalid_request", "qa.driver must be none or manual");
+  if (
+    input.driver !== undefined &&
+    input.driver !== "none" &&
+    input.driver !== "manual" &&
+    input.driver !== "agent"
+  )
+    throw new CoreError("invalid_request", "qa.driver must be none, manual or agent");
   return {
     ...(surfaces.length ? { surfaces } : {}),
-    ...(input.driver === "manual" ? { driver: "manual" as const } : {}),
+    ...(input.driver === "manual" || input.driver === "agent" ? { driver: input.driver } : {}),
   };
 }
 

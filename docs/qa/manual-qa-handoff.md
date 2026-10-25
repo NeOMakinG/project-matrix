@@ -1,9 +1,14 @@
 # Manual QA handoff (no device driver on the host)
 
-Matrix's automatic QA drives host probes, HTTP APIs and browsers. Mobile device QA
-(`packages/qa/src/mobile.ts`) is not implemented yet, so a ticket whose holdout scenarios are
-Android/iOS UI flows cannot be verified on the Matrix host. Instead of blocking with nothing to
-show, a project can opt into a **manual QA handoff**.
+Matrix's automatic QA drives host probes, HTTP APIs and browsers. Android/iOS UI flows cannot be
+verified inside a run on the Matrix host. Instead of blocking with nothing to show, a project can
+opt into a handoff of the draft PR:
+
+- `qa.driver: "agent"` (recommended for Android): the **agent QA lane** builds the draft PR on the
+  device host, a QA agent tests it on a real device and its verdict drives the ticket (PASS keeps
+  it at Awaiting merge for a human merge, FAIL loops back to Implement, BLOCKED asks a human).
+  See [agent-qa-lane.md](agent-qa-lane.md).
+- `qa.driver: "manual"`: a human tests it (this page).
 
 ## Configure (trusted project config only)
 
@@ -14,7 +19,8 @@ curl -X PATCH "$MATRIX/v1/projects/<id>" -H "authorization: Bearer $TOKEN" \
 ```
 
 - `qa.surfaces`: what QA must exercise (`host`, `api`, `web`, `android`, `ios`).
-- `qa.driver`: `manual` hands off to a human; `none` (default) blocks QA with
+- `qa.driver`: `agent` hands off to the agent QA lane; `manual` hands off to a human; `none`
+  (default) blocks QA with
   `no android QA driver on this host; set the project's qa.driver to "manual" ...`.
 - `"qa": null` removes the settings.
 

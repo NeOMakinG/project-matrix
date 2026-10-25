@@ -111,7 +111,10 @@ private state directory (tools, tests) the legacy block is still written.
   ticket needs a device surface with no driver on the host stop at Awaiting merge with a draft PR,
   a `Manual QA needed` checklist from the ticket's acceptance criteria, the `needs-human` label and
   a `manual Android QA required — draft PR ready` comment (also in the live status comment).
-  Moving the issue back to Ready with comments is QA feedback: the next run is a review loop. See
+  With `qa.driver: "agent"` the agent QA lane tests the draft PR instead and posts a
+  `Matrix agent QA PASS|FAIL|BLOCKED` report (screenshots attached): PASS adds `qa:passed`, FAIL adds
+  `qa:failed` (ticket and PR) and moves the ticket back to Implement, BLOCKED adds `needs-human`
+  (remove it to re-run). See `docs/qa/agent-qa-lane.md`. Moving the issue back to Ready with comments is QA feedback: the next run is a review loop. See
   [manual QA handoff](qa/manual-qa-handoff.md).
 
 ## Live smoke test

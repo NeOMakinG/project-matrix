@@ -112,6 +112,8 @@ export interface PullRequestPort {
   /** Cheap pre-check: false for projects this port never publishes (skips all work). */
   handles?(project: ProjectConfig): boolean;
   publish(request: PullRequestRequest): Promise<{ url: string; branch: string } | undefined>;
+  /** Optional: add/remove labels on a published PR (labels created when missing). */
+  label?(project: ProjectConfig, url: string, add: string[], remove: string[]): Promise<void>;
 }
 
 export interface DeployPort {

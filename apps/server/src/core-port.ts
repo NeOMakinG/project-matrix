@@ -44,14 +44,14 @@ export interface Project {
   baselineWarmup?: boolean;
   idleTimeoutMs?: number;
   implementGuidance?: string;
-  qa?: { surfaces?: NonNullable<QaSettingsInput["surfaces"]>; driver: "none" | "manual" };
+  qa?: { surfaces?: NonNullable<QaSettingsInput["surfaces"]>; driver: "none" | "manual" | "agent" };
 }
 
 /** Per-project QA surfaces (trusted host config, never ticket text). */
 export interface QaSettingsInput {
   surfaces?: ("host" | "api" | "web" | "android" | "ios")[] | undefined;
-  /** manual: hand off to a human when a device surface has no driver; none (default): block. */
-  driver?: "none" | "manual" | undefined;
+  /** manual: hand off to a human; agent: agent QA lane tests the draft PR; none (default): block. */
+  driver?: "none" | "manual" | "agent" | undefined;
 }
 
 export type ModelPhase = "spike" | "design" | "implement" | "review" | "qa";

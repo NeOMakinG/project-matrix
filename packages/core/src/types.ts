@@ -76,11 +76,12 @@ export type QaSurface = "host" | "api" | "web" | "android" | "ios";
 /**
  * Per-project QA surfaces (trusted operator config). `driver: "manual"`: when a configured device
  * surface has no driver on this host, QA hands off to a human (draft PR + checklist) instead of
- * blocking; `"none"` (default) blocks with a clear reason.
+ * blocking; `"agent"`: the draft PR is tested by the agent QA lane (`AgentQaPort`) and its verdict
+ * drives the ticket; `"none"` (default) blocks with a clear reason.
  */
 export interface QaSettings {
   surfaces?: QaSurface[];
-  driver?: "none" | "manual";
+  driver?: "none" | "manual" | "agent";
 }
 
 export interface ProjectConfig {

@@ -269,3 +269,30 @@ test("a manual QA handoff renders the public checklist in the draft PR body", as
   expect(body).not.toContain("checks, review and QA passed");
   expect(calls.some((c) => c.cmd.includes("merge"))).toBe(false);
 });
+
+test("labels a PR on the project's repo only, creating labels first", async () => {
+  const { calls, executor } = fakeExec(() => ({}));
+  const prs = new GitHubPullRequests({ executor, ghBinary: "/usr/bin/gh" });
+  await prs.label(project(), PR, ["qa:failed"], ["qa:passed"]);
+  expect(calls.map((c) => c.cmd.slice(1, 3).join(" "))).toEqual([
+    "label create",
+    "label create",
+    "pr edit",
+  ]);
+  expect(calls.at(-1)?.cmd).toEqual([
+    "/usr/bin/gh",
+    "pr",
+    "edit",
+    "12",
+    "--repo",
+    "acme/wayline",
+    "--add-label",
+    "qa:failed",
+    "--remove-label",
+    "qa:passed",
+  ]);
+  await expect(
+    prs.label(project(), "https://github.com/evil/repo/pull/1", ["qa:passed"], []),
+  ).rejects.toThrow(/project's repository/);
+  await expect(prs.label(project(), PR, ["--evil"], [])).rejects.toThrow(/invalid PR label/);
+});

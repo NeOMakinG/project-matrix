@@ -36,7 +36,14 @@ test("ticket text can narrow configured surfaces, never add one", () => {
 });
 
 test("manual only with the operator opt-in and no driver for the surface", () => {
-  expect(manualQaPlan(android, { body: "" })).toEqual({ mode: "manual", surfaces: ["android"] });
+  expect(manualQaPlan(android, { body: "" })).toEqual({
+    mode: "manual",
+    surfaces: ["android"],
+    tester: "human",
+  });
+  expect(
+    manualQaPlan({ ...android, qa: { surfaces: ["android"], driver: "agent" } }, { body: "" }),
+  ).toEqual({ mode: "manual", surfaces: ["android"], tester: "agent" });
   expect(manualQaPlan(android, { body: "" }, ["host", "android"])).toEqual({ mode: "auto" });
   const none = testProject({ qa: { surfaces: ["android"] } });
   expect(manualQaPlan(none, { body: "" })).toEqual({ mode: "unavailable", surfaces: ["android"] });

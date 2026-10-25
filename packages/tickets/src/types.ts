@@ -75,6 +75,11 @@ export interface TicketStore {
   ensureScope?(): Promise<void>;
   /** Optional: add one label to the ticket (created on the tracker when missing). */
   addLabel?(id: string, label: string): Promise<void>;
+  /**
+   * Optional: upload a file for embedding in a later comment; returns its https asset URL.
+   * Trackers without uploads leave it undefined (callers then list file names only).
+   */
+  uploadFile?(id: string, name: string, contentType: string, bytes: Uint8Array): Promise<string>;
   /** Optional: remove one label from the ticket; a missing label is a no-op. */
   removeLabel?(id: string, label: string): Promise<void>;
   /**
@@ -101,6 +106,12 @@ export interface TicketComment {
   body: string;
   /** True for comments Matrix itself posted; callers must not feed them back into prompts. */
   byMatrix: boolean;
+  /**
+   * True only when the Matrix identity itself posted it (and it carries the marker). `byMatrix`
+   * also accepts marked legacy comments, so any commenter can forge it; authority decisions (a
+   * prior QA verdict) must use this instead. Absent: the store cannot tell, use `byMatrix`.
+   */
+  authoredByMatrix?: boolean;
   author?: string;
   createdAt?: string;
 }

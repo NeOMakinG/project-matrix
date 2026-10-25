@@ -85,6 +85,40 @@ export class GitHubPullRequests implements PullRequestPort {
     return externalRepo(project) !== undefined;
   }
 
+  /** Adds/removes PR labels (created on the repo when missing). Only labels Matrix owns. */
+  async label(
+    project: PullRequestRequest["project"],
+    url: string,
+    add: string[],
+    remove: string[],
+  ): Promise<void> {
+    if (!this.handles(project)) return;
+    const m = url.match(
+      /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+)\/pull\/(\d{1,9})$/,
+    );
+    if (!m?.[1] || !m[2] || !PR_URL.test(url)) throw new Error("not a GitHub pull request URL");
+    if (m[1].toLowerCase() !== externalRepo(project)?.github?.toLowerCase())
+      throw new Error("pull request is not on the project's repository");
+    const safe = (l: string) => /^[a-z][a-z0-9:-]{0,40}$/.test(l);
+    if (![...add, ...remove].every(safe)) throw new Error("invalid PR label");
+    // gh refuses unknown labels, removals included.
+    for (const l of [...add, ...remove])
+      await this.#gh([
+        "label",
+        "create",
+        l,
+        "--repo",
+        m[1],
+        "--force",
+        "--color",
+        l.endsWith("failed") ? "d73a4a" : "0e8a16",
+      ]);
+    const args = ["pr", "edit", m[2], "--repo", m[1]];
+    for (const l of add) args.push("--add-label", l);
+    for (const l of remove) args.push("--remove-label", l);
+    if (add.length || remove.length) await this.#gh(args);
+  }
+
   /** The recorded PR of a ticket, if Matrix opened one. */
   record(projectId: string, ticketId: string): PullRequestRecord | undefined {
     return this.#records.get(this.#key({ projectId, ticketId }));

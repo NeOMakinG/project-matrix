@@ -9,7 +9,7 @@ test("qa settings are validated, stored and cleared host-side", () => {
   });
   expect(validQaSettings({ surfaces: ["web"], driver: "none" })).toEqual({ surfaces: ["web"] });
   expect(() => validQaSettings({ surfaces: ["watch" as "web"] })).toThrow(/unknown qa surface/);
-  expect(() => validQaSettings({ driver: "auto" as "none" })).toThrow(/none or manual/);
+  expect(() => validQaSettings({ driver: "auto" as "none" })).toThrow(/none, manual or agent/);
 
   const config = {} as StoredProject;
   applyRunSettings(config, { qa: { surfaces: ["android"], driver: "manual" } });

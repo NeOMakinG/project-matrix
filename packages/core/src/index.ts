@@ -1,4 +1,5 @@
 export const name = "@matrix/core";
+export * from "./agent-qa.js";
 export * from "./bus.js";
 export * from "./check-baseline.js";
 export * from "./check-flaky.js";

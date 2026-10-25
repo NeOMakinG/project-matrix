@@ -231,7 +231,7 @@
               },
               "driver": {
                 "type": "string",
-                "enum": ["none", "manual"]
+                "enum": ["none", "manual", "agent"]
               }
             },
             "required": ["driver"]
@@ -381,8 +381,8 @@
               },
               "driver": {
                 "type": "string",
-                "enum": ["none", "manual"],
-                "description": "manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block."
+                "enum": ["none", "manual", "agent"],
+                "description": "manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. agent: the draft PR is tested by the agent QA lane on a device and its verdict drives the ticket (merge stays human). none (default): block."
               }
             },
             "additionalProperties": false
@@ -864,8 +864,8 @@
               },
               "driver": {
                 "type": "string",
-                "enum": ["none", "manual"],
-                "description": "manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. none (default): block."
+                "enum": ["none", "manual", "agent"],
+                "description": "manual: when a configured android/ios surface has no driver on this host, QA hands off to a human (draft PR + checklist, needs-human) instead of blocking. agent: the draft PR is tested by the agent QA lane on a device and its verdict drives the ticket (merge stays human). none (default): block."
               }
             },
             "additionalProperties": false,

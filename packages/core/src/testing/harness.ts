@@ -1,6 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AgentQaPort } from "../agent-qa.js";
 import { type BusEvent, EventBus } from "../bus.js";
 import type { FigmaDesignPort, UiContextPort } from "../design.js";
 import { createDefaultHandlers, type HandlerDeps } from "../handlers.js";
@@ -45,6 +46,7 @@ export interface HarnessOptions {
   gatewayReady?: (model: string) => Promise<string | null>;
   maxRequeuesPerDay?: number;
   pullRequests?: PullRequestPort;
+  agentQa?: AgentQaPort;
   merge?: MergePort;
 }
 
@@ -148,6 +150,7 @@ export function createHarness(opts: HarnessOptions = {}) {
         ? { maxRequeuesPerDay: opts.maxRequeuesPerDay }
         : {}),
       ...(opts.pullRequests ? { pullRequests: opts.pullRequests } : {}),
+      ...(opts.agentQa ? { agentQa: opts.agentQa } : {}),
       leaseMs: opts.leaseMs ?? 600_000,
       heartbeatMs: 3_600_000,
       host: "bosgame",
@@ -185,6 +188,7 @@ export function createHarness(opts: HarnessOptions = {}) {
       for (let i = 0; i < maxTicks; i++) {
         const report = await r.tick();
         await r.idle();
+        await r.agentQaIdle();
         if (report.dispatched.length === 0 && report.replayed.length === 0) {
           const pending = await store.listWorkflows({ status: ["pending"] });
           if (pending.length === 0) return;
