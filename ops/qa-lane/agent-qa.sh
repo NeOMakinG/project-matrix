@@ -111,7 +111,8 @@ case "$step" in
         || { echo "PR head moved: $(git --git-dir "$mirror" rev-parse "refs/matrix/pr-$pr") != $sha"; exit 3; }
       # The QA user checks out and builds in its own working copy (PR code never runs as root).
       as_build bash -c 'set -e; [[ -d "$1/.git" ]] || git init --quiet "$1"; cd "$1"
-        git -c "safe.directory=$2" fetch --quiet --no-tags "file://$2" "$3"
+        git config --global --get-all safe.directory | grep -qxF "$2" || git config --global --add safe.directory "$2"
+        git fetch --quiet --no-tags "file://$2" "$3"
         git checkout --quiet --force --detach "$4"; git clean -qfdx -e node_modules
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
       cd "$work" && as_build ABI="$abi" NODE_ENV=production timeout "$timeout_s" nice bash "$dir/build.sh"
