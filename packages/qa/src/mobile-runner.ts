@@ -39,6 +39,8 @@ export function localRunner(): CommandRunner {
           clearTimeout(timer);
           resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err });
         });
+        // SSH may exit before reading all of stdin: EPIPE must not crash the server.
+        child.stdin.on("error", () => undefined);
         child.stdin.end(options.stdin ?? "");
       }),
   };

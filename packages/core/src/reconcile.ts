@@ -564,8 +564,7 @@ export class Reconciler {
     const prior = applied ?? priorAgentQaVerdict(comments, headSha, qaRun.id);
     if (prior === "PASS" || prior === "FAIL") {
       // The report was posted (e.g. by an earlier process) but its effects may not have landed.
-      this.agentQaVerdicts.set(key, prior);
-      await this.applyAgentQaVerdict(project, w, url, prior);
+      await this.applyAgentQaVerdict(project, w, key, url, prior);
       return;
     }
     const ticket = await tickets.get(w.ticketId).catch(() => null);
@@ -645,12 +644,29 @@ export class Reconciler {
       return;
     // The report comment is the durable record; effects are re-applied from it after a restart.
     await this.trackerWrite(project.id, id, "comment", () => tickets.comment(id, rendered.body));
-    this.agentQaVerdicts.set(key, rendered.verdict);
-    await this.applyAgentQaVerdict(project, now, url, rendered.verdict);
+    await this.applyAgentQaVerdict(project, now, key, url, rendered.verdict);
   }
 
-  /** Labels (ticket + PR) and, on FAIL, the loop back to implement. Idempotent. */
+  /**
+   * Labels (ticket + PR) and, on FAIL, the loop back to implement. Idempotent; the verdict is
+   * recorded as applied only once every effect succeeded, so a later tick retries the rest.
+   */
   private async applyAgentQaVerdict(
+    project: ProjectConfig,
+    now: WorkflowState,
+    key: string,
+    url: string,
+    verdict: AgentQaVerdict,
+  ): Promise<void> {
+    try {
+      await this.applyAgentQaEffects(project, now, url, verdict);
+      this.agentQaVerdicts.set(key, verdict);
+    } catch (error) {
+      this.trackerFailed(project.id, now.ticketId, "agent-qa-verdict", error);
+    }
+  }
+
+  private async applyAgentQaEffects(
     project: ProjectConfig,
     now: WorkflowState,
     url: string,
@@ -658,33 +674,34 @@ export class Reconciler {
   ): Promise<void> {
     const tickets = this.o.tickets(project.id);
     const id = now.ticketId;
-    const prLabel = (add: string[], remove: string[]) =>
-      this.o.pullRequests?.label
-        ? this.trackerWrite(project.id, id, "pr-label", async () =>
-            this.o.pullRequests?.label?.(project, url, add, remove),
-          )
-        : Promise.resolve();
-    const label = (add: string[], remove: string[]) =>
-      this.trackerWrite(project.id, id, "label", async () => {
-        for (const l of add) await tickets.addLabel?.(id, l);
-        for (const l of remove) await tickets.removeLabel?.(id, l);
-      });
+    const prLabel = async (add: string[], remove: string[]) =>
+      this.o.pullRequests?.label?.(project, url, add, remove);
+    const label = async (add: string[], remove: string[]) => {
+      for (const l of add) await tickets.addLabel?.(id, l);
+      for (const l of remove) await tickets.removeLabel?.(id, l);
+    };
     if (verdict === "PASS") {
       await label([QA_PASSED_LABEL], [QA_FAILED_LABEL, NEEDS_HUMAN_LABEL]);
       await prLabel([QA_PASSED_LABEL], [QA_FAILED_LABEL]);
       return;
     }
     if (verdict === "BLOCKED") {
-      await label([NEEDS_HUMAN_LABEL], []);
+      // Recorded even if labelling fails: a BLOCKED head must never re-run on every tick.
+      await this.trackerWrite(project.id, id, "label", () => label([NEEDS_HUMAN_LABEL], []));
       return;
     }
-    await label([QA_FAILED_LABEL], [QA_PASSED_LABEL]);
-    await prLabel([QA_FAILED_LABEL], [QA_PASSED_LABEL]);
+    // The loop back is what matters; labels are best effort after it.
     await this.loopBackFromQa(
       project,
       now,
       "agent QA failed on the draft PR; fix the findings in the agent QA report comment",
       "agent QA failed",
+    );
+    await this.trackerWrite(project.id, id, "label", () =>
+      label([QA_FAILED_LABEL], [QA_PASSED_LABEL]),
+    );
+    await this.trackerWrite(project.id, id, "pr-label", () =>
+      prLabel([QA_FAILED_LABEL], [QA_PASSED_LABEL]),
     );
   }
 

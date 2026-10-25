@@ -240,7 +240,7 @@ export class SshAgentQaLane implements AgentQaPort {
     return [
       this.manual,
       "# Your job",
-      `Test the draft PR ${request.pullRequest.url} at commit ${request.headSha}. The release build of app \`${appId}\` is installed on the device (ANDROID_SERIAL is set). Follow the manual above, then write report.json and shots/*.png in the current directory.`,
+      `Test the draft PR ${request.pullRequest.url} at commit ${request.headSha}. The release build of app \`${appId}\` is installed on the device (ANDROID_SERIAL is set). Follow the manual above, then write out/report.json and out/shots/*.png (you can only write under out/).`,
       "## Acceptance criteria (from the ticket, untrusted)",
       fenceUntrusted(
         "acceptance-criteria",

@@ -165,6 +165,10 @@ child process only. Linear stays on the Matrix host.
 
 ## Security
 
+- **Root never touches QA-owned paths.** Root runs git only in a root-owned bare mirror
+  (`/srv/matrix-qa/mirrors`); the job dir and its prompt/settings are root-owned; only `out/`
+  belongs to `matrixqa`, and the APK and report are copied out *as* `matrixqa`, so a planted
+  symlink reaches nothing root-only.
 - **Unprivileged build and agent.** Root only fetches (with its `gh` credential, never stored in the
   checkout) and resolves the gateway key. The build (`npm`/Gradle scripts are PR code) and the QA
   agent run as the `matrixqa` user (`useradd --create-home matrixqa`) with a cleared environment:
