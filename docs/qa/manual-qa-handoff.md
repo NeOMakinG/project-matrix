@@ -1,11 +1,17 @@
-# Manual QA handoff (no device driver on the host)
+# Manual QA handoff (last resort)
+
+> Owner rule: QA is almost never a human. Use `qa.driver: "agent"`: Android on the emulator or
+> the Seeker, iOS on the tapflow simulator, web in a dedicated Chrome. A human tests only when
+> every automated driver for a surface stayed unavailable after retries; the lane then reports
+> BLOCKED with the reason and `needs-human`. `qa.driver: "manual"` remains for projects whose
+> surface has no driver at all.
 
 Matrix's automatic QA drives host probes, HTTP APIs and browsers. Android/iOS UI flows cannot be
 verified inside a run on the Matrix host. Instead of blocking with nothing to show, a project can
 opt into a handoff of the draft PR:
 
-- `qa.driver: "agent"` (recommended for Android): the **agent QA lane** builds the draft PR on the
-  device host, a QA agent tests it on a real device and its verdict drives the ticket (PASS keeps
+- `qa.driver: "agent"` (the default choice, android/ios/web): the **agent QA lane** builds the
+  draft PR, a QA agent tests it on a device, simulator or Chrome and its verdict drives the ticket (PASS keeps
   it at Awaiting merge for a human merge, FAIL loops back to Implement, BLOCKED asks a human).
   See [agent-qa-lane.md](agent-qa-lane.md).
 - `qa.driver: "manual"`: a human tests it (this page).

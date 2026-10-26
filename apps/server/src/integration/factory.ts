@@ -21,7 +21,7 @@ import { fileProposals, runWatch, SeenStore } from "@matrix/watch";
 import { OrcaWorkspace } from "@matrix/workspace";
 import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
-import { loadLaneConfig, SshAgentQaLane } from "./agent-qa-lane.js";
+import { createSurfaceLanes } from "./agent-qa-surfaces.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
 import { repoKnowledge } from "./knowledge.js";
 import type { StoredProject } from "./mapping.js";
@@ -220,11 +220,7 @@ async function createOwnedFactory(
   const agentQa =
     options.agentQa ??
     (options.agentQaLaneConfig
-      ? new SshAgentQaLane(loadLaneConfig(options.agentQaLaneConfig), {
-          // One server per host: a restarted server owns (and releases) its predecessor's lock.
-          holder: `matrix-server@${hostname()}`,
-          reclaimOnStart: true,
-        })
+      ? createSurfaceLanes(options.agentQaLaneConfig, `matrix-server@${hostname()}`)
       : undefined);
   const handlers = {
     ...createDefaultHandlers({

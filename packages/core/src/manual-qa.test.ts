@@ -28,7 +28,8 @@ test("ticket text can narrow configured surfaces, never add one", () => {
   // Naming no configured surface cannot escape device QA.
   expect(requiredDeviceSurfaces(both, { body: "QA: Surface: web" })).toEqual(["android", "ios"]);
   const mixed = testProject({ qa: { surfaces: ["android", "web"], driver: "manual" } });
-  expect(requiredDeviceSurfaces(mixed, { body: "QA: Surface: web" })).toEqual([]);
+  // Naming only a non-lane surface cannot escape device QA either (only a backend-only diff can).
+  expect(requiredDeviceSurfaces(mixed, { body: "QA: Surface: web" })).toEqual(["android"]);
   // No project config: a ticket claiming android cannot opt into anything.
   expect(requiredDeviceSurfaces(testProject(), { body: "QA: Surface: android" })).toEqual([]);
   const manualOnlyWeb = testProject({ qa: { surfaces: ["web"], driver: "manual" } });

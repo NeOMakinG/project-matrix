@@ -81,6 +81,8 @@ export interface AgentQaDevice {
   serial: string;
   model?: string;
   android?: string;
+  /** Any other OS/runtime line ("iOS 18.2", "Chrome 141, 1280x800"); shown instead of Android. */
+  os?: string;
 }
 
 export interface AgentQaBuild {
@@ -104,6 +106,8 @@ export type AgentQaOutcome =
       device: AgentQaDevice;
       build: AgentQaBuild;
       durationMs: number;
+      /** Lane-collected evidence lines (console errors, failed requests), untrusted text. */
+      evidence?: string[];
     }
   | { kind: "blocked"; reason: string; device?: AgentQaDevice; build?: AgentQaBuild };
 
@@ -423,7 +427,7 @@ export function renderAgentQaReport(
     ? `[draft PR](${ctx.pullRequestUrl})`
     : "draft PR";
   const device = outcome.device
-    ? `${md(outcome.device.model ?? outcome.device.serial, 80)}${outcome.device.android ? `, Android ${md(outcome.device.android, 20)}` : ""}`
+    ? `${md(outcome.device.model ?? outcome.device.serial, 160)}${outcome.device.os ? `, ${md(outcome.device.os, 80)}` : outcome.device.android ? `, Android ${md(outcome.device.android, 20)}` : ""}`
     : "n/a";
   const build = outcome.build
     ? `${md(outcome.build.appId, 80)}${outcome.build.version ? ` ${md(outcome.build.version, 40)}` : ""} (${md(outcome.build.kind, 30)}${outcome.build.abi ? `, ${md(outcome.build.abi, 20)}` : ""})`
@@ -506,6 +510,15 @@ export function renderAgentQaReport(
           const id = ctx.filed?.get(i);
           return `${finding(f)} Cause: ${f.cause === "environment" ? "environment" : "pre-existing"}; check: ${md(f.causeCheck, 300)}.${id ? ` Filed as ${md(id, 40)}.` : ""}`;
         })
+        .join("\n"),
+    );
+  }
+  if (outcome.evidence?.length) {
+    lines.push("### Lane evidence");
+    lines.push(
+      outcome.evidence
+        .slice(0, 30)
+        .map((e) => `- ${md(e, 300)}`)
         .join("\n"),
     );
   }

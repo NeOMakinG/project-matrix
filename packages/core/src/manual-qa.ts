@@ -1,4 +1,5 @@
 import type { Receipt } from "./ports.js";
+import { laneSurfaceSet, routeQaSurfaces } from "./qa-surfaces.js";
 import type { ProjectConfig, QaSurface } from "./types.js";
 
 /** Surfaces only a device/simulator driver can exercise (host probes cannot). */
@@ -24,17 +25,17 @@ export function ticketSurfaces(body: string): QaSurface[] {
   return [...out];
 }
 
-/** Device surfaces the ticket needs: project config surfaces, narrowed by the ticket's line. */
+/**
+ * Lane surfaces the ticket needs (android/ios, plus web with the agent driver): project config,
+ * narrowed by the ticket's labels and `QA: Surface:` line, then by the change's paths
+ * (`qa-surfaces.ts`). Ticket text never escapes lane QA on its own; a backend-only diff does.
+ */
 export function requiredDeviceSurfaces(
   project: ProjectConfig,
-  ticket: { body: string },
+  ticket: { body: string; labels?: readonly string[] },
+  changedPaths?: readonly string[],
 ): QaSurface[] {
-  const configured = (project.qa?.surfaces ?? []).filter((s) => UI_DEVICE_SURFACES.has(s));
-  if (!configured.length) return [];
-  // A declaration narrows among the configured surfaces; one naming none of them (or nothing)
-  // leaves the project's device surfaces: ticket text never escapes device QA on its own.
-  const declared = ticketSurfaces(ticket.body).filter((s) => project.qa?.surfaces?.includes(s));
-  return declared.length ? configured.filter((s) => declared.includes(s)) : configured;
+  return routeQaSurfaces(project, ticket, changedPaths, ticketSurfaces(ticket.body)).surfaces;
 }
 
 /** Who tests a handed-off draft PR: a human, or the agent QA lane (`qa.driver: "agent"`). */
@@ -58,11 +59,14 @@ export type ManualQaPlan =
  */
 export function manualQaPlan(
   project: ProjectConfig,
-  ticket: { body: string },
+  ticket: { body: string; labels?: readonly string[] },
   driverSurfaces: readonly QaSurface[] = [],
+  changedPaths?: readonly string[],
 ): ManualQaPlan {
-  const missing = requiredDeviceSurfaces(project, ticket).filter(
-    (s) => !driverSurfaces.includes(s),
+  // Web goes to the agent lane's Chrome even when an in-run web probe exists (owner rule).
+  const agent = handoffTester(project) === "agent";
+  const missing = requiredDeviceSurfaces(project, ticket, changedPaths).filter(
+    (s) => (agent && s === "web") || !driverSurfaces.includes(s),
   );
   if (!missing.length) return { mode: "auto" };
   const tester = handoffTester(project);
@@ -152,7 +156,8 @@ export function manualQaStillAllowed(project: ProjectConfig, data: ManualQaData)
   const was = data.tester ?? "human";
   const kept = tester === was || (tester === "agent" && was === "human");
   if (!kept || !data.surfaces.length) return false;
-  return data.surfaces.every((s) => UI_DEVICE_SURFACES.has(s) && project.qa?.surfaces?.includes(s));
+  const lane = laneSurfaceSet(project);
+  return data.surfaces.every((s) => lane.has(s) && project.qa?.surfaces?.includes(s));
 }
 
 const SURFACE_NAMES: Record<QaSurface, string> = {
