@@ -23,7 +23,13 @@ const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
   body: "## Summary\n\nFix\n\n## Root cause\n\nThe strip re-keyed every tile on selection, so `StoryPhotoTile` remounted and dropped its image; DaySheetScreen.strip.test.tsx fails before the fix.\n",
   files: [
     { path: "app/src/screens/DaySheetScreen.tsx", status: "modified", additions: 2 },
-    { path: "app/src/screens/DaySheetScreen.strip.test.tsx", status: "added", additions: 228 },
+    {
+      path: "app/src/screens/DaySheetScreen.strip.test.tsx",
+      status: "added",
+      additions: 228,
+      patch:
+        '@@ -0,0 +1,3 @@\n+test("tapping keeps thumbnails", () => {\n+  expect(tiles()).toHaveLength(8);\n+});',
+    },
   ],
   checks: [
     { name: "test", state: "success" },
@@ -231,7 +237,7 @@ test("a compound criterion goes to both sides; a test edit without a new case is
         path: "e2e/flows/strip.test.ts",
         status: "added",
         additions: 30,
-        patch: '+test("strip", () => {});',
+        patch: '+test("strip", () => { expect(1).toBe(1); });',
       },
     ],
   });
@@ -259,4 +265,34 @@ test("both halves of a compound criterion must hold, and a P1 is never excused a
     ],
   });
   expect(effectiveVerdict(crash, 6, shots, passCode).verdict).toBe("FAIL");
+});
+
+test("every part of a criterion must hold; placeholders, uncited tests and deploy-only CI do not pass", () => {
+  const both = ["Regression test added and typecheck/lint pass"];
+  expect(
+    verifyCodeCriteria(
+      both,
+      [1],
+      facts({ checks: [{ name: "lint", state: "failure" }] }),
+      HEAD,
+      ok,
+    )[0]?.status,
+  ).toBe("fail");
+  const placeholder = facts({
+    files: [
+      { path: "app/src/screens/DaySheetScreen.tsx", status: "modified", additions: 2 },
+      {
+        path: "app/src/screens/DaySheetScreen.test.tsx",
+        status: "modified",
+        additions: 1,
+        patch: '+test("placeholder", () => {});',
+      },
+    ],
+  });
+  expect(verifyCodeCriteria(NEO8, [5], placeholder, HEAD, ok)[0]?.status).toBe("fail");
+  expect(verifyCodeCriteria(NEO8, [5], facts({ body: "Fixed it." }), HEAD, ok)[0]?.status).toBe(
+    "unverified",
+  );
+  const deployOnly = facts({ checks: [{ name: "deploy/netlify", state: "success" }] });
+  expect(verifyCodeCriteria(NEO8, [6], deployOnly, HEAD)[0]?.status).toBe("unverified");
 });

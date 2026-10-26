@@ -442,10 +442,15 @@ test("code/CI criteria are verified on GitHub; the agent gets the device ones; p
       return {
         // The harness's git port reports this head for every workdir.
         headSha: "a".repeat(40),
-        body: "## Root cause\n\nnone needed",
+        body: "## Root cause\n\nexport.test.ts fails before the fix",
         files: [
           { path: "src/export.ts", status: "modified", additions: 3 },
-          { path: "src/export.test.ts", status: "modified", additions: 20 },
+          {
+            path: "src/export.test.ts",
+            status: "modified",
+            additions: 20,
+            patch: '+test("export opens the sheet", () => {\n+  expect(open()).toBe(true);\n+});',
+          },
         ],
         checks: [{ name: "ci", state: "success" }],
         baseFailing: [],

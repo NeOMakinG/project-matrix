@@ -15,12 +15,20 @@ const TEST =
 const CI =
   /\btype-?check(s|ing)?\b|\btsc\b|\blint(s|ing|er)?\b|\b(existing|all|unit) tests (still )?pass\b|\btests? (still )?pass(es)?\b|\btest suite\b|\bci\b|\bchecks? (are )?(green|pass(es)?)\b|\bbuild (still )?(passes|succeeds)\b/i;
 
-/** Which code/CI fact a criterion asks about, or undefined for a device criterion. */
+/** Every code/CI fact a criterion asks about (empty for a device criterion). */
+export function codeCriterionKinds(text: string): CodeCriterionKind[] {
+  return [
+    ...(ROOT_CAUSE.test(text) ? (["root-cause"] as const) : []),
+    // "root cause ... with proof (log, trace or failing test)": the test is one kind of proof,
+    // checked by the root-cause rule, not a separate requirement.
+    ...(TEST.test(text) && !ROOT_CAUSE.test(text) ? (["test"] as const) : []),
+    ...(CI.test(text) ? (["ci"] as const) : []),
+  ];
+}
+
+/** The first code/CI fact a criterion asks about, or undefined for a device criterion. */
 export function codeCriterionKind(text: string): CodeCriterionKind | undefined {
-  if (ROOT_CAUSE.test(text)) return "root-cause";
-  if (TEST.test(text)) return "test";
-  if (CI.test(text)) return "ci";
-  return undefined;
+  return codeCriterionKinds(text)[0];
 }
 
 /** Words for something a person does or sees on the device. */
@@ -97,14 +105,37 @@ function rootCause(facts: PullRequestFacts): [CodeCriterionStatus, string] {
 const NEW_CASE =
   /^\+(?!\+\+)\s*(?:(?:it|test|describe)(?:\.\w+)?\s*\(|(?:async\s+)?def test_\w*|func Test\w*|#\[(?:tokio::)?test\]|@Test\b|func test\w*)/m;
 
-function regressionTest(facts: PullRequestFacts): [CodeCriterionStatus, string] {
+/** The added lines of a unified diff. */
+const added = (patch: string) =>
+  patch
+    .split("\n")
+    .filter((l) => l.startsWith("+") && !l.startsWith("+++"))
+    .join("\n");
+
+const ASSERTION = /\b(expect|assert\w*|should|XCTAssert\w*|require\.\w+|t\.(Error|Fatal)\w*)\b/;
+
+/**
+ * PASS needs evidence for each half of "fails before, passes after": an added test case with an
+ * assertion next to the changed code, the PR description naming that test as the proof (the
+ * author's claim it failed before), and green tests on the head (it passes after). Anything the
+ * evidence cannot establish is unverified (a human looks), never a silent pass.
+ */
+function regressionTest(
+  facts: PullRequestFacts,
+  matrixChecks?: { ok: boolean; summary: string },
+): [CodeCriterionStatus, string] {
   const tests = facts.files.filter(
     (f) => TEST_FILE.test(f.path) && f.status !== "removed" && f.additions > 0,
   );
   if (!tests.length) return ["fail", "the diff adds or changes no test file"];
-  // A comment or an edit to an old case is not a regression test: an added test case is.
-  const withCase = tests.filter((t) => t.patch === undefined || NEW_CASE.test(t.patch));
-  if (!withCase.length) return ["fail", "the diff touches test files but adds no new test case"];
+  // A comment, a placeholder or an edit to an old case is not a regression test.
+  const withCase = tests.filter(
+    (t) => t.patch !== undefined && NEW_CASE.test(t.patch) && ASSERTION.test(added(t.patch)),
+  );
+  if (!withCase.length)
+    return tests.some((t) => t.patch === undefined)
+      ? ["unverified", "GitHub shows no diff for the changed test files (too large or binary)"]
+      : ["fail", "the diff touches test files but adds no test case with an assertion"];
   const sources = facts.files.filter((f) => !TEST_FILE.test(f.path) && /\.[a-z]+$/i.test(f.path));
   const targeted = withCase.filter((t) =>
     sources.some((s) => {
@@ -125,12 +156,24 @@ function regressionTest(facts: PullRequestFacts): [CodeCriterionStatus, string] 
         .slice(0, 3)
         .join(", ")}) but none sits next to or is named after a changed source file`,
     ];
+  const names = targeted.map((t) => t.path).slice(0, 3);
+  const body = facts.body.toLowerCase();
+  const cited = targeted.some((t) => {
+    const file = (t.path.split("/").pop() ?? "").toLowerCase();
+    return body.includes(file) || body.includes(file.split(".")[0] ?? file);
+  });
+  if (!cited)
+    return [
+      "unverified",
+      `the diff adds test cases in ${names.join(", ")}, but the PR description does not name them as the proof that fails before the fix`,
+    ];
+  const green =
+    matrixChecks?.ok ||
+    facts.checks.some((c) => c.state === "success" && /\b(test|tests|ci|check)\b/i.test(c.name));
+  if (!green) return ["unverified", `no passing test run on the head for ${names.join(", ")}`];
   return [
     "pass",
-    `the diff adds test cases in ${targeted
-      .map((t) => t.path)
-      .slice(0, 3)
-      .join(", ")}, next to the changed code (that they fail before the fix is not checked)`,
+    `the diff adds test cases in ${names.join(", ")} next to the changed code, the PR description cites them and tests pass on the head`,
   ];
 }
 
@@ -166,8 +209,13 @@ function ci(
         .slice(0, 5)
         .join(", ")}`,
     ];
-  if (!matrixChecks && !facts.checks.length)
-    return ["unverified", "no CI result for the head commit"];
+  // Something must actually have run the checks: Matrix's checks phase, or a GitHub check that
+  // looks like lint/typecheck/tests/build (a deploy preview alone proves nothing).
+  const covering = facts.checks.filter(
+    (c) => c.state === "success" && /lint|type|tsc|test|\bci\b|build|check/i.test(c.name),
+  );
+  if (!matrixChecks?.ok && !covering.length)
+    return ["unverified", "no lint, typecheck or test run is reported for the head commit"];
   return [
     "pass",
     `${matrixChecks ? `Matrix checks: ${matrixChecks.summary}` : "GitHub checks pass"}${facts.checks.length ? `; ${facts.checks.length - preexisting.length} GitHub check(s) ok` : ""}${notes}`,
@@ -184,7 +232,7 @@ export function verifyCodeCriteria(
   unavailable = "GitHub facts for the PR were not available",
 ): CodeCriterionResult[] {
   return numbers.map((criterion) => {
-    const kind = codeCriterionKind(criteria[criterion - 1] ?? "");
+    const kinds = codeCriterionKinds(criteria[criterion - 1] ?? "");
     if (!facts) return { criterion, status: "unverified", detail: unavailable };
     if (facts.headSha !== headSha)
       return {
@@ -192,12 +240,19 @@ export function verifyCodeCriteria(
         status: "unverified",
         detail: `GitHub reports head ${facts.headSha.slice(0, 12)}, QA ran on ${headSha.slice(0, 12)}`,
       };
-    const [status, detail] =
+    // Every part the criterion names must hold: the worst part decides.
+    const parts = (kinds.length ? kinds : (["ci"] as const)).map((kind) =>
       kind === "root-cause"
         ? rootCause(facts)
         : kind === "test"
-          ? regressionTest(facts)
-          : ci(facts, matrixChecks);
-    return { criterion, status, detail };
+          ? regressionTest(facts, matrixChecks)
+          : ci(facts, matrixChecks),
+    );
+    const status: CodeCriterionStatus = parts.some(([s]) => s === "fail")
+      ? "fail"
+      : parts.some(([s]) => s === "unverified")
+        ? "unverified"
+        : "pass";
+    return { criterion, status, detail: parts.map(([, d]) => d).join("; ") };
   });
 }
