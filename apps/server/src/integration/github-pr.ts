@@ -165,11 +165,17 @@ export class GitHubPullRequests implements PullRequestPort {
       ) as { context?: string; state?: string }[][]
     ).flat();
     const out = new Map<string, PullRequestFacts["checks"][number]["state"]>();
+    // Same name from several apps, or a run and a status: the worst result stands.
+    const rank = { failure: 3, pending: 2, neutral: 1, success: 0 } as const;
+    const keep = (name: string, state: PullRequestFacts["checks"][number]["state"]) => {
+      const was = out.get(name);
+      if (!was || rank[state] > rank[was]) out.set(name, state);
+    };
     for (const r of runs) {
       const name = String(r.name ?? "");
-      if (!name || out.has(name)) continue;
+      if (!name) continue;
       const c = r.conclusion ?? "";
-      out.set(
+      keep(
         name,
         r.status !== "completed"
           ? "pending"
@@ -180,14 +186,13 @@ export class GitHubPullRequests implements PullRequestPort {
               : "failure",
       );
     }
-    // Statuses come newest first: the first one per context is its current state.
+    // Statuses come newest first: only the first one per context is its current state.
+    const seen = new Set<string>();
     for (const s of statuses) {
       const name = String(s.context ?? "");
-      if (!name || out.has(name)) continue;
-      out.set(
-        name,
-        s.state === "success" ? "success" : s.state === "pending" ? "pending" : "failure",
-      );
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      keep(name, s.state === "success" ? "success" : s.state === "pending" ? "pending" : "failure");
     }
     return [...out].map(([name, state]) => ({ name, state }));
   }

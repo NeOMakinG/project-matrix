@@ -21,7 +21,9 @@ export function codeCriterionKinds(text: string): CodeCriterionKind[] {
     ...(ROOT_CAUSE.test(text) ? (["root-cause"] as const) : []),
     // "root cause ... with proof (log, trace or failing test)": the test is one kind of proof,
     // checked by the root-cause rule, not a separate requirement.
-    ...(TEST.test(text) && !ROOT_CAUSE.test(text) ? (["test"] as const) : []),
+    ...(TEST.test(ROOT_CAUSE.test(text) ? text.replace(/\([^)]*\)/g, "") : text)
+      ? (["test"] as const)
+      : []),
     ...(CI.test(text) ? (["ci"] as const) : []),
   ];
 }
@@ -160,16 +162,20 @@ function regressionTest(
   const body = facts.body.toLowerCase();
   const cited = targeted.some((t) => {
     const file = (t.path.split("/").pop() ?? "").toLowerCase();
-    return body.includes(file) || body.includes(file.split(".")[0] ?? file);
+    const base = file.split(".")[0] ?? file;
+    return body.includes(file) || (base.length > 8 && body.includes(base));
   });
   if (!cited)
     return [
       "unverified",
       `the diff adds test cases in ${names.join(", ")}, but the PR description does not name them as the proof that fails before the fix`,
     ];
-  const green =
-    matrixChecks?.ok ||
-    facts.checks.some((c) => c.state === "success" && /\b(test|tests|ci|check)\b/i.test(c.name));
+  const testRuns = facts.checks.filter((c) => /\b(test|tests|ci)\b/i.test(c.name));
+  if (testRuns.some((c) => c.state === "failure" && !facts.baseFailing.includes(c.name)))
+    return ["fail", "a test run fails on the head"];
+  if (testRuns.some((c) => c.state === "pending"))
+    return ["unverified", "test runs are still going on the head"];
+  const green = matrixChecks?.ok || testRuns.some((c) => c.state === "success");
   if (!green) return ["unverified", `no passing test run on the head for ${names.join(", ")}`];
   return [
     "pass",

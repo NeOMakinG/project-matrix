@@ -296,3 +296,13 @@ test("every part of a criterion must hold; placeholders, uncited tests and deplo
   const deployOnly = facts({ checks: [{ name: "deploy/netlify", state: "success" }] });
   expect(verifyCodeCriteria(NEO8, [6], deployOnly, HEAD)[0]?.status).toBe("unverified");
 });
+
+test("a root cause criterion that also asks for a regression test checks both", () => {
+  const c = ["Document the root cause in the PR description and add a regression test"];
+  const noTest = facts({
+    files: [{ path: "app/src/screens/DaySheetScreen.tsx", status: "modified", additions: 2 }],
+  });
+  expect(verifyCodeCriteria(c, [1], noTest, HEAD, ok)[0]?.status).toBe("fail");
+  // The test named only as an example of proof is not an extra requirement.
+  expect(verifyCodeCriteria(NEO8, [1], noTest, HEAD, ok)[0]?.status).toBe("pass");
+});
