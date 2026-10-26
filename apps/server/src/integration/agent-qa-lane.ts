@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,22 @@ import { z } from "zod";
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(here, "..", "..", "..", "..");
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** Base64 per ssh argument: one remote command line must stay under Linux's 128 KiB per argument. */
+const CHUNK = 96_000;
+const FIXTURE = /^[a-z][a-z0-9._-]{0,37}$/;
+
+/** A fixture set's files (`ops/qa-lane/fixtures/<set>/`), name-sorted; names the remote script accepts. */
+export function loadFixtures(root: string, set: string): { name: string; bytes: Buffer }[] {
+  const dir = join(root, set);
+  const names = readdirSync(dir)
+    .filter((n) => !n.startsWith("."))
+    .sort();
+  if (names.length === 0) throw new Error(`fixture set ${set} is empty`);
+  return names.map((name) => {
+    if (!FIXTURE.test(name)) throw new Error(`fixture name not allowed: ${name}`);
+    return { name, bytes: readFileSync(join(dir, name)) };
+  });
+}
 
 const projectSchema = z.object({
   repo: z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/),
@@ -27,6 +43,21 @@ const projectSchema = z.object({
     .refine((p) => !p.includes("..") && !p.startsWith("/")),
   appId: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/),
   abi: z.enum(["arm64-v8a", "x86_64", "armeabi-v7a", "x86"]).default("arm64-v8a"),
+  /**
+   * Test data put on the device before every run (idempotent): the files of
+   * `ops/qa-lane/fixtures/<set>/` land in `deviceDir`, and `note` tells the QA agent what they are.
+   */
+  fixtures: z
+    .object({
+      set: z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/),
+      deviceDir: z
+        .string()
+        .regex(/^\/sdcard\/[A-Za-z0-9._/-]{1,100}$/)
+        .refine((p) => !p.includes(".."))
+        .default("/sdcard/DCIM/Camera"),
+      note: z.string().min(1).max(2_000),
+    })
+    .optional(),
 });
 
 export const laneConfigSchema = z.object({
@@ -82,6 +113,7 @@ export class SshAgentQaLane implements AgentQaPort {
   #queue: Promise<unknown> = Promise.resolve();
   readonly #runner: CommandRunner;
   readonly #script: string;
+  readonly #fixturesRoot: string;
 
   /** Names this lane's locks on the device host; a restarted holder reclaims its own stale lock. */
   readonly holder: string;
@@ -96,10 +128,13 @@ export class SshAgentQaLane implements AgentQaPort {
       holder?: string;
       /** Release a lock left by a dead predecessor with the same holder before the first job. */
       reclaimOnStart?: boolean;
+      /** Where fixture sets live (default `ops/qa-lane/fixtures`). */
+      fixturesRoot?: string;
     } = {},
   ) {
     this.#runner = options.runner ?? sshRunner(config.host, localRunner());
     this.holder = laneHolder(options.holder ?? `${hostname()}-${process.pid}`);
+    this.#fixturesRoot = options.fixturesRoot ?? join(REPO_ROOT, "ops", "qa-lane", "fixtures");
     this.#script =
       options.script ?? readFileSync(join(REPO_ROOT, "ops", "qa-lane", "agent-qa.sh"), "utf8");
     this.manual =
@@ -224,8 +259,14 @@ export class SshAgentQaLane implements AgentQaPort {
         await this.#step(["install", job, c.serial, project.apk, project.appId], 10 * 60_000, sig)
       ).trim();
       if (/^[\w.+-]{1,40}$/.test(version)) build.version = version;
+      if (project.fixtures) await this.#seed(job, project.fixtures, sig);
       await this.#step(
-        ["write", job, "prompt.md", b64(this.prompt(request, project.appId))],
+        [
+          "write",
+          job,
+          "prompt.md",
+          b64(this.prompt(request, project.appId, project.fixtures?.note)),
+        ],
         60_000,
         sig,
       );
@@ -272,12 +313,36 @@ export class SshAgentQaLane implements AgentQaPort {
     }
   }
 
+  /** Copies the project's fixture set into the job, then onto the device (unchanged files skipped). */
+  async #seed(
+    job: string,
+    fixtures: NonNullable<LaneConfig["projects"][string]["fixtures"]>,
+    sig: AbortSignal,
+  ): Promise<void> {
+    for (const { name, bytes } of loadFixtures(this.#fixturesRoot, fixtures.set)) {
+      const data = bytes.toString("base64");
+      for (let at = 0; at < data.length || at === 0; at += CHUNK)
+        await this.#step(
+          [at === 0 ? "write" : "append", job, `fx-${name}`, data.slice(at, at + CHUNK)],
+          60_000,
+          sig,
+        );
+    }
+    const out = await this.#step(
+      ["seed", job, this.config.serial, fixtures.deviceDir],
+      10 * 60_000,
+      sig,
+    );
+    console.error(`[agent-qa-lane] ${fixtures.set}: ${out.trim().slice(0, 120)}`);
+  }
+
   /** The QA agent's prompt: the manual, then the ticket and PR as fenced untrusted data. */
-  prompt(request: AgentQaRequest, appId: string): string {
+  prompt(request: AgentQaRequest, appId: string, testData?: string): string {
     return [
       this.manual,
       "# Your job",
       `Test the draft PR ${request.pullRequest.url} at commit ${request.headSha}. The release build of app \`${appId}\` is installed on the device (ANDROID_SERIAL is set). Follow the manual above, then write out/report.json and out/shots/*.png (you can only write under out/).`,
+      ...(testData ? ["## Test data on the device (from the lane operator)", testData] : []),
       "## Acceptance criteria (from the ticket, untrusted)",
       fenceUntrusted(
         "acceptance-criteria",

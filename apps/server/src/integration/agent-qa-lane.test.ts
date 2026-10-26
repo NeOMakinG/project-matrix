@@ -1,7 +1,13 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AgentQaRequest, ProjectConfig } from "@matrix/core";
 import type { CommandRunner } from "@matrix/qa";
 import { expect, test } from "vitest";
-import { laneConfigSchema, SshAgentQaLane } from "./agent-qa-lane.js";
+import { laneConfigSchema, loadFixtures, SshAgentQaLane } from "./agent-qa-lane.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const SHA = "b".repeat(40);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1]);
@@ -195,4 +201,107 @@ test("without reclaimOnStart nothing is reclaimed; holders are sanitized", async
   await lane.run(request());
   expect(f.steps.map((s) => s[0])).not.toContain("reclaim");
   expect(lane.holder).toMatch(/^[A-Za-z0-9._@-]{1,64}$/);
+});
+
+function fixtureRoot(files: Record<string, Buffer>): string {
+  const root = mkdtempSync(join(tmpdir(), "mx-fx-"));
+  mkdirSync(join(root, "faceless-trip"));
+  for (const [name, bytes] of Object.entries(files))
+    writeFileSync(join(root, "faceless-trip", name), bytes);
+  return root;
+}
+
+test("seeds the project's fixtures after install, chunked, and tells the agent about them", async () => {
+  const big = Buffer.alloc(150_000, 7); // 200 kB of base64: one write and two appends
+  const root = fixtureRoot({ "a_qa.jpg": Buffer.from("tiny"), "b_qa.jpg": big });
+  const withFixtures = laneConfigSchema.parse({
+    ...config,
+    projects: {
+      tj: {
+        ...config.projects.tj,
+        fixtures: {
+          set: "faceless-trip",
+          note: "A trip dated 14 - 16 February 2025 has 20 photos without faces.",
+        },
+      },
+    },
+  });
+  const f = fake();
+  const lane = new SshAgentQaLane(withFixtures, {
+    runner: f.runner,
+    script: "SCRIPT",
+    manual: "M",
+    fixturesRoot: root,
+  });
+  const out = await lane.run(request());
+  expect(out.kind).toBe("report");
+  const names = f.steps.map((s) => `${s[0]}${s[2]?.startsWith("fx-") ? `:${s[2]}` : ""}`);
+  expect(names.slice(names.indexOf("install"), names.indexOf("agent"))).toEqual([
+    "install",
+    "write:fx-a_qa.jpg",
+    "write:fx-b_qa.jpg",
+    "append:fx-b_qa.jpg",
+    "append:fx-b_qa.jpg",
+    "seed",
+    "write",
+  ]);
+  const b = f.steps.filter((s) => s[2] === "fx-b_qa.jpg").map((s) => s[3] ?? "");
+  expect(Buffer.from(b.join(""), "base64").equals(big)).toBe(true);
+  expect(b.every((chunk) => chunk.length <= 96_000)).toBe(true);
+  expect(f.steps.find((s) => s[0] === "seed")?.slice(2)).toEqual([
+    "SM02E4072815934",
+    "/sdcard/DCIM/Camera",
+  ]);
+  expect(f.prompt()).toMatch(
+    /## Test data on the device[^\n]*\n\nA trip dated 14 - 16 February 2025/,
+  );
+});
+
+test("a missing or unsafe fixture set is BLOCKED before the agent runs", async () => {
+  for (const files of [
+    {},
+    { "bad name.jpg": Buffer.from("x") },
+    { "UPPER.jpg": Buffer.from("x") },
+  ]) {
+    const root = mkdtempSync(join(tmpdir(), "mx-fx-"));
+    mkdirSync(join(root, "faceless-trip"));
+    for (const [name, bytes] of Object.entries(files))
+      if (!name.includes("/")) writeFileSync(join(root, "faceless-trip", name), bytes);
+    const cfg = laneConfigSchema.parse({
+      ...config,
+      projects: { tj: { ...config.projects.tj, fixtures: { set: "faceless-trip", note: "n" } } },
+    });
+    const f = fake();
+    const lane = new SshAgentQaLane(cfg, {
+      runner: f.runner,
+      script: "SCRIPT",
+      manual: "M",
+      fixturesRoot: root,
+    });
+    const out = await lane.run(request());
+    expect(out.kind).toBe("blocked");
+    expect(f.steps.map((s) => s[0])).not.toContain("agent");
+    expect(f.steps.map((s) => s[0])).toContain("unlock");
+  }
+  expect(() =>
+    laneConfigSchema.parse({
+      ...config,
+      projects: {
+        tj: {
+          ...config.projects.tj,
+          fixtures: { set: "x", deviceDir: "/sdcard/../data", note: "n" },
+        },
+      },
+    }),
+  ).toThrow();
+});
+
+test("the committed fixture set loads with names the device host accepts", () => {
+  const files = loadFixtures(
+    join(__dirname, "..", "..", "..", "..", "ops", "qa-lane", "fixtures"),
+    "faceless-trip",
+  );
+  expect(files.length).toBeGreaterThanOrEqual(10);
+  for (const f of files)
+    expect(f.bytes.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]))).toBe(true);
 });

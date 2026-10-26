@@ -2,6 +2,8 @@
 # Matrix agent QA lane, device-host side. Streamed by the Matrix host: `ssh host bash -s -- <step> ...`.
 # Every argument is validated by the caller AND here. Exit codes: 10 host overloaded, 11 device
 # unavailable, 12 lane busy, 20 build failed, 21 install failed, 30 agent failed, 2 bad arguments.
+# A device that drops offline (install, seeding, before launch) is reconnected or, for an emulator
+# this host boots, restarted once before the step gives up with 11.
 set -euo pipefail
 
 # Two unprivileged users: PR build code runs as BUILD_USER, the QA agent (which holds the gateway
@@ -28,6 +30,27 @@ as_user() { local u="$1"; shift; /usr/sbin/runuser -u "$u" -- mkdir -p "/home/$u
   ANDROID_HOME="$ANDROID_HOME" ANDROID_SDK_ROOT="$ANDROID_HOME" LANG=C.UTF-8 "$@"; }
 as_qa() { as_user "$QA_USER" "$@"; }
 as_build() { as_user "$BUILD_USER" "$@"; }
+online() { [[ "$(adb -s "$1" get-state 2>/dev/null || true)" == device ]]; }
+booted() { [[ "$(adb -s "$1" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == 1 ]]; }
+# Brings an offline device back once: reconnect, then (an emulator this host boots) a restart.
+# A device that went offline mid-job otherwise blocks the run on an adb hiccup, not the app.
+revive() {
+  local serial="$1"
+  adb reconnect offline >/dev/null 2>&1 || true
+  adb -s "$serial" reconnect >/dev/null 2>&1 || true
+  for _ in $(seq 1 15); do online "$serial" && booted "$serial" && return 0; sleep 2; done
+  [[ "$serial" == emulator-* && -x /root/boot-emulator.sh ]] || return 1
+  echo "restarting $serial" >&2
+  adb -s "$serial" emu kill >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do online "$serial" || break; sleep 1; done
+  /root/boot-emulator.sh >/dev/null
+  timeout 180 adb -s "$serial" wait-for-device >/dev/null 2>&1 || true
+  for _ in $(seq 1 90); do booted "$serial" && return 0; sleep 2; done
+  return 1
+}
+ensure_device() { online "$1" && return 0; echo "$1 offline, reviving" >&2; revive "$1"; }
+# adb's own words for "the device went away", as opposed to an APK the device refused.
+lost_device() { grep -qiE "device .*(offline|not found)|no devices/emulators|device offline|closed|protocol fault|connection reset" "$1"; }
 
 step="${1:-}"; shift || true
 case "$step" in
@@ -120,6 +143,40 @@ case "$step" in
     [[ -d "$dir" && ! -L "$dir" && "$(stat -c %U "$dir")" == root ]] || die 2 "job dir not root-owned"
     printf %s "$3" | base64 -d >"$dir/$name.tmp" && mv -f "$dir/$name.tmp" "$dir/$name"
     ;;
+  append)
+    # The next chunk of a file `write` started (one ssh argument stays far under 128 KiB).
+    dir=$(job_dir "$1"); name="$2"; need name "$name" '^[a-z][a-z0-9._-]{0,40}$'
+    beat "$1"
+    [[ -d "$dir" && ! -L "$dir" && "$(stat -c %U "$dir")" == root ]] || die 2 "job dir not root-owned"
+    [[ -f "$dir/$name" && ! -L "$dir/$name" ]] || die 2 "append before write"
+    printf %s "$3" | base64 -d >>"$dir/$name"
+    ;;
+  seed)
+    # Test data the project's QA needs, put on the device before the agent starts: every fx-<name>
+    # file of the job lands as <devdir>/<name>. Idempotent: a file already there with the same
+    # bytes is left alone, and the media scan only runs when something changed.
+    dir=$(job_dir "$1") serial="$2" devdir="$3"
+    need serial "$serial" '^[A-Za-z0-9._:-]{1,64}$'; need devdir "$devdir" '^/sdcard/[A-Za-z0-9._/-]{1,100}$'
+    [[ "$devdir" != *..* ]] || die 2 "invalid devdir"
+    beat "$1"
+    ensure_device "$serial" || die 11 "device $serial unavailable"
+    adb -s "$serial" shell mkdir -p "$devdir"
+    pushed=0 kept=0
+    for f in "$dir"/fx-*; do
+      [[ -f "$f" && ! -L "$f" ]] || continue
+      name=$(basename "$f"); name=${name#fx-}; need fixture "$name" '^[a-z][a-z0-9._-]{0,40}$'
+      want=$(sha256sum "$f" | cut -d' ' -f1)
+      got=$(adb -s "$serial" shell sha256sum "$devdir/$name" 2>/dev/null | tr -d '\r' | cut -d' ' -f1 || true)
+      if [[ "$got" == "$want" ]]; then kept=$((kept + 1)); continue; fi
+      adb -s "$serial" push "$f" "$devdir/$name" >/dev/null || die 11 "could not push $name to $serial"
+      pushed=$((pushed + 1))
+    done
+    if (( pushed > 0 )); then
+      adb -s "$serial" shell content call --uri content://media --method scan_volume --arg external_primary >/dev/null 2>&1 \
+        || adb -s "$serial" shell am broadcast -a android.intent.action.MEDIA_MOUNTED -d "file:///sdcard" >/dev/null 2>&1 || true
+    fi
+    echo "seeded pushed=$pushed present=$kept"
+    ;;
   build)
     dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" abi="$5" timeout_s="$6"
     need repo "$repo" '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'; need pr "$pr" '^[0-9]{1,9}$'
@@ -162,7 +219,19 @@ case "$step" in
     beat "$1"; src=$(cat "$dir/src")
     # Copied out by the build user: root never opens a path inside the build-owned checkout.
     as_build cat "$src/$apk" >"$dir/app.apk" 2>/dev/null || die 21 "build produced no APK at $apk"
-    if ! timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1; then
+    ensure_device "$serial" || die 11 "device $serial unavailable before install"
+    ok=0
+    for attempt in 1 2; do
+      if timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1; then ok=1; break; fi
+      # One retry, only when the device itself dropped (offline, gone): never for a refused APK.
+      if (( attempt == 1 )) && { lost_device "$dir/install.log" || ! online "$serial"; }; then
+        echo "install lost $serial, reviving and retrying once" >&2
+        revive "$serial" || die 11 "device $serial went offline during install and did not come back"
+        continue
+      fi
+      break
+    done
+    if (( ok == 0 )); then
       # Nothing on the device is ever uninstalled or wiped here: Android keeps the version code of
       # a package uninstalled with its data, so no data-keeping path exists for a downgrade.
       # Builds avoid it by using $VERSION_CODE (always above earlier lane builds, see `build`).
@@ -186,6 +255,9 @@ case "$step" in
     (( timeout_s <= 5400 )) || die 2 "timeout above the lock's stale limit"
     need serial "$serial" '^[A-Za-z0-9._:-]{1,64}$'
     beat "$1"
+    # The agent's first act is launching the app: a device that dropped since install is revived
+    # once here rather than reported as an app that would not start.
+    ensure_device "$serial" || die 11 "device $serial unavailable before launch"
     install -d -o root -g root -m 755 "$dir/.claude"
     # Only these tools; writes only under out/. The user's broad settings are not loaded.
     cat >"$dir/.claude/settings.json.tmp" <<'JSON'
