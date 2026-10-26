@@ -64,8 +64,12 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
    copied between hosts; a missing capability blocks the target with `no host has <cap>` and the
    ticket for a human, other targets continue.
 
-4. **Verify + rollback**: the verify port polls each deployed target's health URL (bounded
-   retries). On failure it rolls back (`fly releases rollback <previous>` via the same host;
+4. **Verify + rollback**: verify first proves the merged SHA reached production (a production
+   deploy receipt naming that SHA: the provider's release for `command` targets, the site's
+   production deploy for `git-integration`, never a preview status), then polls the health URL
+   (bounded retries). Deploy, verify and rollback share one per-target lock. Before rolling back
+   it checks the provider's current release is still this attempt's; a newer release (human or
+   another fleet) holds for a human instead. On failure it rolls back (`fly releases rollback <previous>` via the same host;
    git-integration targets: redeploy the previous production deploy or revert-PR, human) and
    fails the phase. Every outcome posts one Linear comment with the deploy receipt (target,
    release id, health result, rollback if any).
@@ -76,7 +80,8 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
 
 ## Rollout
 
-- Slice 1: deploy profile schema + `git-integration` target (wait for the status, health check)
+- Slice 1: deploy profile schema + `git-integration` target (production deploy of the merged SHA,
+  health check)
   + auto-merge gate. Proves EagleRay dashboard end to end.
 - Slice 2: `command` targets over `ssh`/`orca --environment` with Fly rollback and migration
   hold; EagleRay API.
