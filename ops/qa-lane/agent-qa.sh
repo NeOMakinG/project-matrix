@@ -332,12 +332,19 @@ json.dump(c,open(p+".tmp","w")); os.replace(p+".tmp",p)' "$dir" "$ROOT/jobs/"
     as_qa bash -c 'set -e; cd "$1/out"
       [[ -f report.json && ! -L report.json ]] || { echo "QA agent wrote no out/report.json" >&2; exit 30; }
       printf "report.json\t%s\n" "$(head -c 200000 report.json | base64 -w0)"
-      n=0
-      for f in shots/*.png; do
+      # The screenshots the report cites come first (they are the evidence Matrix checks), then
+      # the others, 24 at most: a long run takes more than 12 and cites its later ones.
+      cited=$(head -c 200000 report.json | grep -oE "\"screenshot\"[[:space:]]*:[[:space:]]*\"[A-Za-z0-9][A-Za-z0-9._-]{0,80}\\.png\"" \
+        | sed -E "s/.*\"([^\"]+)\"\$/\\1/" | awk "!seen[\$0]++" || true)
+      n=0 sent=" "
+      for f in $(printf "shots/%s\n" $cited) shots/*.png; do
         [[ -f "$f" && ! -L "$f" ]] || continue
-        (( $(stat -c %s "$f") <= 3145728 )) || continue
-        n=$((n+1)); (( n <= 12 )) || break
-        printf "%s\t%s\n" "$(basename "$f")" "$(base64 -w0 "$f")"
+        b=$(basename "$f"); [[ "$sent" == *" $b "* ]] && continue
+        size=$(stat -c %s "$f"); (( size <= 3145728 )) || continue
+        n=$((n+1)); (( n <= 24 )) || break
+        total=$((${total:-0} + size)); (( total <= 25165824 )) || break
+        sent="$sent$b "
+        printf "%s\t%s\n" "$b" "$(base64 -w0 "$f")"
       done' sh "$dir"
     ;;
   cleanup)
