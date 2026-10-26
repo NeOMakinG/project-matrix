@@ -18,6 +18,8 @@ const HELP = `usage: ./qa-ios <command>   (the simulator ${QA_UDID})
   tap <x> <y>                 tap; x/y are FRACTIONS of the screen (0..1): x = pixelX / imageWidth
                               of a ./qa-shot image, y = pixelY / imageHeight (Next at 0.5 0.84)
   swipe <x1> <y1> <x2> <y2>   swipe, same fractions (edge-swipe back: 0.01 0.5 0.7 0.5)
+  hold <x> <y> [ms]           long-press (default 800 ms)
+  drag <x1> <y1> <x2> <y2>    long-press then drag (reorder): holds 800 ms before moving
   type <text>                 type into the focused field
   key <code>                  keyboard key (Enter, Backspace, Escape, Tab)
   button <name>               hardware button (home, lock)
@@ -122,6 +124,24 @@ async function input(s, requestId) {
         payload: { x: x1 + ((x2 - x1) * i) / 8, y: y1 + ((y2 - y1) * i) / 8 },
       });
     }
+    s.send({ type: "input:touch:end", sessionId: s.id, requestId, payload: { x: x2, y: y2 } });
+    return s.ack(requestId);
+  }
+  if (cmd === "hold" || cmd === "drag") {
+    const [x1, y1] = [num(args[0]), num(args[1])];
+    const [x2, y2] = cmd === "drag" ? [num(args[2]), num(args[3])] : [x1, y1];
+    const holdMs = cmd === "hold" ? Math.min(5_000, Math.max(300, Number(args[2]) || 800)) : 800;
+    s.send({ type: "input:touch:start", sessionId: s.id, payload: { x: x1, y: y1 } });
+    await new Promise((r) => setTimeout(r, holdMs));
+    if (cmd === "drag")
+      for (let i = 1; i <= 12; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        s.send({
+          type: "input:touch:move",
+          sessionId: s.id,
+          payload: { x: x1 + ((x2 - x1) * i) / 12, y: y1 + ((y2 - y1) * i) / 12 },
+        });
+      }
     s.send({ type: "input:touch:end", sessionId: s.id, requestId, payload: { x: x2, y: y2 } });
     return s.ack(requestId);
   }

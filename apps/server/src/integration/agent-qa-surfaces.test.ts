@@ -129,6 +129,23 @@ describe("combineOutcomes", () => {
   });
 });
 
+describe("not tested steps", () => {
+  it("never make a FAIL and keep a partly tested criterion from passing", () => {
+    const o = reportOutcome("PASS");
+    if (o.kind !== "report") return;
+    o.report.steps.push({
+      action: "long-press reorder",
+      expected: "reorders",
+      actual: "tool has no drag",
+      ok: false,
+      notTested: "tooling",
+      criterion: 1,
+      screenshot: "s1.png",
+    });
+    expect(verdictOf(o)).toBe("BLOCKED");
+  });
+});
+
 describe("MultiSurfaceAgentQaLane", () => {
   it("runs one driver per surface and blocks a surface without a driver", async () => {
     const seen: string[] = [];

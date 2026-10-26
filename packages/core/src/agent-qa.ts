@@ -174,7 +174,12 @@ export function effectiveVerdict(
   code?: readonly CodeCriterionResult[],
 ): { verdict: AgentQaVerdict; note?: string } {
   if (code) return splitVerdict(report, criteriaCount, shots, code);
-  const failedSteps = report.steps.filter((s) => !s.ok).length;
+  // A step the agent could not run (tooling/environment) is no defect: it never makes a FAIL, and
+  // the criterion it belongs to is not covered (a PASS cannot stand on an untested part).
+  const failedSteps = report.steps.filter((s) => !s.ok && !s.notTested).length;
+  const untested = new Set(
+    report.steps.flatMap((s) => (s.notTested && s.criterion ? [s.criterion] : [])),
+  );
   const serious = report.findings.filter((f) => f.severity !== "P3").length;
   if (report.verdict === "PASS") {
     if (!report.steps.length)
@@ -186,15 +191,15 @@ export function effectiveVerdict(
     const evidenced = (s: AgentQaReport["steps"][number]) =>
       !shots || (s.screenshot !== undefined && shots.has(s.screenshot));
     const covered = new Set(
-      report.steps.flatMap((s) => (s.criterion && evidenced(s) ? [s.criterion] : [])),
+      report.steps.flatMap((s) => (s.criterion && s.ok && evidenced(s) ? [s.criterion] : [])),
     );
     const missing = Array.from({ length: criteriaCount }, (_, i) => i + 1).filter(
-      (n) => !covered.has(n),
+      (n) => !covered.has(n) || untested.has(n),
     );
     if (!failedSteps && !serious && missing.length)
       return {
         verdict: "BLOCKED",
-        note: `the QA agent did not check acceptance criteria ${missing.join(", ")} with a collected screenshot`,
+        note: `the QA agent did not fully check acceptance criteria ${missing.join(", ")} with a collected screenshot`,
       };
     if (failedSteps || serious)
       return {
