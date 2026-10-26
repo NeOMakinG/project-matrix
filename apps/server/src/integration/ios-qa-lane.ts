@@ -130,7 +130,7 @@ export class TapflowIosQaLane implements AgentQaPort {
       const lines = r.stderr.toString().trim().split("\n");
       // The script prints the first real errors before the tail: keep those when present.
       const errors = lines.filter((l) =>
-        /(^|\s|: )error: |BUILD FAILED|npm ERR!|ERR_PNPM|^Error: /.test(l),
+        /(^|\s|: )error: |nonzero exit code|npm ERR!|ERR_PNPM|^Error: /.test(l),
       );
       const tail = (errors.length ? errors.slice(0, 4) : lines.slice(-6)).join(" ").slice(0, 600);
       throw new Error(`${WHAT[r.exitCode] ?? `${args[0]} failed (${r.exitCode})`}: ${tail}`);

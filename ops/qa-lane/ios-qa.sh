@@ -149,7 +149,8 @@ SB
     set -e
     if (( rc != 0 )); then
       # The first real errors, not the tail of build-phase notes.
-      { grep -E "(^|[[:space:]]|: )error: |BUILD FAILED|npm ERR!|ERR_PNPM|^Error: " "$dir/build.log" | head -8 || true
+      cp -f "$dir/build.log" "$ROOT/last-build-failure.log" || true
+      { grep -E "(^|[[:space:]]|: )error: |nonzero exit code|BUILD FAILED|npm ERR!|ERR_PNPM|^Error: " "$dir/build.log" | grep -v "^\*\* BUILD FAILED" | head -8 || true
         tail -c 600 "$dir/build.log"; } 2>/dev/null | cut -c1-300 >&2 || true
       exit 20
     fi
