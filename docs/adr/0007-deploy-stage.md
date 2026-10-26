@@ -49,7 +49,9 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
    }
    ```
 
-   A target runs only when the merged diff touches its `paths`. `holdOn` globs merge but hold
+   A target runs when the merged diff touches its `paths` or its `holdOn` globs, and root
+   manifests/lockfiles (`package.json`, `pnpm-lock.yaml`, workspace config) select every target.
+   `holdOn` is evaluated on its own, whatever selected the target. `holdOn` globs merge but hold
    that target and block the ticket for a human with the reason. They must cover everything that
    changes what a release does to shared state, not just new migration files: the schema, the
    migrate/seed scripts the Fly `release_command` runs, `fly.toml` itself (a changed
@@ -79,7 +81,9 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
    (bounded retries). Deploy, verify and rollback share one per-target lock. Immediately before
    issuing the rollback it re-reads the provider's current release and aborts unless it is still
    this attempt's (the remaining check-then-act window is seconds; the coordination note in 5
-   narrows it further); a newer release (human or
+   narrows it further). On a `coordinate: true` target, which another fleet also deploys, no
+   writer lock covers everyone, so rollback is not automatic: Matrix posts the failing health
+   receipt, holds and asks a human, unless the provider offers a conditional rollback; a newer release (human or
    another fleet) holds for a human instead. On failure it rolls back (`fly releases rollback <previous>` via the same host;
    git-integration targets: redeploy the previous production deploy or revert-PR, human) and
    fails the phase. Every outcome posts one Linear comment with the deploy receipt (target,
