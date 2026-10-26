@@ -346,3 +346,16 @@ test("typecheck under other names still counts; an unknown failing check is unve
   const odd = facts({ checks: [{ name: "Quality gate", state: "failure" }], baseFailing: [] });
   expect(verifyCodeCriteria(NEO8, [6], odd, HEAD, ok)[0]?.status).toBe("unverified");
 });
+
+test("a failing preview E2E run counts; an unknown check still running is unverified", () => {
+  const e2e = facts({
+    checks: [{ name: "Preview / Playwright", state: "failure" }],
+    baseFailing: [],
+  });
+  expect(verifyCodeCriteria(NEO8, [6], e2e, HEAD, ok)[0]?.status).toBe("fail");
+  const gate = facts({
+    checks: [{ name: "Quality gate", state: "pending" }],
+    baseFailing: ["Quality gate"],
+  });
+  expect(verifyCodeCriteria(NEO8, [6], gate, HEAD, ok)[0]?.status).toBe("unverified");
+});

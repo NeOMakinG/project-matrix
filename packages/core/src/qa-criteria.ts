@@ -184,7 +184,8 @@ function regressionTest(
 }
 
 /** A check that runs lint, typecheck, tests or a build (by its name). */
-const CI_CHECK = /lint|type[- ]?check|typescript|tsc|test|\bci\b|build|biome|eslint|vitest|jest/i;
+const CI_CHECK =
+  /lint|type[- ]?check|typescript|tsc|test|\bci\b|build|biome|eslint|vitest|jest|e2e|playwright|detox|maestro|cypress/i;
 /** Checks that only deploy or preview the site (Netlify/Vercel/Pages rules). */
 const DEPLOY_CHECK =
   /netlify|vercel|deploy|preview|header rules|redirect rules|pages changed|cloudflare pages/i;
@@ -203,10 +204,9 @@ function ci(
   // A failing or running check Matrix cannot place is not evidence either way: unverified.
   const unknown = facts.checks.filter(
     (c) =>
-      (c.state === "failure" || c.state === "pending") &&
       !relevant(c.name) &&
       !DEPLOY_CHECK.test(c.name) &&
-      !base.has(c.name),
+      (c.state === "pending" || (c.state === "failure" && !base.has(c.name))),
   );
   const failing = facts.checks.filter(
     (c) => c.state === "failure" && relevant(c.name) && !base.has(c.name),
