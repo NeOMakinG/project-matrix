@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { AgentQaOutcome, AgentQaReport, AgentQaRequest } from "./agent-qa.js";
-import type { PullRequestRequest } from "./ports-internal.js";
+import type { PullRequestPort, PullRequestRequest } from "./ports-internal.js";
 import { APPROVER, createHarness } from "./testing/harness.js";
 
 const BODY = [
@@ -42,7 +42,12 @@ function reportOutcome(r: AgentQaReport): AgentQaOutcome {
   };
 }
 
-function agentHarness(outcomes: AgentQaOutcome[], handles = true, prLabelFails = 0) {
+function agentHarness(
+  outcomes: AgentQaOutcome[],
+  handles = true,
+  prLabelFails = 0,
+  facts?: PullRequestPort["facts"],
+) {
   const published: PullRequestRequest[] = [];
   const requests: AgentQaRequest[] = [];
   const prLabels: { add: string[]; remove: string[] }[] = [];
@@ -63,6 +68,7 @@ function agentHarness(outcomes: AgentQaOutcome[], handles = true, prLabelFails =
         if (prLabelFails-- > 0) throw new Error("gh pr edit failed");
         prLabels.push({ add, remove });
       },
+      ...(facts ? { facts } : {}),
     },
     agentQa: {
       handles: () => handles,
@@ -133,7 +139,17 @@ test("FAIL: qa:failed on ticket and PR, loops back to implement with the report"
     steps: [
       { action: "Tap Export", expected: "sheet", actual: "nothing", ok: false, criterion: 1 },
     ],
-    findings: [{ severity: "P1", title: "Export dead tap", steps: "", expected: "", actual: "" }],
+    findings: [
+      {
+        severity: "P1",
+        title: "Export dead tap",
+        steps: "",
+        expected: "",
+        actual: "",
+        cause: "pr",
+        causeCheck: "",
+      },
+    ],
   });
   const { h, requests, prLabels } = agentHarness([reportOutcome(fail), reportOutcome(report())]);
   await h.setup();
@@ -390,4 +406,67 @@ test("a write that lands deletes only its own queued row; a newer verdict's row 
   expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:failed");
   expect(h.tickets.tickets.get(t.id)?.labels).not.toContain("qa:passed");
   expect(await h.store.listLabelRetries()).toEqual([]);
+});
+
+test("code/CI criteria are verified on GitHub; the agent gets the device ones; pre-existing findings are filed once", async () => {
+  const pre = {
+    severity: "P2" as const,
+    title: "Every third seeded photo is blank",
+    steps: "open the trip",
+    expected: "photos",
+    actual: "blank tiles",
+    cause: "environment" as const,
+    causeCheck: "the same files are blank in the trip tiles, untouched by this PR",
+  };
+  const agentFail = report({
+    verdict: "FAIL",
+    steps: [
+      ...report().steps,
+      {
+        action: "Read the PR",
+        expected: "a test",
+        actual: "not visible on the device",
+        ok: false,
+        criterion: 2,
+      },
+    ],
+    findings: [pre],
+  });
+  const seen: string[] = [];
+  const { h, requests } = agentHarness(
+    [reportOutcome(agentFail)],
+    true,
+    0,
+    async (_project, url) => {
+      seen.push(url);
+      return {
+        // The harness's git port reports this head for every workdir.
+        headSha: "a".repeat(40),
+        body: "## Root cause\n\nnone needed",
+        files: [
+          { path: "src/export.ts", status: "modified", additions: 3 },
+          { path: "src/export.test.ts", status: "modified", additions: 20 },
+        ],
+        checks: [{ name: "ci", state: "success" }],
+        baseFailing: [],
+      };
+    },
+  );
+  await h.setup();
+  const t = h.tickets.add("Trip PDF export");
+  h.tickets.tickets.set(t.id, { ...t, body: `${BODY}\n- Regression test covers the export` });
+  await h.drain();
+  expect(seen).toEqual([PR_URL]);
+  expect(requests[0]?.criteria).toHaveLength(2);
+  expect(requests[0]?.deviceCriteria).toEqual([1]);
+  expect(requests[0]?.pullRequestBody).toContain("Root cause");
+  const [body] = reports(h);
+  expect(body).toMatch(/^Matrix agent QA PASS for/);
+  expect(body).toMatch(/- #2 PASS \(github\)/);
+  const filed = [...h.tickets.tickets.values()].filter((x) =>
+    x.title.startsWith("QA pre-existing:"),
+  );
+  expect(filed).toHaveLength(1);
+  expect(filed[0]?.labels).toContain("Bug");
+  expect(body).toContain(`Filed as ${filed[0]?.id}`);
 });

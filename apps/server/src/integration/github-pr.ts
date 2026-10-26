@@ -1,6 +1,12 @@
 import { tmpdir } from "node:os";
 import { sep } from "node:path";
-import type { MergePort, PullRequestPort, PullRequestRequest, Receipt } from "@matrix/core";
+import type {
+  MergePort,
+  PullRequestFacts,
+  PullRequestPort,
+  PullRequestRequest,
+  Receipt,
+} from "@matrix/core";
 import { redact } from "@matrix/monitor";
 import {
   gitLocation,
@@ -83,6 +89,91 @@ export class GitHubPullRequests implements PullRequestPort {
 
   handles(project: PullRequestRequest["project"]): boolean {
     return externalRepo(project) !== undefined;
+  }
+
+  /**
+   * The PR's description, changed files and head checks, plus the checks failing on the base
+   * branch tip (those are pre-existing). Read-only REST calls; for the agent QA code/CI criteria.
+   */
+  async facts(project: PullRequestRequest["project"], url: string): Promise<PullRequestFacts> {
+    const m = url.match(
+      /^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+)\/pull\/(\d{1,9})$/,
+    );
+    if (!m?.[1] || !m[2] || !PR_URL.test(url)) throw new Error("not a GitHub pull request URL");
+    if (m[1].toLowerCase() !== externalRepo(project)?.github?.toLowerCase())
+      throw new Error("pull request is not on the project's repository");
+    const repo = m[1];
+    const pr = JSON.parse(await this.#gh(["api", `repos/${repo}/pulls/${m[2]}`])) as {
+      body?: string | null;
+      head?: { sha?: string };
+      base?: { ref?: string };
+    };
+    const headSha = pr.head?.sha ?? "";
+    const baseRef = pr.base?.ref ?? "";
+    if (!/^[a-f0-9]{40}$/.test(headSha) || !/^[\w./-]{1,100}$/.test(baseRef))
+      throw new Error("GitHub returned no head SHA or base branch for the PR");
+    const files = (
+      JSON.parse(
+        await this.#gh([
+          "api",
+          "--paginate",
+          "--slurp",
+          `repos/${repo}/pulls/${m[2]}/files?per_page=100`,
+        ]),
+      ) as { filename?: string; status?: string; additions?: number }[][]
+    )
+      .flat()
+      .slice(0, 3_000)
+      .map((f) => ({
+        path: String(f.filename ?? ""),
+        status: String(f.status ?? ""),
+        additions: Number(f.additions ?? 0),
+      }));
+    const checks = await this.#checks(repo, headSha);
+    const base = await this.#checks(repo, encodeURIComponent(baseRef)).catch(() => []);
+    return {
+      headSha,
+      body: String(pr.body ?? "").slice(0, 60_000),
+      files,
+      checks,
+      baseFailing: base.filter((c) => c.state === "failure").map((c) => c.name),
+    };
+  }
+
+  /** Check runs and commit statuses of one ref, latest per name. */
+  async #checks(repo: string, ref: string): Promise<PullRequestFacts["checks"]> {
+    const runs = JSON.parse(
+      await this.#gh(["api", `repos/${repo}/commits/${ref}/check-runs?per_page=100`]),
+    ) as { check_runs?: { name?: string; status?: string; conclusion?: string | null }[] };
+    const statuses = JSON.parse(await this.#gh(["api", `repos/${repo}/commits/${ref}/status`])) as {
+      statuses?: { context?: string; state?: string }[];
+    };
+    const out = new Map<string, PullRequestFacts["checks"][number]["state"]>();
+    for (const r of runs.check_runs ?? []) {
+      const name = String(r.name ?? "");
+      if (!name || out.has(name)) continue;
+      const c = r.conclusion ?? "";
+      out.set(
+        name,
+        r.status !== "completed"
+          ? "pending"
+          : c === "success"
+            ? "success"
+            : ["neutral", "skipped"].includes(c)
+              ? "neutral"
+              : "failure",
+      );
+    }
+    // Statuses come newest first: the first one per context is its current state.
+    for (const s of statuses.statuses ?? []) {
+      const name = String(s.context ?? "");
+      if (!name || out.has(name)) continue;
+      out.set(
+        name,
+        s.state === "success" ? "success" : s.state === "pending" ? "pending" : "failure",
+      );
+    }
+    return [...out].map(([name, state]) => ({ name, state }));
   }
 
   /** Adds/removes PR labels (created on the repo when missing). Only labels Matrix owns. */

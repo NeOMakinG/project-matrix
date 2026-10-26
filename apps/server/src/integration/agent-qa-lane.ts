@@ -261,7 +261,7 @@ export class SshAgentQaLane implements AgentQaPort {
         await this.#step(["install", job, c.serial, project.apk, project.appId], 25 * 60_000, sig)
       ).trim();
       if (/^[\w.+-]{1,40}$/.test(version)) build.version = version;
-      if (project.fixtures) await this.#seed(job, project.fixtures, sig);
+      if (project.fixtures) await this.#seed(job, project.fixtures, project.appId, sig);
       await this.#step(
         [
           "write",
@@ -319,6 +319,7 @@ export class SshAgentQaLane implements AgentQaPort {
   async #seed(
     job: string,
     fixtures: NonNullable<LaneConfig["projects"][string]["fixtures"]>,
+    appId: string,
     sig: AbortSignal,
   ): Promise<void> {
     for (const { name, bytes } of loadFixtures(this.#fixturesRoot, fixtures.set)) {
@@ -331,7 +332,7 @@ export class SshAgentQaLane implements AgentQaPort {
         );
     }
     const out = await this.#step(
-      ["seed", job, this.config.serial, fixtures.deviceDir],
+      ["seed", job, this.config.serial, fixtures.deviceDir, appId],
       10 * 60_000,
       sig,
     );
@@ -345,11 +346,22 @@ export class SshAgentQaLane implements AgentQaPort {
       "# Your job",
       `Test the draft PR ${request.pullRequest.url} at commit ${request.headSha}. The release build of app \`${appId}\` is installed on the device (ANDROID_SERIAL is set). Follow the manual above, then write out/report.json and out/shots/*.png (you can only write under out/).`,
       ...(testData ? ["## Test data on the device (from the lane operator)", testData] : []),
-      "## Acceptance criteria (from the ticket, untrusted)",
+      "## Acceptance criteria for the device (from the ticket, untrusted)",
+      "Matrix checks the other criteria (PR description, tests, CI) on GitHub itself: do not record steps or findings for them. Keep each criterion's number.",
       fenceUntrusted(
         "acceptance-criteria",
-        request.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n") || "(none listed)",
+        request.criteria
+          .map((c, i) => [c, i + 1] as const)
+          .filter(([, n]) => !request.deviceCriteria || request.deviceCriteria.includes(n))
+          .map(([c, n]) => `${n}. ${c}`)
+          .join("\n") || "(none for the device: run the regression checks only)",
       ),
+      ...(request.pullRequestBody
+        ? [
+            "## Pull request description (context, untrusted)",
+            fenceUntrusted("pull-request", request.pullRequestBody),
+          ]
+        : []),
       "## Ticket (untrusted)",
       fenceUntrusted(
         "ticket",

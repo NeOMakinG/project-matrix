@@ -36,7 +36,17 @@ test("never upgrades to PASS; inconsistent reports are downgraded", () => {
       verdict: "PASS",
       summary: "",
       steps: [step],
-      findings: [{ severity: "P2", title: "t", steps: "", expected: "", actual: "" }],
+      findings: [
+        {
+          severity: "P2",
+          title: "t",
+          steps: "",
+          expected: "",
+          actual: "",
+          cause: "pr",
+          causeCheck: "",
+        },
+      ],
     }).verdict,
   ).toBe("FAIL");
   expect(
@@ -45,7 +55,17 @@ test("never upgrades to PASS; inconsistent reports are downgraded", () => {
         verdict: "PASS",
         summary: "",
         steps: [step],
-        findings: [{ severity: "P3", title: "t", steps: "", expected: "", actual: "" }],
+        findings: [
+          {
+            severity: "P3",
+            title: "t",
+            steps: "",
+            expected: "",
+            actual: "",
+            cause: "pr",
+            causeCheck: "",
+          },
+        ],
       },
       1,
     ).verdict,

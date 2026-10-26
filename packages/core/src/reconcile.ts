@@ -12,11 +12,15 @@ import {
   type AgentQaOutcome,
   type AgentQaPort,
   type AgentQaVerdict,
+  isPreExisting,
   NO_CRITERIA,
+  PRE_EXISTING_PREFIX,
+  preExistingIssue,
   priorAgentQaVerdict,
   QA_FAILED_LABEL,
   QA_PASSED_LABEL,
   renderAgentQaReport,
+  sameIssueTitle,
 } from "./agent-qa.js";
 import type { EventBus } from "./bus.js";
 import {
@@ -59,6 +63,12 @@ import type {
   PullRequestEvidence,
   PullRequestPort,
 } from "./ports-internal.js";
+import {
+  type CodeCriterionResult,
+  classifyCriteria,
+  type PullRequestFacts,
+  verifyCodeCriteria,
+} from "./qa-criteria.js";
 import { publicQaReceipt } from "./qa-evidence.js";
 import {
   isGatewayUnavailable,
@@ -619,14 +629,37 @@ export class Reconciler {
     this.agentQaBlockedSeen.delete(key);
     const criteria = manual.criteria.length ? manual.criteria : acceptanceCriteria(ticket.body);
     const pr = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/);
+    const sources = classifyCriteria(criteria);
+    const numbered = (source: string) => sources.flatMap((s, i) => (s === source ? [i + 1] : []));
     const job = (async () => {
       let outcome: AgentQaOutcome;
+      let code: CodeCriterionResult[] = [];
       try {
         if (!pr?.[1] || !pr[2]) throw new Error("the draft PR is not a GitHub pull request");
         // The PR checklist is these criteria: with none there is nothing a pass could stand on.
         if (!criteria.length) throw new Error(NO_CRITERIA);
         if (!this.o.agentQa?.handles(project))
           throw new Error("no agent QA lane is configured for this project on the Matrix host");
+        // Code/CI criteria are Matrix's to verify on GitHub: a device agent cannot see them.
+        let facts: PullRequestFacts | undefined;
+        let unavailable: string | undefined;
+        try {
+          facts = await this.o.pullRequests?.facts?.(project, url);
+          if (!facts) unavailable = "this Matrix host cannot read the PR on GitHub";
+        } catch (error) {
+          unavailable = `reading the PR on GitHub failed: ${(error as Error).message.slice(0, 200)}`;
+        }
+        const checks = await this.latestRun(w, "checks");
+        code = verifyCodeCriteria(
+          criteria,
+          numbered("github"),
+          facts,
+          headSha,
+          checks
+            ? { ok: checks.status === "ok", summary: (checks.summary ?? "").slice(0, 200) }
+            : undefined,
+          unavailable,
+        );
         outcome = await this.o.agentQa.run({
           project,
           ticket: {
@@ -642,12 +675,14 @@ export class Reconciler {
           headSha,
           surfaces: manual.surfaces,
           criteria,
+          deviceCriteria: numbered("device"),
+          ...(facts ? { pullRequestBody: facts.body.slice(0, 8_000) } : {}),
           signal: AbortSignal.timeout(2 * 60 * 60_000),
         });
       } catch (error) {
         outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
       }
-      await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome, criteria.length);
+      await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome, criteria, code);
     })()
       .catch((error) => this.trackerFailed(project.id, w.ticketId, "agent-qa", error))
       .finally(() => this.agentQaJobs.delete(key));
@@ -662,7 +697,8 @@ export class Reconciler {
     qaRunId: string,
     url: string,
     outcome: AgentQaOutcome,
-    criteriaCount: number,
+    criteria: string[],
+    code: CodeCriterionResult[],
   ): Promise<void> {
     const tickets = this.o.tickets(project.id);
     const id = started.ticketId;
@@ -675,13 +711,6 @@ export class Reconciler {
           this.trackerFailed(project.id, id, "upload-file", error);
         }
       }
-    const rendered = renderAgentQaReport(outcome, {
-      headSha,
-      qaRun: qaRunId,
-      pullRequestUrl: url,
-      images,
-      criteriaCount,
-    });
     // The workflow moved on while the lane ran (human feedback, new head): the report is stale.
     const now = await this.o.store.getWorkflow(project.id, id);
     if (
@@ -693,7 +722,63 @@ export class Reconciler {
       (await this.latestRun(now, "qa"))?.id !== qaRunId
     )
       return;
+    const filed =
+      outcome.kind === "report"
+        ? await this.filePreExisting(project, id, url, headSha, outcome.report)
+        : new Map<number, string>();
+    const rendered = renderAgentQaReport(outcome, {
+      headSha,
+      qaRun: qaRunId,
+      pullRequestUrl: url,
+      images,
+      criteriaCount: criteria.length,
+      code,
+      criteria,
+      filed,
+    });
     await this.postAgentQaReport(project, now, key, url, rendered);
+  }
+
+  /**
+   * Files each pre-existing / environment finding as its own Bug issue (deduped by title against
+   * the project's open issues), so it neither fails the PR nor gets lost. Best effort.
+   */
+  private async filePreExisting(
+    project: ProjectConfig,
+    ticketId: string,
+    url: string,
+    headSha: string,
+    report: Extract<AgentQaOutcome, { kind: "report" }>["report"],
+  ): Promise<Map<number, string>> {
+    const filed = new Map<number, string>();
+    const found = report.findings.map((f, i) => [f, i] as const).filter(([f]) => isPreExisting(f));
+    if (!found.length) return filed;
+    const tickets = this.o.tickets(project.id);
+    let open: { id: string; title: string }[];
+    try {
+      open = (
+        await tickets.list({ status: ["open", "ready", "in_progress", "blocked", "review", "qa"] })
+      ).filter((t) => t.title.startsWith(PRE_EXISTING_PREFIX));
+    } catch (error) {
+      this.trackerFailed(project.id, ticketId, "list-tickets", error);
+      return filed;
+    }
+    for (const [f, i] of found.slice(0, 5)) {
+      const issue = preExistingIssue(f, { ticketId, pullRequestUrl: url, headSha });
+      const known = open.find((t) => sameIssueTitle(t.title, issue.title));
+      if (known) {
+        filed.set(i, known.id);
+        continue;
+      }
+      try {
+        const created = await tickets.create({ ...issue, labels: ["Bug"] });
+        open.push(created);
+        filed.set(i, created.id);
+      } catch (error) {
+        this.trackerFailed(project.id, ticketId, "create-ticket", error);
+      }
+    }
+    return filed;
   }
 
   /**

@@ -47,6 +47,15 @@ prompt; every number needs a step, or the run cannot pass):
 the exact action, the expected result, the actual result, `ok`, and one screenshot of the
 result.
 
+Your prompt only lists the criteria a device can show; Matrix checks the others (PR description,
+tests, CI) on GitHub. Never record a step for a criterion that is not in your list.
+
+If the driver cannot perform what a criterion needs (no hold-and-drag gesture, no way to observe
+an unmount), do not fail it: record the step with `"notTested": "tooling"`, `ok: false` and what
+you could not do in `actual`. It is listed as NOT TESTED (tooling) and does not fail the run. Use
+`"notTested": "environment"` when the device or test data stopped you. A FAIL is only for a
+defect you observed.
+
 ## 3. Exploratory checks (around the change)
 
 Spend a few minutes trying to break the changed flow, the way testers do:
@@ -75,7 +84,14 @@ app's package; a `FATAL EXCEPTION` is a P1 finding.
 - Expected comes from the ticket/acceptance criteria or obvious platform behaviour, never from
   what the app happens to do.
 - Do not claim something you did not observe on the device. If you could not reach a screen,
-  say so: that is a failed or blocked step, not a pass.
+  say so: that is a not-tested or blocked step, not a pass.
+- Before blaming the PR, rule out the environment: a problem that also shows outside the changed
+  flow, on photos or data the change cannot touch, or with only some seeded files (e.g. every
+  third photo blank everywhere) is likely pre-existing or test data. Check it (another screen of
+  the app that shows the same items, the same items in the system gallery, `adb shell content
+  query` / `ls` on the files) and set `"cause": "pre_existing"` or `"environment"` with that check
+  in `causeCheck`. Such findings are filed as separate issues and do not fail the PR; without a
+  check they count against it.
 
 ## 6. Severity scale
 
@@ -87,13 +103,16 @@ app's package; a `FATAL EXCEPTION` is a P1 finding.
 
 ## 7. Verdict
 
-- **PASS**: every acceptance step passed and there is no P1 or P2 finding (P3 allowed).
-- **FAIL**: at least one acceptance step failed or a P1/P2 finding exists.
+- **PASS**: every acceptance step you could run passed (NOT TESTED (tooling) allowed) and there is
+  no P1 or P2 finding caused by the PR (P3 and pre-existing findings allowed).
+- **FAIL**: you observed a product defect: an acceptance step failed, or a P1/P2 finding the PR
+  caused.
 - **BLOCKED**: you could not test (app does not launch, login wall without test credentials,
   device unusable). Explain in `blockedReason`. Never PASS what you could not test.
 
-Matrix re-checks this: a PASS with a failed step or a P1/P2 finding becomes FAIL; a PASS with no
-steps becomes BLOCKED.
+Matrix re-checks this from your steps, findings and screenshots, together with the code/CI
+criteria it verified on GitHub: a failed step or a P1/P2 finding caused by the PR is FAIL; a FAIL
+without one is not; a criterion with no evidenced step is BLOCKED.
 
 ## 8. out/report.json
 
@@ -110,6 +129,15 @@ steps becomes BLOCKED.
       "ok": true,
       "criterion": 1,
       "screenshot": "s03-picker.png"
+    },
+    {
+      "action": "Long-press photo 2 and drag it before photo 1",
+      "expected": "photo 2 moves first",
+      "actual": "agent-device has no hold-and-drag gesture; not exercised",
+      "ok": false,
+      "notTested": "tooling",
+      "criterion": 4,
+      "screenshot": "s05-strip.png"
     }
   ],
   "findings": [
@@ -119,7 +147,9 @@ steps becomes BLOCKED.
       "steps": "1. ... 2. ...",
       "expected": "...",
       "actual": "...",
-      "screenshot": "s07-stuck.png"
+      "screenshot": "s07-stuck.png",
+      "cause": "pr | pre_existing | environment",
+      "causeCheck": "only when not pr: what you checked to rule the PR out"
     }
   ]
 }

@@ -153,17 +153,42 @@ case "$step" in
   seed)
     # Test data the project's QA needs, put on the device before the agent starts: every fx-<name>
     # file of the job lands as <devdir>/<name>. Idempotent: a file already there with the same
-    # bytes is left alone, and the media scan only runs when something changed.
-    dir=$(job_dir "$1") serial="$2" devdir="$3"
+    # bytes is left alone.
+    # The set's manifest (name + sha256 per file) is kept on the device. When it differs from the
+    # last one seeded (first seed, a fixture regenerated, renamed or dropped): files the old manifest
+    # listed and the new one does not are deleted, and the app's data is cleared. A replaced or
+    # deleted file gets a new MediaStore id or none, and an app that indexes the gallery keeps the
+    # old ids as photos it can no longer load (Travel Journal showed every third photo of the
+    # seeded trip as a blank tile after the set was regenerated).
+    dir=$(job_dir "$1") serial="$2" devdir="$3" app="${4:-}"
     need serial "$serial" '^[A-Za-z0-9._:-]{1,64}$'; need devdir "$devdir" '^/sdcard/[A-Za-z0-9._/-]{1,100}$'
     [[ "$devdir" != *..* ]] || die 2 "invalid devdir"
+    [[ -z "$app" ]] || need app "$app" '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$'
     beat "$1"
     ensure_device "$serial" || die 11 "device $serial unavailable"
     adb -s "$serial" shell mkdir -p "$devdir"
-    pushed=0 kept=0
+    manifest="$dir/fixtures.manifest"; : >"$manifest"
     for f in "$dir"/fx-*; do
       [[ -f "$f" && ! -L "$f" ]] || continue
       name=$(basename "$f"); name=${name#fx-}; need fixture "$name" '^[a-z][a-z0-9._-]{0,40}$'
+      printf '%s %s\n' "$(sha256sum "$f" | cut -d' ' -f1)" "$name" >>"$manifest"
+    done
+    printf 'app %s\n' "${app:--}" >>"$manifest"
+    mark="/data/local/tmp/matrix-fixtures$(printf %s "$devdir" | tr / _).manifest"
+    old=$(adb -s "$serial" shell cat "$mark" 2>/dev/null | tr -d '\r' || true)
+    changed=0; [[ "$old" == "$(cat "$manifest")" ]] || changed=1
+    removed=0
+    if ((changed)); then
+      while read -r _ oname; do
+        [[ "$oname" =~ ^[a-z][a-z0-9._-]{0,40}$ && "$oname" != app ]] || continue
+        cut -d' ' -f2 "$manifest" | grep -qxF "$oname" && continue
+        adb -s "$serial" shell rm -f "$devdir/$oname" </dev/null && removed=$((removed + 1))
+      done <<<"$old"
+    fi
+    pushed=0 kept=0
+    for f in "$dir"/fx-*; do
+      [[ -f "$f" && ! -L "$f" ]] || continue
+      name=$(basename "$f"); name=${name#fx-}
       want=$(sha256sum "$f" | cut -d' ' -f1)
       got=$(adb -s "$serial" shell sha256sum "$devdir/$name" 2>/dev/null | tr -d '\r' | cut -d' ' -f1 || true)
       if [[ "$got" == "$want" ]]; then kept=$((kept + 1)); continue; fi
@@ -174,7 +199,15 @@ case "$step" in
     # files on disk but out of MediaStore (invisible to the app) on every later run.
     adb -s "$serial" shell content call --uri content://media --method scan_volume --arg external_primary >/dev/null 2>&1 \
       || die 11 "media scan failed on $serial"
-    echo "seeded pushed=$pushed present=$kept"
+    cleared=0
+    if ((changed)); then
+      if [[ -n "$app" ]] && adb -s "$serial" shell pm path "$app" >/dev/null 2>&1; then
+        adb -s "$serial" shell pm clear "$app" >/dev/null || die 11 "could not clear $app data on $serial"
+        cleared=1
+      fi
+      adb -s "$serial" push "$manifest" "$mark" >/dev/null 2>&1 || die 11 "could not record fixtures on $serial"
+    fi
+    echo "seeded pushed=$pushed present=$kept removed=$removed app_cleared=$cleared"
     ;;
   build)
     dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" abi="$5" timeout_s="$6"

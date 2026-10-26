@@ -32,9 +32,11 @@ for s in "${shots[@]}"; do
     -quality 72 "$f"
   lon=$((lon + 170))
   stamp="2025:02:${day} ${time}:00"
+  # Orientation#=1 is the number: a bare -Orientation=1 goes through exiftool's print conversion
+  # and wrote 3 (Rotate 180), so the app showed every photo upside down.
   exiftool -q -q -overwrite_original -Make=Apple "-Model=iPhone 17 Pro Max" -LensMake=Apple \
     "-LensModel=iPhone 17 Pro Max back camera 6.765mm f/1.78" -ExposureTime=1/250 -FNumber=1.78 \
-    -ISO=50 -FocalLength=6.765 -Orientation=1 "-DateTimeOriginal=$stamp" "-CreateDate=$stamp" \
+    -ISO=50 -FocalLength=6.765 -Orientation#=1 "-DateTimeOriginal=$stamp" "-CreateDate=$stamp" \
     -OffsetTimeOriginal=+00:00 -GPSLatitude=41.1496 -GPSLatitudeRef=N \
     "-GPSLongitude=8.$lon" -GPSLongitudeRef=W "$f"
   # The lane names device files after these: ^[a-z][a-z0-9._-]{0,37}$ (FIXTURE in agent-qa-lane.ts).

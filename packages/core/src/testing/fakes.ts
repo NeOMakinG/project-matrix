@@ -51,8 +51,15 @@ export class FakeTicketStore implements TicketStore {
     return this.tickets.get(id) ?? null;
   }
   async create(input: NewTicket) {
-    const t = this.add(input.title, input.priority);
-    return { ...t, body: input.body };
+    // Like the real trackers: a created issue lands in the backlog, not in Ready.
+    const t: Ticket = {
+      ...this.add(input.title, input.priority),
+      body: input.body,
+      labels: input.labels ?? [],
+      status: "open",
+    };
+    this.tickets.set(t.id, t);
+    return t;
   }
   async update(id: string, patch: TicketPatch) {
     const t = this.tickets.get(id);

@@ -16,6 +16,7 @@ export * from "./manual-qa.js";
 export * from "./models.js";
 export * from "./ports.js";
 export type * from "./ports-internal.js";
+export * from "./qa-criteria.js";
 export * from "./qa-evidence.js";
 export * from "./quota.js";
 export * from "./reconcile.js";
