@@ -174,7 +174,7 @@ test("the report lists every criterion with its source, and pre-existing finding
         severity: "P2",
         title: "Blank seeded photos",
         cause: "environment",
-        causeCheck: "blank on main's build too",
+        causeCheck: "the same photos are blank on main's build of the app too",
       },
     ],
   });
@@ -206,4 +206,57 @@ test("the report lists every criterion with its source, and pre-existing finding
     /### Pre-existing \/ environment[^\n]*\n+- P2 Blank seeded photos.*Filed as NEO-99/,
   );
   expect(body).not.toMatch(/### Findings/);
+});
+
+test("a compound criterion goes to both sides; a test edit without a new case is not a regression test", () => {
+  expect(
+    classifyCriteria(["Regression test covers export, and tapping Export opens the share sheet"]),
+  ).toEqual(["both"]);
+  const commentOnly = facts({
+    files: [
+      { path: "app/src/screens/DaySheetScreen.tsx", status: "modified", additions: 2 },
+      {
+        path: "app/src/screens/DaySheetScreen.test.tsx",
+        status: "modified",
+        additions: 1,
+        patch: '@@ -1,2 +1,3 @@\n+// covers the strip\n test("old", () => {});',
+      },
+    ],
+  });
+  expect(verifyCodeCriteria(NEO8, [5], commentOnly, HEAD, ok)[0]?.status).toBe("fail");
+  const elsewhere = facts({
+    files: [
+      { path: "app/src/screens/DaySheetScreen.tsx", status: "modified", additions: 2 },
+      {
+        path: "e2e/flows/strip.test.ts",
+        status: "added",
+        additions: 30,
+        patch: '+test("strip", () => {});',
+      },
+    ],
+  });
+  expect(verifyCodeCriteria(NEO8, [5], elsewhere, HEAD, ok)[0]?.status).toBe("unverified");
+});
+
+test("both halves of a compound criterion must hold, and a P1 is never excused as pre-existing", () => {
+  const criteria = ["Regression test covers export, and tapping Export opens the share sheet"];
+  const code = verifyCodeCriteria(criteria, [1], facts({ files: [] }), HEAD, ok).map((r) => ({
+    ...r,
+    alsoDevice: true,
+  }));
+  const r = report({ verdict: "PASS", steps: [step(1, { screenshot: "s2.png" })] });
+  expect(effectiveVerdict(r, 1, shots, code).verdict).toBe("FAIL");
+  const crash = report({
+    verdict: "PASS",
+    steps: [step(2), step(3), step(4)],
+    findings: [
+      {
+        severity: "P1",
+        title: "crash on open",
+        cause: "pre_existing",
+        causeCheck: "it also crashes on the main branch build, before this PR existed",
+      },
+    ],
+  });
+  expect(effectiveVerdict(crash, 6, shots, passCode).verdict).toBe("FAIL");
 });

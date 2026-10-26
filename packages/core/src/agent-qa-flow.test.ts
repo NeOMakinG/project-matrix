@@ -456,7 +456,8 @@ test("code/CI criteria are verified on GitHub; the agent gets the device ones; p
   const t = h.tickets.add("Trip PDF export");
   h.tickets.tickets.set(t.id, { ...t, body: `${BODY}\n- Regression test covers the export` });
   await h.drain();
-  expect(seen).toEqual([PR_URL]);
+  // Read before the run (PR body for the agent) and again after it (CI as it is now).
+  expect(seen).toEqual([PR_URL, PR_URL]);
   expect(requests[0]?.criteria).toHaveLength(2);
   expect(requests[0]?.deviceCriteria).toEqual([1]);
   expect(requests[0]?.pullRequestBody).toContain("Root cause");

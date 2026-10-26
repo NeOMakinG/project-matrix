@@ -5,7 +5,8 @@
  * agent only gets the criteria a device can show.
  */
 
-export type CriterionSource = "device" | "github";
+/** "both": a code/CI criterion that also names device behaviour; each side checks its part. */
+export type CriterionSource = "device" | "github" | "both";
 export type CodeCriterionKind = "root-cause" | "test" | "ci";
 
 const ROOT_CAUSE = /\broot[- ]cause\b|\b(pr|pull request)('s)? (description|body|text)\b/i;
@@ -22,8 +23,14 @@ export function codeCriterionKind(text: string): CodeCriterionKind | undefined {
   return undefined;
 }
 
+/** Words for something a person does or sees on the device. */
+const DEVICE_CUE =
+  /\b(tap(s|ped|ping)?|press(es|ed|ing)?|click(s|ed|ing)?|swipe[sd]?|swiping|scroll(s|ed|ing)?|drag(s|ged|ging)?|open(s|ed|ing)?|launch(es|ed|ing)?|navigat(e|es|ed|ing)|screens?|sheet|button|shows?|showing|display(s|ed)?|visible|appears?|renders?|user sees|on (the )?(device|phone|emulator))\b/i;
+
 export function classifyCriteria(criteria: readonly string[]): CriterionSource[] {
-  return criteria.map((c) => (codeCriterionKind(c) ? "github" : "device"));
+  return criteria.map((c) =>
+    !codeCriterionKind(c) ? "device" : DEVICE_CUE.test(c) ? "both" : "github",
+  );
 }
 
 /** What GitHub (and Matrix's own checks phase) says about the PR at the QA'd head. */
@@ -31,7 +38,8 @@ export interface PullRequestFacts {
   /** The head SHA GitHub reports for the PR; must equal the QA'd head. */
   headSha: string;
   body: string;
-  files: { path: string; status: string; additions: number }[];
+  /** `patch`: the file's unified diff as GitHub returns it (absent for big or binary files). */
+  files: { path: string; status: string; additions: number; patch?: string }[];
   /** Check runs and commit statuses on the head SHA. */
   checks: { name: string; state: "success" | "failure" | "pending" | "neutral" }[];
   /** Names of checks failing on the base branch's tip: failing there too means pre-existing. */
@@ -45,6 +53,8 @@ export interface CodeCriterionResult {
   criterion: number;
   status: CodeCriterionStatus;
   detail: string;
+  /** The criterion also names device behaviour: the device agent checks that half. */
+  alsoDevice?: boolean;
 }
 
 const TEST_FILE =
@@ -83,25 +93,33 @@ function rootCause(facts: PullRequestFacts): [CodeCriterionStatus, string] {
   return ["pass", "the PR description has a root cause section with proof"];
 }
 
+/** An added line that declares a test case (JS/TS, Python, Go, Rust, Kotlin/Java, Swift). */
+const NEW_CASE =
+  /^\+(?!\+\+)\s*(?:(?:it|test|describe)(?:\.\w+)?\s*\(|(?:async\s+)?def test_\w*|func Test\w*|#\[(?:tokio::)?test\]|@Test\b|func test\w*)/m;
+
 function regressionTest(facts: PullRequestFacts): [CodeCriterionStatus, string] {
   const tests = facts.files.filter(
     (f) => TEST_FILE.test(f.path) && f.status !== "removed" && f.additions > 0,
   );
   if (!tests.length) return ["fail", "the diff adds or changes no test file"];
+  // A comment or an edit to an old case is not a regression test: an added test case is.
+  const withCase = tests.filter((t) => t.patch === undefined || NEW_CASE.test(t.patch));
+  if (!withCase.length) return ["fail", "the diff touches test files but adds no new test case"];
   const sources = facts.files.filter((f) => !TEST_FILE.test(f.path) && /\.[a-z]+$/i.test(f.path));
-  const targeted = tests.filter((t) =>
+  const targeted = withCase.filter((t) =>
     sources.some((s) => {
       const a = stem(t.path);
       const b = stem(s.path);
       return (
-        (a.length > 2 && b.length > 2 && (a.startsWith(b) || b.startsWith(a))) ||
+        (a.length > 3 && b.length > 3 && (a.startsWith(b) || b.startsWith(a))) ||
         dir(t.path) === dir(s.path)
       );
     }),
   );
+  // A test elsewhere may still be the right one; Matrix cannot tell from paths: not a FAIL.
   if (!targeted.length)
     return [
-      "fail",
+      "unverified",
       `test files changed (${tests
         .map((t) => t.path)
         .slice(0, 3)
@@ -109,10 +127,10 @@ function regressionTest(facts: PullRequestFacts): [CodeCriterionStatus, string] 
     ];
   return [
     "pass",
-    `the diff changes ${targeted
+    `the diff adds test cases in ${targeted
       .map((t) => t.path)
       .slice(0, 3)
-      .join(", ")}, next to the changed code`,
+      .join(", ")}, next to the changed code (that they fail before the fix is not checked)`,
   ];
 }
 

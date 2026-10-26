@@ -90,8 +90,9 @@ app's package; a `FATAL EXCEPTION` is a P1 finding.
   third photo blank everywhere) is likely pre-existing or test data. Check it (another screen of
   the app that shows the same items, the same items in the system gallery, `adb shell content
   query` / `ls` on the files) and set `"cause": "pre_existing"` or `"environment"` with that check
-  in `causeCheck`. Such findings are filed as separate issues and do not fail the PR; without a
-  check they count against it.
+  in `causeCheck` (what you looked at and what it showed, one sentence). Such P2/P3 findings are
+  filed as separate issues and do not fail the PR; without a real check they count against it,
+  and a P1 always fails it.
 
 ## 6. Severity scale
 

@@ -630,7 +630,32 @@ export class Reconciler {
     const criteria = manual.criteria.length ? manual.criteria : acceptanceCriteria(ticket.body);
     const pr = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/);
     const sources = classifyCriteria(criteria);
-    const numbered = (source: string) => sources.flatMap((s, i) => (s === source ? [i + 1] : []));
+    const numbered = (...source: string[]) =>
+      sources.flatMap((s, i) => (source.includes(s) ? [i + 1] : []));
+    // Code/CI criteria are Matrix's to verify on GitHub (a device agent cannot see them), read
+    // again after the device run so the verdict uses CI as it is then, not as it was 2 h earlier.
+    const verifyCode = async (): Promise<[CodeCriterionResult[], PullRequestFacts | undefined]> => {
+      let facts: PullRequestFacts | undefined;
+      let unavailable: string | undefined;
+      try {
+        facts = await this.o.pullRequests?.facts?.(project, url);
+        if (!facts) unavailable = "this Matrix host cannot read the PR on GitHub";
+      } catch (error) {
+        unavailable = `reading the PR on GitHub failed: ${(error as Error).message.slice(0, 200)}`;
+      }
+      const checks = await this.latestRun(w, "checks");
+      const results = verifyCodeCriteria(
+        criteria,
+        numbered("github", "both"),
+        facts,
+        headSha,
+        checks
+          ? { ok: checks.status === "ok", summary: (checks.summary ?? "").slice(0, 200) }
+          : undefined,
+        unavailable,
+      ).map((r) => ({ ...r, alsoDevice: sources[r.criterion - 1] === "both" }));
+      return [results, facts];
+    };
     const job = (async () => {
       let outcome: AgentQaOutcome;
       let code: CodeCriterionResult[] = [];
@@ -640,26 +665,7 @@ export class Reconciler {
         if (!criteria.length) throw new Error(NO_CRITERIA);
         if (!this.o.agentQa?.handles(project))
           throw new Error("no agent QA lane is configured for this project on the Matrix host");
-        // Code/CI criteria are Matrix's to verify on GitHub: a device agent cannot see them.
-        let facts: PullRequestFacts | undefined;
-        let unavailable: string | undefined;
-        try {
-          facts = await this.o.pullRequests?.facts?.(project, url);
-          if (!facts) unavailable = "this Matrix host cannot read the PR on GitHub";
-        } catch (error) {
-          unavailable = `reading the PR on GitHub failed: ${(error as Error).message.slice(0, 200)}`;
-        }
-        const checks = await this.latestRun(w, "checks");
-        code = verifyCodeCriteria(
-          criteria,
-          numbered("github"),
-          facts,
-          headSha,
-          checks
-            ? { ok: checks.status === "ok", summary: (checks.summary ?? "").slice(0, 200) }
-            : undefined,
-          unavailable,
-        );
+        const [, facts] = await verifyCode();
         outcome = await this.o.agentQa.run({
           project,
           ticket: {
@@ -675,13 +681,14 @@ export class Reconciler {
           headSha,
           surfaces: manual.surfaces,
           criteria,
-          deviceCriteria: numbered("device"),
+          deviceCriteria: numbered("device", "both"),
           ...(facts ? { pullRequestBody: facts.body.slice(0, 8_000) } : {}),
           signal: AbortSignal.timeout(2 * 60 * 60_000),
         });
       } catch (error) {
         outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
       }
+      if (outcome.kind === "report") [code] = await verifyCode();
       await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome, criteria, code);
     })()
       .catch((error) => this.trackerFailed(project.id, w.ticketId, "agent-qa", error))

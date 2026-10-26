@@ -179,8 +179,8 @@ case "$step" in
     changed=0; [[ "$old" == "$(cat "$manifest")" ]] || changed=1
     removed=0
     if ((changed)); then
-      while read -r _ oname; do
-        [[ "$oname" =~ ^[a-z][a-z0-9._-]{0,40}$ && "$oname" != app ]] || continue
+      while read -r kind oname; do
+        [[ "$kind" != app && "$oname" =~ ^[a-z][a-z0-9._-]{0,40}$ ]] || continue
         cut -d' ' -f2 "$manifest" | grep -qxF "$oname" && continue
         adb -s "$serial" shell rm -f "$devdir/$oname" </dev/null && removed=$((removed + 1))
       done <<<"$old"

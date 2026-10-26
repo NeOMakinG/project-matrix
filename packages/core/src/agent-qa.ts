@@ -71,7 +71,8 @@ type Finding = AgentQaReport["findings"][number];
 
 /** A finding counts against the PR unless the agent says why it is not the PR's and how it checked. */
 export function isPreExisting(f: Finding): boolean {
-  return f.cause !== "pr" && f.causeCheck.length >= 10;
+  // A P1 (crash, data loss, broken main flow) always stops the PR, whoever caused it.
+  return f.severity !== "P1" && f.cause !== "pr" && f.causeCheck.replace(/\s+/g, " ").length >= 40;
 }
 
 export type AgentQaReport = z.output<typeof agentQaReportSchema>;
@@ -215,7 +216,7 @@ export type CriterionStatus =
 
 export interface CriterionLine {
   criterion: number;
-  source: "device" | "github";
+  source: "device" | "github" | "both";
   status: CriterionStatus;
   detail?: string;
 }
@@ -231,13 +232,15 @@ export function criterionLines(
   return Array.from({ length: criteriaCount }, (_, i): CriterionLine => {
     const n = i + 1;
     const c = byCode.get(n);
-    if (c)
-      return {
-        criterion: n,
-        source: "github",
-        status: c.status === "pass" ? "PASS" : c.status === "fail" ? "FAIL" : "NOT VERIFIED",
-        detail: c.detail,
-      };
+    const onGithub: CriterionStatus | undefined = c
+      ? c.status === "pass"
+        ? "PASS"
+        : c.status === "fail"
+          ? "FAIL"
+          : "NOT VERIFIED"
+      : undefined;
+    if (c && onGithub && !c.alsoDevice)
+      return { criterion: n, source: "github", status: onGithub, detail: c.detail };
     const steps = report.steps.filter((s) => s.criterion === n);
     const status: CriterionStatus = steps.some((s) => !s.ok && !s.notTested)
       ? "FAIL"
@@ -251,7 +254,15 @@ export function criterionLines(
         : steps.some((s) => s.notTested === "tooling")
           ? "NOT TESTED (tooling)"
           : "NOT TESTED";
-    return { criterion: n, source: "device", status };
+    if (!c || !onGithub) return { criterion: n, source: "device", status };
+    // Both halves must hold: a failure on either side fails it, an unverified code half blocks it.
+    const both: CriterionStatus =
+      status === "FAIL" || onGithub === "FAIL"
+        ? "FAIL"
+        : onGithub === "NOT VERIFIED"
+          ? "NOT VERIFIED"
+          : status;
+    return { criterion: n, source: "both", status: both, detail: c.detail };
   });
 }
 
@@ -271,10 +282,11 @@ function splitVerdict(
   code: readonly CodeCriterionResult[],
 ): { verdict: AgentQaVerdict; note?: string } {
   if (report.verdict === "BLOCKED") return { verdict: "BLOCKED" };
-  const codeNumbers = new Set(code.map((c) => c.criterion));
+  const codeNumbers = new Set(code.filter((c) => !c.alsoDevice).map((c) => c.criterion));
   const deviceSteps = report.steps.filter((s) => !s.criterion || !codeNumbers.has(s.criterion));
   const failed = deviceSteps.filter((s) => !s.ok && !s.notTested).length;
   const serious = report.findings.filter((f) => f.severity !== "P3" && !isPreExisting(f)).length;
+  const excused = report.findings.filter((f) => f.severity === "P2" && isPreExisting(f)).length;
   const codeFailed = code.filter((c) => c.status === "fail").map((c) => c.criterion);
   if (failed || serious || codeFailed.length)
     return {
@@ -285,7 +297,7 @@ function splitVerdict(
     };
   if (criteriaCount < 1) return { verdict: "BLOCKED", note: NO_CRITERIA };
   const lines = criterionLines(report, criteriaCount, shots, code);
-  const device = lines.filter((l) => l.source === "device");
+  const device = lines.filter((l) => l.source !== "github");
   const unverified = lines.filter((l) => l.status === "NOT VERIFIED").map((l) => l.criterion);
   if (unverified.length)
     return {
@@ -300,12 +312,19 @@ function splitVerdict(
     };
   if (device.length && !device.some((l) => l.status === "PASS"))
     return { verdict: "BLOCKED", note: "no device acceptance criterion could be tested" };
-  return report.verdict === "PASS"
-    ? { verdict: "PASS" }
-    : {
-        verdict: "PASS",
-        note: "the QA agent reported FAIL, but no device step failed, no finding is caused by this PR and every code/CI criterion holds",
-      };
+  const notes = [
+    ...(report.verdict === "PASS"
+      ? []
+      : [
+          "the QA agent reported FAIL, but no device step failed, no finding is caused by this PR and every code/CI criterion holds",
+        ]),
+    ...(excused
+      ? [
+          `${excused} P2 finding(s) counted as pre-existing / environment on the agent's check: review them below`,
+        ]
+      : []),
+  ];
+  return notes.length ? { verdict: "PASS", note: notes.join("; ") } : { verdict: "PASS" };
 }
 
 /** Title prefix of the tracker issues Matrix files for pre-existing findings (dedupe key). */

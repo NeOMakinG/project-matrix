@@ -120,7 +120,7 @@ export class GitHubPullRequests implements PullRequestPort {
           "--slurp",
           `repos/${repo}/pulls/${m[2]}/files?per_page=100`,
         ]),
-      ) as { filename?: string; status?: string; additions?: number }[][]
+      ) as { filename?: string; status?: string; additions?: number; patch?: string }[][]
     )
       .flat()
       .slice(0, 3_000)
@@ -128,6 +128,7 @@ export class GitHubPullRequests implements PullRequestPort {
         path: String(f.filename ?? ""),
         status: String(f.status ?? ""),
         additions: Number(f.additions ?? 0),
+        ...(typeof f.patch === "string" ? { patch: f.patch.slice(0, 200_000) } : {}),
       }));
     const checks = await this.#checks(repo, headSha);
     const base = await this.#checks(repo, encodeURIComponent(baseRef)).catch(() => []);
@@ -142,14 +143,29 @@ export class GitHubPullRequests implements PullRequestPort {
 
   /** Check runs and commit statuses of one ref, latest per name. */
   async #checks(repo: string, ref: string): Promise<PullRequestFacts["checks"]> {
-    const runs = JSON.parse(
-      await this.#gh(["api", `repos/${repo}/commits/${ref}/check-runs?per_page=100`]),
-    ) as { check_runs?: { name?: string; status?: string; conclusion?: string | null }[] };
-    const statuses = JSON.parse(await this.#gh(["api", `repos/${repo}/commits/${ref}/status`])) as {
-      statuses?: { context?: string; state?: string }[];
-    };
+    // Every page: a failing check past the first 100 must not read as green.
+    const runs = (
+      JSON.parse(
+        await this.#gh([
+          "api",
+          "--paginate",
+          "--slurp",
+          `repos/${repo}/commits/${ref}/check-runs?per_page=100`,
+        ]),
+      ) as { check_runs?: { name?: string; status?: string; conclusion?: string | null }[] }[]
+    ).flatMap((page) => page.check_runs ?? []);
+    const statuses = (
+      JSON.parse(
+        await this.#gh([
+          "api",
+          "--paginate",
+          "--slurp",
+          `repos/${repo}/commits/${ref}/statuses?per_page=100`,
+        ]),
+      ) as { context?: string; state?: string }[][]
+    ).flat();
     const out = new Map<string, PullRequestFacts["checks"][number]["state"]>();
-    for (const r of runs.check_runs ?? []) {
+    for (const r of runs) {
       const name = String(r.name ?? "");
       if (!name || out.has(name)) continue;
       const c = r.conclusion ?? "";
@@ -165,7 +181,7 @@ export class GitHubPullRequests implements PullRequestPort {
       );
     }
     // Statuses come newest first: the first one per context is its current state.
-    for (const s of statuses.statuses ?? []) {
+    for (const s of statuses) {
       const name = String(s.context ?? "");
       if (!name || out.has(name)) continue;
       out.set(
