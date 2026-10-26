@@ -333,3 +333,16 @@ test("a failing deploy preview does not fail a typecheck/lint/tests criterion", 
   const lint = facts({ checks: [{ name: "lint", state: "failure" }], baseFailing: [] });
   expect(verifyCodeCriteria(NEO8, [6], lint, HEAD, ok)[0]?.status).toBe("fail");
 });
+
+test("typecheck under other names still counts; an unknown failing check is unverified", () => {
+  const typescript = facts({
+    checks: [
+      { name: "lint", state: "success" },
+      { name: "TypeScript", state: "failure" },
+    ],
+    baseFailing: [],
+  });
+  expect(verifyCodeCriteria(NEO8, [6], typescript, HEAD, ok)[0]?.status).toBe("fail");
+  const odd = facts({ checks: [{ name: "Quality gate", state: "failure" }], baseFailing: [] });
+  expect(verifyCodeCriteria(NEO8, [6], odd, HEAD, ok)[0]?.status).toBe("unverified");
+});

@@ -184,7 +184,10 @@ function regressionTest(
 }
 
 /** A check that runs lint, typecheck, tests or a build (by its name). */
-const CI_CHECK = /lint|type-?check|tsc|test|\bci\b|build|biome|eslint|vitest|jest/i;
+const CI_CHECK = /lint|type[- ]?check|typescript|tsc|test|\bci\b|build|biome|eslint|vitest|jest/i;
+/** Checks that only deploy or preview the site (Netlify/Vercel/Pages rules). */
+const DEPLOY_CHECK =
+  /netlify|vercel|deploy|preview|header rules|redirect rules|pages changed|cloudflare pages/i;
 
 function ci(
   facts: PullRequestFacts,
@@ -194,7 +197,17 @@ function ci(
   // Only checks that run what the criterion names count; a failing deploy preview is not
   // "typecheck, lint and tests" and is only listed.
   const relevant = (name: string) => CI_CHECK.test(name);
-  const unrelated = facts.checks.filter((c) => c.state === "failure" && !relevant(c.name));
+  const unrelated = facts.checks.filter(
+    (c) => c.state === "failure" && !relevant(c.name) && DEPLOY_CHECK.test(c.name),
+  );
+  // A failing or running check Matrix cannot place is not evidence either way: unverified.
+  const unknown = facts.checks.filter(
+    (c) =>
+      (c.state === "failure" || c.state === "pending") &&
+      !relevant(c.name) &&
+      !DEPLOY_CHECK.test(c.name) &&
+      !base.has(c.name),
+  );
   const failing = facts.checks.filter(
     (c) => c.state === "failure" && relevant(c.name) && !base.has(c.name),
   );
@@ -220,6 +233,14 @@ function ci(
     return [
       "fail",
       `GitHub checks failing on the head and not on the base branch: ${failing
+        .map((c) => c.name)
+        .slice(0, 5)
+        .join(", ")}`,
+    ];
+  if (unknown.length)
+    return [
+      "unverified",
+      `checks Matrix cannot classify are failing or running: ${unknown
         .map((c) => c.name)
         .slice(0, 5)
         .join(", ")}`,
