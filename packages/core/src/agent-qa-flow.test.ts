@@ -318,3 +318,76 @@ test("a PR-label retry never rewrites ticket labels that landed (needs-human rem
   expect(prLabels).toEqual([{ add: [], remove: ["qa:passed"] }]);
   expect(requests).toHaveLength(1);
 });
+
+test("queued label writes survive a restart: the next process resumes them once", async () => {
+  const fail = report({
+    verdict: "FAIL",
+    steps: [{ action: "Tap", expected: "a", actual: "b", ok: false, criterion: 1 }],
+  });
+  const { h, requests } = agentHarness([reportOutcome(fail)]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.tickets.addLabel(t.id, "qa:passed");
+  const add = h.tickets.addLabel.bind(h.tickets);
+  let down = true;
+  h.tickets.addLabel = async (id: string, label: string) => {
+    if (label === "qa:failed" && down) throw new Error("linear down");
+    return add(id, label);
+  };
+  // Stop once the FAIL report is applied (draining further would re-run QA after the loop back).
+  for (let i = 0; i < 50 && reports(h).length === 0; i++) {
+    await h.reconciler.tick();
+    await h.reconciler.idle();
+    await h.reconciler.agentQaIdle();
+  }
+  expect(requests).toHaveLength(1);
+  expect(reports(h)[0]).toMatch(/^Matrix agent QA FAIL/);
+  const queued = await h.store.listLabelRetries();
+  expect(queued).toHaveLength(1);
+  expect(queued[0]).toMatchObject({ ticketId: t.id, ticket: { add: ["qa:failed"] } });
+  expect(h.tickets.tickets.get(t.id)?.labels).not.toContain("qa:failed");
+
+  // Restart: a new process with no memory of the failed write.
+  down = false;
+  const next = h.makeReconciler("reconciler:restarted");
+  await next.tick();
+  await next.idle();
+  const labels = h.tickets.tickets.get(t.id)?.labels ?? [];
+  expect(labels).toContain("qa:failed");
+  expect(labels).not.toContain("qa:passed");
+  expect(await h.store.listLabelRetries()).toEqual([]);
+  // Resumed once: a later process finds nothing queued and the label stays.
+  await h.makeReconciler("reconciler:third").tick();
+  expect(await h.store.listLabelRetries()).toEqual([]);
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:failed");
+});
+
+test("a write that lands deletes only its own queued row; a newer verdict's row is resumed", async () => {
+  const { h } = agentHarness([]);
+  await h.setup();
+  const t = await addTicket(h);
+  const stale = {
+    id: "old",
+    projectId: "pilot",
+    ticketId: t.id,
+    url: PR_URL,
+    ticket: { add: ["qa:passed"], remove: [] },
+    pr: { add: ["qa:passed"], remove: [] },
+    tries: 0,
+  };
+  await h.store.saveLabelRetry(stale);
+  await h.store.saveLabelRetry({
+    ...stale,
+    id: "new",
+    ticket: { add: ["qa:failed"], remove: ["qa:passed"] },
+    pr: { add: ["qa:failed"], remove: ["qa:passed"] },
+  });
+  // An older fix's progress or landing never touches the newer verdict's row.
+  await h.store.updateLabelRetry({ ...stale, tries: 3 });
+  await h.store.deleteLabelRetry("pilot", t.id, "old");
+  expect(await h.store.listLabelRetries()).toMatchObject([{ id: "new", tries: 0 }]);
+  await h.reconciler.tick();
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:failed");
+  expect(h.tickets.tickets.get(t.id)?.labels).not.toContain("qa:passed");
+  expect(await h.store.listLabelRetries()).toEqual([]);
+});

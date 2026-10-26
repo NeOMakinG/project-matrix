@@ -213,6 +213,26 @@ export interface Store {
 
   addLesson(lesson: Lesson): Promise<void>;
   listLessons(projectId: string): Promise<Lesson[]>;
+
+  /** Upserts the queued label write for its ticket (one per ticket; a newer one replaces it). */
+  saveLabelRetry(retry: LabelRetry): Promise<void>;
+  /** Records retry progress, only if the ticket's row is still `retry.id` (never resurrects). */
+  updateLabelRetry(retry: LabelRetry): Promise<void>;
+  /** Deletes the ticket's queued label write, only if it is still `id` (a newer one is kept). */
+  deleteLabelRetry(projectId: string, ticketId: string, id: string): Promise<void>;
+  listLabelRetries(): Promise<LabelRetry[]>;
+}
+
+/** A verdict's label write (ticket + PR) queued until it lands; survives restarts. */
+export interface LabelRetry {
+  id: string;
+  projectId: string;
+  ticketId: string;
+  url: string;
+  ticket: { add: string[]; remove: string[] };
+  pr: { add: string[]; remove: string[] };
+  tries: number;
+  ticketDone?: boolean;
 }
 
 const key = (p: string, t: string) => `${p}\u0000${t}`;
@@ -229,6 +249,7 @@ export class MemoryStore implements Store {
   private history: AutonomyChange[] = [];
   private spend = new Map<string, number>();
   private lessons: Lesson[] = [];
+  private labelRetries = new Map<string, LabelRetry>();
   readonly tickets = new Map<string, Parameters<Store["indexTicket"]>[1]>();
 
   async upsertProject(config: ProjectConfig) {
@@ -478,5 +499,19 @@ export class MemoryStore implements Store {
   }
   async listLessons(projectId: string) {
     return this.lessons.filter((l) => l.projectId === projectId).map(clone);
+  }
+  async saveLabelRetry(retry: LabelRetry) {
+    this.labelRetries.set(key(retry.projectId, retry.ticketId), clone(retry));
+  }
+  async updateLabelRetry(retry: LabelRetry) {
+    const k = key(retry.projectId, retry.ticketId);
+    if (this.labelRetries.get(k)?.id === retry.id) this.labelRetries.set(k, clone(retry));
+  }
+  async deleteLabelRetry(projectId: string, ticketId: string, id: string) {
+    const k = key(projectId, ticketId);
+    if (this.labelRetries.get(k)?.id === id) this.labelRetries.delete(k);
+  }
+  async listLabelRetries() {
+    return [...this.labelRetries.values()].map(clone);
   }
 }

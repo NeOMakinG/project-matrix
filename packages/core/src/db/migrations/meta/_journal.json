@@ -36,6 +36,13 @@
       "when": 1792750101573,
       "tag": "0004_workflow_stopped_by",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792971824958,
+      "tag": "0005_label_retries",
+      "breakpoints": true
     }
   ]
 }

@@ -212,6 +212,19 @@ export const concurrencyLimits = pgTable(
   (t) => [uniqueIndex("concurrency_scope_key").on(t.scope, t.key)],
 );
 
+/** Agent QA label writes queued until they land (one per ticket); resumed after a restart. */
+export const labelRetries = pgTable(
+  "label_retries",
+  {
+    projectId: text("project_id").notNull(),
+    ticketId: text("ticket_id").notNull(),
+    id: text("id").notNull(),
+    fix: jsonb("fix").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.projectId, t.ticketId] })],
+);
+
 export const lessons = pgTable("lessons", {
   id: serial("id").primaryKey(),
   projectId: text("project_id").notNull(),

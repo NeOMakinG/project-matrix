@@ -11,6 +11,7 @@ import {
   type Approver,
   type AutonomyChange,
   AutonomyConflictError,
+  type LabelRetry,
   type Lesson,
   projectPolicySnapshot,
   type RunRecord,
@@ -737,5 +738,46 @@ export class PgStore implements Store {
       source: r.source,
       lesson: r.lesson,
     }));
+  }
+
+  async saveLabelRetry(retry: LabelRetry) {
+    const row = { projectId: retry.projectId, ticketId: retry.ticketId, id: retry.id, fix: retry };
+    await this.db
+      .insert(s.labelRetries)
+      .values(row)
+      .onConflictDoUpdate({
+        target: [s.labelRetries.projectId, s.labelRetries.ticketId],
+        set: { id: retry.id, fix: retry, updatedAt: new Date() },
+      });
+  }
+
+  async updateLabelRetry(retry: LabelRetry) {
+    await this.db
+      .update(s.labelRetries)
+      .set({ fix: retry, updatedAt: new Date() })
+      .where(
+        and(
+          eq(s.labelRetries.projectId, retry.projectId),
+          eq(s.labelRetries.ticketId, retry.ticketId),
+          eq(s.labelRetries.id, retry.id),
+        ),
+      );
+  }
+
+  async deleteLabelRetry(projectId: string, ticketId: string, id: string) {
+    await this.db
+      .delete(s.labelRetries)
+      .where(
+        and(
+          eq(s.labelRetries.projectId, projectId),
+          eq(s.labelRetries.ticketId, ticketId),
+          eq(s.labelRetries.id, id),
+        ),
+      );
+  }
+
+  async listLabelRetries() {
+    const rows = await this.db.select().from(s.labelRetries).orderBy(asc(s.labelRetries.updatedAt));
+    return rows.map((r) => ({ ...(r.fix as LabelRetry), id: r.id }));
   }
 }

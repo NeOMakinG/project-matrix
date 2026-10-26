@@ -295,4 +295,32 @@ describe.skipIf(!url)("PgStore against real Postgres", () => {
       status: "waiting_approval",
     });
   }, 120_000);
+  test("label retries upsert per ticket, delete only their own id, survive a reconnect", async () => {
+    const projectId = `labels-${Date.now()}`;
+    const retry = {
+      id: "fix-1",
+      projectId,
+      ticketId: "T-1",
+      url: "https://github.com/acme/app/pull/1",
+      ticket: { add: ["qa:failed"], remove: ["qa:passed"] },
+      pr: { add: ["qa:failed"], remove: ["qa:passed"] },
+      tries: 1,
+    };
+    await store.saveLabelRetry(retry);
+    await store.saveLabelRetry({ ...retry, id: "fix-2", tries: 0, ticketDone: true });
+    await store.updateLabelRetry({ ...retry, tries: 5 });
+    await store.deleteLabelRetry(projectId, "T-1", "fix-1");
+    await store.updateLabelRetry({ ...retry, id: "gone", ticketId: "T-2" });
+    const other = await PgStore.connect(url as string);
+    try {
+      const mine = (await other.listLabelRetries()).filter((r) => r.projectId === projectId);
+      expect(mine).toEqual([{ ...retry, id: "fix-2", tries: 0, ticketDone: true }]);
+    } finally {
+      await other.close();
+    }
+    await store.updateLabelRetry({ ...retry, id: "fix-2", tries: 2, ticketDone: true });
+    expect((await store.listLabelRetries()).find((r) => r.projectId === projectId)?.tries).toBe(2);
+    await store.deleteLabelRetry(projectId, "T-1", "fix-2");
+    expect((await store.listLabelRetries()).some((r) => r.projectId === projectId)).toBe(false);
+  });
 });

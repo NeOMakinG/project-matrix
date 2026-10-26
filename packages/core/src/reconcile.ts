@@ -72,6 +72,7 @@ import {
 import {
   type Actor,
   type ApprovalRecord,
+  type LabelRetry,
   type RunRecord,
   type Store,
   VersionConflictError,
@@ -273,6 +274,10 @@ export class Reconciler {
   private readonly agentQaLabelsPending = new Map<string, AgentQaLabelFix>();
   /** The newest label fix per ticket (older ones in flight never re-queue over it). */
   private readonly agentQaLabelsLatest = new Map<string, AgentQaLabelFix>();
+  /** Label writes queued by an earlier process were reloaded from the store. */
+  private agentQaLabelsResumed = false;
+  /** Tail of each ticket's label-retry store writes (keeps them in issue order). */
+  private readonly labelRetryOps = new Map<string, Promise<void>>();
   readonly ownerId: string;
   private readonly active = new Map<string, ActiveRun>();
   private readonly clock: () => Date;
@@ -374,6 +379,7 @@ export class Reconciler {
       else if (result === "replayed") report.replayed.push(w.ticketId);
       else if (result === "approval") report.awaitingApproval.push(w.ticketId);
     }
+    await this.resumeAgentQaLabels();
     for (const fix of [...this.agentQaLabelsPending.values()]) {
       const project = byId.get(fix.projectId);
       if (project) await this.writeAgentQaLabels(project, fix);
@@ -739,6 +745,7 @@ export class Reconciler {
     verdict: AgentQaVerdict,
   ): Promise<void> {
     const fix = (ticket: [string[], string[]], pr: [string[], string[]]): AgentQaLabelFix => ({
+      id: this.ids(),
       projectId: project.id,
       ticketId: now.ticketId,
       url,
@@ -793,6 +800,8 @@ export class Reconciler {
         for (const old of this.agentQaLabelsLatest.keys())
           if (!this.agentQaLabelsPending.has(old)) this.agentQaLabelsLatest.delete(old);
       this.agentQaLabelsLatest.set(k, fix);
+      // Write-ahead: a restart mid-write resumes it (label writes are idempotent).
+      await this.queueLabelRetryOp(fix, "persist", (st, f) => st.saveLabelRetry(f));
     }
     if (this.agentQaLabelsLatest.get(k) !== fix) return;
     this.agentQaLabelsPending.delete(k);
@@ -809,8 +818,73 @@ export class Reconciler {
     } catch (error) {
       fix.tries += 1;
       // Kept until it lands or a newer verdict replaces it (one entry per ticket at most).
-      if (this.agentQaLabelsLatest.get(k) === fix) this.agentQaLabelsPending.set(k, fix);
+      if (this.agentQaLabelsLatest.get(k) === fix) {
+        this.agentQaLabelsPending.set(k, fix);
+        // Progress only: never overwrites (or resurrects) a newer verdict's row.
+        await this.queueLabelRetryOp(fix, "persist", (st, f) => st.updateLabelRetry(f));
+      }
       this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
+      return;
+    }
+    // Only this fix's row: a newer verdict's queued write stays. A leftover row only replays
+    // idempotent label writes after a restart.
+    await this.queueLabelRetryOp(fix, "dequeue", (st, f) =>
+      st.deleteLabelRetry(f.projectId, f.ticketId, f.id),
+    );
+  }
+
+  /**
+   * Runs one label-retry store write after the ticket's previous ones (they land in the order
+   * they were issued, so an older verdict's write never lands after a newer one's). Best effort:
+   * the in-memory queue still retries if the store is down.
+   */
+  private async queueLabelRetryOp(
+    fix: AgentQaLabelFix,
+    what: "persist" | "dequeue",
+    op: (store: Store, snapshot: AgentQaLabelFix) => Promise<void>,
+  ): Promise<void> {
+    const k = `${fix.projectId}\u0000${fix.ticketId}`;
+    const snapshot = structuredClone(fix);
+    const run = (this.labelRetryOps.get(k) ?? Promise.resolve()).then(async () => {
+      try {
+        await op(this.o.store, snapshot);
+      } catch (error) {
+        this.trackerFailed(fix.projectId, fix.ticketId, `agent-qa-labels-${what}`, error);
+      }
+    });
+    this.labelRetryOps.set(k, run);
+    await run;
+    if (this.labelRetryOps.get(k) === run) this.labelRetryOps.delete(k);
+  }
+
+  /**
+   * Once per process: reloads label writes queued by an earlier process (lost on restart
+   * otherwise). A fix this process already made for the ticket is newer and wins.
+   */
+  private async resumeAgentQaLabels(): Promise<void> {
+    if (this.agentQaLabelsResumed) return;
+    let queued: LabelRetry[];
+    try {
+      queued = await this.o.store.listLabelRetries();
+    } catch (error) {
+      this.o.bus.publish({
+        type: "tracker.failed",
+        projectId: "*",
+        ticketId: "*",
+        operation: "agent-qa-labels-resume",
+        message: error instanceof Error ? error.message : String(error),
+        at: this.clock().toISOString(),
+      });
+      return;
+    }
+    this.agentQaLabelsResumed = true;
+    for (const fix of queued) {
+      const k = `${fix.projectId}\u0000${fix.ticketId}`;
+      if (this.agentQaLabelsLatest.has(k)) continue;
+      // Not a new verdict: the retry path must not re-persist or re-supersede it.
+      const resumed = { ...fix, tries: Math.max(1, fix.tries) };
+      this.agentQaLabelsLatest.set(k, resumed);
+      this.agentQaLabelsPending.set(k, resumed);
     }
   }
 
@@ -2426,12 +2500,4 @@ export class Reconciler {
   }
 }
 
-interface AgentQaLabelFix {
-  projectId: string;
-  ticketId: string;
-  url: string;
-  ticket: { add: string[]; remove: string[] };
-  pr: { add: string[]; remove: string[] };
-  tries: number;
-  ticketDone?: boolean;
-}
+type AgentQaLabelFix = LabelRetry;
