@@ -30,7 +30,9 @@ export function loadFixtures(root: string, set: string): { name: string; bytes: 
   if (names.length === 0) throw new Error(`fixture set ${set} is empty`);
   return names.map((name) => {
     if (!FIXTURE.test(name)) throw new Error(`fixture name not allowed: ${name}`);
-    return { name, bytes: readFileSync(join(dir, name)) };
+    const bytes = readFileSync(join(dir, name));
+    if (bytes.length === 0) throw new Error(`fixture ${name} is empty`);
+    return { name, bytes };
   });
 }
 
@@ -256,7 +258,7 @@ export class SshAgentQaLane implements AgentQaPort {
         sig,
       );
       const version = (
-        await this.#step(["install", job, c.serial, project.apk, project.appId], 10 * 60_000, sig)
+        await this.#step(["install", job, c.serial, project.apk, project.appId], 25 * 60_000, sig)
       ).trim();
       if (/^[\w.+-]{1,40}$/.test(version)) build.version = version;
       if (project.fixtures) await this.#seed(job, project.fixtures, sig);

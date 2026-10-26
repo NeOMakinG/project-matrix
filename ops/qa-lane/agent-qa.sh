@@ -36,21 +36,20 @@ booted() { [[ "$(adb -s "$1" shell getprop sys.boot_completed 2>/dev/null | tr -
 # A device that went offline mid-job otherwise blocks the run on an adb hiccup, not the app.
 revive() {
   local serial="$1"
-  adb reconnect offline >/dev/null 2>&1 || true
   adb -s "$serial" reconnect >/dev/null 2>&1 || true
   for _ in $(seq 1 15); do online "$serial" && booted "$serial" && return 0; sleep 2; done
   [[ "$serial" == emulator-* && -x /root/boot-emulator.sh ]] || return 1
   echo "restarting $serial" >&2
   adb -s "$serial" emu kill >/dev/null 2>&1 || true
   for _ in $(seq 1 20); do online "$serial" || break; sleep 1; done
-  /root/boot-emulator.sh >/dev/null
+  /root/boot-emulator.sh >/dev/null || return 1
   timeout 180 adb -s "$serial" wait-for-device >/dev/null 2>&1 || true
   for _ in $(seq 1 90); do booted "$serial" && return 0; sleep 2; done
   return 1
 }
 ensure_device() { online "$1" && return 0; echo "$1 offline, reviving" >&2; revive "$1"; }
 # adb's own words for "the device went away", as opposed to an APK the device refused.
-lost_device() { grep -qiE "device .*(offline|not found)|no devices/emulators|device offline|closed|protocol fault|connection reset" "$1"; }
+lost_device() { grep -qiE "device .*(offline|not found)|no devices/emulators|device offline|\bclosed\b|protocol fault|connection reset" "$1"; }
 
 step="${1:-}"; shift || true
 case "$step" in
@@ -171,10 +170,10 @@ case "$step" in
       adb -s "$serial" push "$f" "$devdir/$name" >/dev/null || die 11 "could not push $name to $serial"
       pushed=$((pushed + 1))
     done
-    if (( pushed > 0 )); then
-      adb -s "$serial" shell content call --uri content://media --method scan_volume --arg external_primary >/dev/null 2>&1 \
-        || adb -s "$serial" shell am broadcast -a android.intent.action.MEDIA_MOUNTED -d "file:///sdcard" >/dev/null 2>&1 || true
-    fi
+    # Scanned every run, not only after a push: a scan that failed once would otherwise leave the
+    # files on disk but out of MediaStore (invisible to the app) on every later run.
+    adb -s "$serial" shell content call --uri content://media --method scan_volume --arg external_primary >/dev/null 2>&1 \
+      || die 11 "media scan failed on $serial"
     echo "seeded pushed=$pushed present=$kept"
     ;;
   build)
@@ -222,7 +221,8 @@ case "$step" in
     ensure_device "$serial" || die 11 "device $serial unavailable before install"
     ok=0
     for attempt in 1 2; do
-      if timeout -k 10 600 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1; then ok=1; break; fi
+      # 2 x 420 s + revive (<= ~7 min) stays inside the caller's 25 min budget for this step.
+      if timeout -k 10 420 adb -s "$serial" install -r -g "$dir/app.apk" >"$dir/install.log" 2>&1; then ok=1; break; fi
       # One retry, only when the device itself dropped (offline, gone): never for a refused APK.
       if (( attempt == 1 )) && { lost_device "$dir/install.log" || ! online "$serial"; }; then
         echo "install lost $serial, reviving and retrying once" >&2

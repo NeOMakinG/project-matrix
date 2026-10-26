@@ -37,7 +37,7 @@ for s in "${shots[@]}"; do
     -ISO=50 -FocalLength=6.765 -Orientation=1 "-DateTimeOriginal=$stamp" "-CreateDate=$stamp" \
     -OffsetTimeOriginal=+00:00 -GPSLatitude=41.1496 -GPSLatitudeRef=N \
     "-GPSLongitude=8.$lon" -GPSLongitudeRef=W "$f"
-  # The lane names device files after these (^[a-z][a-z0-9._-]{0,40}$).
+  # The lane names device files after these: ^[a-z][a-z0-9._-]{0,37}$ (FIXTURE in agent-qa-lane.ts).
   mv "$f" "$out/img_202502${day}_${time/:/}00_qa.jpg"
 done
 ls -l "$out"

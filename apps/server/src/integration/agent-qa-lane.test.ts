@@ -262,6 +262,7 @@ test("a missing or unsafe fixture set is BLOCKED before the agent runs", async (
     {},
     { "bad name.jpg": Buffer.from("x") },
     { "UPPER.jpg": Buffer.from("x") },
+    { "empty.jpg": Buffer.alloc(0) },
   ]) {
     const root = mkdtempSync(join(tmpdir(), "mx-fx-"));
     mkdirSync(join(root, "faceless-trip"));
