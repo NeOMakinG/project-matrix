@@ -15,8 +15,9 @@ if (!TAPFLOW_RELAY_WS || !TAPFLOW_TOKEN || !QA_UDID) fail("lane environment miss
 const auth = { Authorization: `Bearer ${TAPFLOW_TOKEN}` };
 
 const HELP = `usage: ./qa-ios <command>   (the simulator ${QA_UDID})
-  tap <x> <y>                 tap; x/y in SCREENSHOT PIXELS (from ./qa-shot images)
-  swipe <x1> <y1> <x2> <y2>   swipe in screenshot pixels (edge-swipe back: 5 1300 700 1300)
+  tap <x> <y>                 tap; x/y are FRACTIONS of the screen (0..1): x = pixelX / imageWidth
+                              of a ./qa-shot image, y = pixelY / imageHeight (Next at 0.5 0.84)
+  swipe <x1> <y1> <x2> <y2>   swipe, same fractions (edge-swipe back: 0.01 0.5 0.7 0.5)
   type <text>                 type into the focused field
   key <code>                  keyboard key (Enter, Backspace, Escape, Tab)
   button <name>               hardware button (home, lock)
@@ -80,7 +81,7 @@ async function session() {
 
 const num = (v) => {
   const n = Number(v);
-  if (!Number.isFinite(n) || n < 0 || n > 5000) fail("coordinates must be numbers");
+  if (!Number.isFinite(n) || n < 0 || n > 1) fail("coordinates are fractions of the screen, 0..1");
   return n;
 };
 

@@ -127,8 +127,9 @@ Your job section says which surface you test. Only use that surface's tools.
 
 ### iOS simulator (tapflow relay: ./qa-ios, ./qa-shot)
 - Both tools are locked to the one simulator of your job. Look at the screen with
-  `./qa-shot <name>` and Read the PNG; tap/swipe with `./qa-ios` in that screenshot's pixel
-  coordinates (`./qa-ios help`). There is no UI tree: aim at the centre of what you see.
+  `./qa-shot <name>` and Read the PNG; tap/swipe with `./qa-ios` using fractions of the screen
+  (x = pixelX / imageWidth, 0..1; `./qa-ios help`). There is no UI tree: aim at the centre of
+  what you see, then screenshot again to confirm the tap landed.
 - Permission dialogs (Photos, Notifications, Location, Tracking): when the change needs the
   permission, choose the most permissive option the user would ("Allow Full Access", "Allow");
   also check what happens after "Don't Allow" when the criterion touches that permission. Note
