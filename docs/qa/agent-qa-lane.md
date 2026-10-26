@@ -313,3 +313,9 @@ device (Daymark's X scan cron on the Seeker at :10 past 9, 11, 14, 16, 19 and 21
 
 Server env: `MATRIX_QA_NODE_DIR` (node for `qa-browser` and `tapflow-mcp`), optional
 `MATRIX_QA_GATEWAY`, `MATRIX_QA_CLAUDE`, `MATRIX_QA_SECRETS`, `MATRIX_QA_TAPFLOW_MCP`.
+
+iOS build sandbox, measured live (2026-10-26, wayline): the Seatbelt profile breaks Xcode tools
+that sandbox themselves (`sandbox_apply: Operation not permitted` from coremlc; Swift macro
+plugins and SwiftPM manifests likewise). `ios.sandboxBuild: false` runs the build as the mini's
+user, the same exposure as the mini's existing manual lanes. The fix is a dedicated macOS build
+account on the mini (needs the owner's sudo), then `sandboxBuild` can stay false safely.

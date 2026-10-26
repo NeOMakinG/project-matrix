@@ -89,7 +89,9 @@ case "$step" in
   build)
     # The build command (build.sh, operator-trusted, from the lane config) runs in the PR checkout
     # with a cleared environment; it must leave the simulator .app at the configured path.
-    dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" timeout_s="$5" app_id="$6"
+    dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" timeout_s="$5" app_id="$6" sandbox="${7:-1}"
+    need sandbox "$sandbox" '^[01]$'
+
     need repo "$repo" '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'; need pr "$pr" '^[0-9]{1,9}$'
     need sha "$sha" '^[a-f0-9]{40}$'; need timeout "$timeout_s" '^[0-9]{2,4}$'
     need app_id "$app_id" '^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)+$'
@@ -144,7 +146,11 @@ SB
       # denies this account's credentials (gh, ssh, keychains, secrets) and its other files; HOME
       # is a build-only dir. macOS has no timeout(1): perl's alarm ends the build past the limit.
       bhome="$ROOT/build-home"; mkdir -p "$bhome"
-      sandbox-exec -f "$dir/build.sb" env -i HOME="$bhome" PATH="$BASE_PATH" LANG=en_US.UTF-8 TMPDIR="$bhome/tmp" \
+      sb=(sandbox-exec -f "$dir/build.sb")
+      # Xcode runs coremlc, macro plugins and SwiftPM manifests under their own sandbox, which
+      # cannot nest: projects using them need sandbox 0 (operator choice, see docs).
+      [[ "$sandbox" == 1 ]] || sb=()
+      ${sb[@]+"${sb[@]}"} env -i HOME="$bhome" PATH="$BASE_PATH" LANG=en_US.UTF-8 TMPDIR="$bhome/tmp" \
         APP_ID="$app_id" BUILD_NUMBER="$(( $(date +%s) / 60 ))" CP_HOME_DIR="$bhome/.cocoapods" \
         perl -e '$t = shift; $pid = fork // die; if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
           $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 }; alarm $t; waitpid($pid, 0);

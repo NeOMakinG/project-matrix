@@ -33,6 +33,12 @@ export const iosLaneSchema = z.object({
   /** The shared tapflow simulator's UDID (never a personal device). */
   udid: z.string().regex(/^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/),
   bootSimulator: z.boolean().default(false),
+  /**
+   * Run the PR build under the Seatbelt profile (credentials unreadable, write allow-list).
+   * Xcode's own sandboxed tools (coremlc, Swift macros, SwiftPM manifests) cannot run inside it;
+   * false runs the build as the simulator host's user: only with a dedicated build account there.
+   */
+  sandboxBuild: z.boolean().default(true),
   model: z
     .string()
     .regex(/^[a-z0-9.-]{3,60}$/)
@@ -202,6 +208,7 @@ export class TapflowIosQaLane implements AgentQaPort {
           request.headSha,
           String(Math.round(c.buildTimeoutMs / 1000)),
           project.appId,
+          c.sandboxBuild ? "1" : "0",
         ],
         c.buildTimeoutMs + 10 * 60_000,
       );
