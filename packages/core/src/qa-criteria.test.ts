@@ -33,9 +33,9 @@ const facts = (over: Partial<PullRequestFacts> = {}): PullRequestFacts => ({
   ],
   checks: [
     { name: "test", state: "success" },
-    { name: "deploy/netlify", state: "failure" },
+    { name: "e2e tests", state: "failure" },
   ],
-  baseFailing: ["deploy/netlify"],
+  baseFailing: ["e2e tests"],
   ...over,
 });
 
@@ -80,7 +80,7 @@ test("verifies root cause, regression test and CI from GitHub facts", () => {
 test("a check failing on the base branch too is pre-existing; pending or a moved head is unverified", () => {
   const [ci] = verifyCodeCriteria(NEO8, [6], facts(), HEAD, ok);
   expect(ci?.status).toBe("pass");
-  expect(ci?.detail).toMatch(/pre-existing\): deploy\/netlify/);
+  expect(ci?.detail).toMatch(/pre-existing\): e2e tests/);
   expect(
     verifyCodeCriteria(
       NEO8,
@@ -315,4 +315,21 @@ test("a passing step whose screenshot the lane did not collect blocks and says s
   const v = effectiveVerdict(r, 6, shots, passCode);
   expect(v.verdict).toBe("BLOCKED");
   expect(v.note).toMatch(/criteria 4 with a collected screenshot/);
+});
+
+test("a failing deploy preview does not fail a typecheck/lint/tests criterion", () => {
+  const netlify = facts({
+    checks: [
+      { name: "Header rules", state: "failure" },
+      { name: "deploy/netlify", state: "failure" },
+    ],
+    baseFailing: [],
+  });
+  const [r] = verifyCodeCriteria(NEO8, [6], netlify, HEAD, ok);
+  expect(r?.status).toBe("pass");
+  expect(r?.detail).toMatch(/unrelated to lint, typecheck or tests \(not counted\): Header rules/);
+  // Without Matrix checks nothing relevant ran: unverified, never a pass.
+  expect(verifyCodeCriteria(NEO8, [6], netlify, HEAD)[0]?.status).toBe("unverified");
+  const lint = facts({ checks: [{ name: "lint", state: "failure" }], baseFailing: [] });
+  expect(verifyCodeCriteria(NEO8, [6], lint, HEAD, ok)[0]?.status).toBe("fail");
 });

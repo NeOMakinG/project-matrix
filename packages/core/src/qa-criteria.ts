@@ -183,14 +183,31 @@ function regressionTest(
   ];
 }
 
+/** A check that runs lint, typecheck, tests or a build (by its name). */
+const CI_CHECK = /lint|type-?check|tsc|test|\bci\b|build|biome|eslint|vitest|jest/i;
+
 function ci(
   facts: PullRequestFacts,
   matrixChecks?: { ok: boolean; summary: string },
 ): [CodeCriterionStatus, string] {
   const base = new Set(facts.baseFailing);
-  const failing = facts.checks.filter((c) => c.state === "failure" && !base.has(c.name));
-  const preexisting = facts.checks.filter((c) => c.state === "failure" && base.has(c.name));
-  const pending = facts.checks.filter((c) => c.state === "pending");
+  // Only checks that run what the criterion names count; a failing deploy preview is not
+  // "typecheck, lint and tests" and is only listed.
+  const relevant = (name: string) => CI_CHECK.test(name);
+  const unrelated = facts.checks.filter((c) => c.state === "failure" && !relevant(c.name));
+  const failing = facts.checks.filter(
+    (c) => c.state === "failure" && relevant(c.name) && !base.has(c.name),
+  );
+  const preexisting = facts.checks.filter(
+    (c) => c.state === "failure" && relevant(c.name) && base.has(c.name),
+  );
+  const pending = facts.checks.filter((c) => c.state === "pending" && relevant(c.name));
+  const other = unrelated.length
+    ? `; failing checks unrelated to lint, typecheck or tests (not counted): ${unrelated
+        .map((c) => c.name)
+        .slice(0, 5)
+        .join(", ")}`
+    : "";
   const notes = preexisting.length
     ? `; failing on the base branch too (pre-existing): ${preexisting
         .map((c) => c.name)
@@ -217,14 +234,12 @@ function ci(
     ];
   // Something must actually have run the checks: Matrix's checks phase, or a GitHub check that
   // looks like lint/typecheck/tests/build (a deploy preview alone proves nothing).
-  const covering = facts.checks.filter(
-    (c) => c.state === "success" && /lint|type|tsc|test|\bci\b|build|check/i.test(c.name),
-  );
+  const covering = facts.checks.filter((c) => c.state === "success" && relevant(c.name));
   if (!matrixChecks?.ok && !covering.length)
     return ["unverified", "no lint, typecheck or test run is reported for the head commit"];
   return [
     "pass",
-    `${matrixChecks ? `Matrix checks: ${matrixChecks.summary}` : "GitHub checks pass"}${facts.checks.length ? `; ${facts.checks.length - preexisting.length} GitHub check(s) ok` : ""}${notes}`,
+    `${matrixChecks ? `Matrix checks: ${matrixChecks.summary}` : "GitHub checks pass"}${covering.length ? `; ${covering.length} GitHub check(s) ok` : ""}${notes}${other}`,
   ];
 }
 
