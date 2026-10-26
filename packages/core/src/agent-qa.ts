@@ -212,7 +212,9 @@ export type CriterionStatus =
   | "FAIL"
   | "NOT TESTED (tooling)"
   | "NOT TESTED"
-  | "NOT VERIFIED";
+  | "NOT VERIFIED"
+  /** A step says it passed but its screenshot was not collected: no evidence, so it blocks. */
+  | "PASS WITHOUT SCREENSHOT";
 
 export interface CriterionLine {
   criterion: number;
@@ -251,9 +253,11 @@ export function criterionLines(
               (!shots || (s.screenshot !== undefined && shots.has(s.screenshot))),
           )
         ? "PASS"
-        : steps.some((s) => s.notTested === "tooling")
-          ? "NOT TESTED (tooling)"
-          : "NOT TESTED";
+        : steps.some((s) => s.ok && !s.notTested)
+          ? "PASS WITHOUT SCREENSHOT"
+          : steps.some((s) => s.notTested === "tooling")
+            ? "NOT TESTED (tooling)"
+            : "NOT TESTED";
     if (!c || !onGithub) return { criterion: n, source: "device", status };
     // Both halves must hold: a failure on either side fails it, an unverified code half blocks it.
     const both: CriterionStatus =
@@ -304,7 +308,9 @@ function splitVerdict(
       verdict: "BLOCKED",
       note: `Matrix could not verify code/CI acceptance criteria ${unverified.join(", ")} on GitHub`,
     };
-  const unchecked = device.filter((l) => l.status === "NOT TESTED").map((l) => l.criterion);
+  const unchecked = device
+    .filter((l) => l.status === "NOT TESTED" || l.status === "PASS WITHOUT SCREENSHOT")
+    .map((l) => l.criterion);
   if (unchecked.length)
     return {
       verdict: "BLOCKED",

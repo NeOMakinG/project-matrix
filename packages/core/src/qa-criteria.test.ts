@@ -306,3 +306,13 @@ test("a root cause criterion that also asks for a regression test checks both", 
   // The test named only as an example of proof is not an extra requirement.
   expect(verifyCodeCriteria(NEO8, [1], noTest, HEAD, ok)[0]?.status).toBe("pass");
 });
+
+test("a passing step whose screenshot the lane did not collect blocks and says so", () => {
+  const r = report({
+    verdict: "PASS",
+    steps: [step(2), step(3), step(4, { screenshot: "s99.png" })],
+  });
+  const v = effectiveVerdict(r, 6, shots, passCode);
+  expect(v.verdict).toBe("BLOCKED");
+  expect(v.note).toMatch(/criteria 4 with a collected screenshot/);
+});

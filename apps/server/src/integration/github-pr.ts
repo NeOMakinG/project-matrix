@@ -113,16 +113,13 @@ export class GitHubPullRequests implements PullRequestPort {
     if (!/^[a-f0-9]{40}$/.test(headSha) || !/^[\w./-]{1,100}$/.test(baseRef))
       throw new Error("GitHub returned no head SHA or base branch for the PR");
     const files = (
-      JSON.parse(
-        await this.#gh([
-          "api",
-          "--paginate",
-          "--slurp",
-          `repos/${repo}/pulls/${m[2]}/files?per_page=100`,
-        ]),
-      ) as { filename?: string; status?: string; additions?: number; patch?: string }[][]
+      await this.#ghItems<{
+        filename?: string;
+        status?: string;
+        additions?: number;
+        patch?: string;
+      }>(`repos/${repo}/pulls/${m[2]}/files?per_page=100`, ".[]")
     )
-      .flat()
       .slice(0, 3_000)
       .map((f) => ({
         path: String(f.filename ?? ""),
@@ -141,29 +138,30 @@ export class GitHubPullRequests implements PullRequestPort {
     };
   }
 
+  /**
+   * Every item of a paginated list, one JSON value per line (`--jq`), so it works on gh versions
+   * without `--slurp` (2.46 on the Matrix host).
+   */
+  async #ghItems<T>(endpoint: string, jq: string): Promise<T[]> {
+    const out = await this.#gh(["api", "--paginate", "--jq", jq, endpoint]);
+    return out
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as T);
+  }
+
   /** Check runs and commit statuses of one ref, latest per name. */
   async #checks(repo: string, ref: string): Promise<PullRequestFacts["checks"]> {
     // Every page: a failing check past the first 100 must not read as green.
-    const runs = (
-      JSON.parse(
-        await this.#gh([
-          "api",
-          "--paginate",
-          "--slurp",
-          `repos/${repo}/commits/${ref}/check-runs?per_page=100`,
-        ]),
-      ) as { check_runs?: { name?: string; status?: string; conclusion?: string | null }[] }[]
-    ).flatMap((page) => page.check_runs ?? []);
-    const statuses = (
-      JSON.parse(
-        await this.#gh([
-          "api",
-          "--paginate",
-          "--slurp",
-          `repos/${repo}/commits/${ref}/statuses?per_page=100`,
-        ]),
-      ) as { context?: string; state?: string }[][]
-    ).flat();
+    const runs = await this.#ghItems<{
+      name?: string;
+      status?: string;
+      conclusion?: string | null;
+    }>(`repos/${repo}/commits/${ref}/check-runs?per_page=100`, ".check_runs[]");
+    const statuses = await this.#ghItems<{ context?: string; state?: string }>(
+      `repos/${repo}/commits/${ref}/statuses?per_page=100`,
+      ".[]",
+    );
     const out = new Map<string, PullRequestFacts["checks"][number]["state"]>();
     // Same name from several apps, or a run and a status: the worst result stands.
     const rank = { failure: 3, pending: 2, neutral: 1, success: 0 } as const;

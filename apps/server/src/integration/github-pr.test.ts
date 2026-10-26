@@ -299,3 +299,54 @@ test("labels a PR over REST: removals first, a missing label is already removed"
   ).rejects.toThrow(/project's repository/);
   await expect(prs.label(project(), PR, ["--evil"], [])).rejects.toThrow(/invalid PR label/);
 });
+
+test("facts: PR body, files and head checks over paginated --jq lines (no --slurp, gh 2.46)", async () => {
+  const head = "b".repeat(40);
+  const { calls, executor } = fakeExec((spec) => {
+    const url = spec.cmd.at(-1) ?? "";
+    if (spec.cmd.includes("--slurp")) return { code: 1, err: "unknown flag: --slurp" };
+    if (url === "repos/acme/wayline/pulls/9")
+      return {
+        out: JSON.stringify({
+          body: "## Root cause\nx",
+          head: { sha: head },
+          base: { ref: "main" },
+        }),
+      };
+    if (url.includes("/files"))
+      return {
+        out: [
+          JSON.stringify({ filename: "a.ts", status: "modified", additions: 2, patch: "+x" }),
+          JSON.stringify({ filename: "a.test.ts", status: "added", additions: 9 }),
+        ].join("\n"),
+      };
+    if (url.includes(`commits/${head}/check-runs`))
+      return {
+        out: [
+          JSON.stringify({ name: "test", status: "completed", conclusion: "success" }),
+          JSON.stringify({ name: "test", status: "completed", conclusion: "failure" }),
+          JSON.stringify({ name: "deploy", status: "in_progress", conclusion: null }),
+        ].join("\n"),
+      };
+    if (url.includes("commits/main/check-runs"))
+      return {
+        out: JSON.stringify({ name: "deploy", status: "completed", conclusion: "failure" }),
+      };
+    return { out: "" };
+  });
+  const prs = new GitHubPullRequests({ executor, ghBinary: "/usr/bin/gh" });
+  const facts = await prs.facts(project(), "https://github.com/acme/wayline/pull/9");
+  expect(facts.headSha).toBe(head);
+  expect(facts.files.map((f) => f.path)).toEqual(["a.ts", "a.test.ts"]);
+  expect(facts.files[0]?.patch).toBe("+x");
+  // Same name twice: the worst result stands.
+  expect(facts.checks).toEqual([
+    { name: "test", state: "failure" },
+    { name: "deploy", state: "pending" },
+  ]);
+  expect(facts.baseFailing).toEqual(["deploy"]);
+  expect(calls.every((c) => !c.cmd.includes("--slurp"))).toBe(true);
+  await expect(prs.facts(project(), "https://github.com/other/repo/pull/9")).rejects.toThrow(
+    /not on the project's repository/,
+  );
+});
