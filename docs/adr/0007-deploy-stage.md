@@ -42,14 +42,22 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
          "capability": "fly", "run": ["fly", "deploy", "-a", "eagleray-api", "--remote-only"],
          "health": { "url": "https://eagleray-api.fly.dev/health", "expect": 200 },
          "rollback": { "kind": "fly-releases", "app": "eagleray-api" },
-         "holdOn": ["apps/api/prisma/migrations/**"],
+         "holdOn": ["apps/api/prisma/**", "apps/api/scripts/migrate.mjs", "apps/api/scripts/seed.mjs",
+                   "fly.toml", "Dockerfile", "apps/api/Dockerfile"],
          "coordinate": { "deck": true, "recentForeignDeployMinutes": 30 } }
      ]
    }
    ```
 
-   A target runs only when the merged diff touches its `paths`. `holdOn` globs (DB migrations)
-   merge but hold that target and block the ticket for a human with the reason.
+   A target runs only when the merged diff touches its `paths`. `holdOn` globs merge but hold
+   that target and block the ticket for a human with the reason. They must cover everything that
+   changes what a release does to shared state, not just new migration files: the schema, the
+   migrate/seed scripts the Fly `release_command` runs, `fly.toml` itself (a changed
+   `release_command` is always human) and the image build files. `run` is not free-form: the
+   config write rejects any `run[0]` outside a host-side allowlist of deploy CLIs (`fly`, `eas`,
+   `railway`, `gh`) with fixed subcommands, and the argv is never taken from the repo or ticket.
+   `health.url` must be an `https://` public origin; the poller refuses private, link-local and
+   tailnet addresses.
 
 2. **Merge gate for `merge: "auto"`**: 0 open P1 review findings, every required GitHub check
    green on the validated head, and an agent QA PASS (for web: on the PR's deploy preview). The
@@ -60,15 +68,18 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
    maps capability names (`fly`, `eas`, `railway`, `gh`) to a host and a transport: `local`,
    `ssh <alias>` or `orca --environment <name>`. The deploy port picks the first host holding the
    target's capability, runs the argv in a clean checkout of the merged SHA on that host, with a
-   per-target lock, and records stdout tail plus the release id as a receipt. No credential is
+   per-target lock, and records the release id plus a redacted stdout tail (secret gate and
+   key-pattern redaction before anything reaches a receipt or Linear) as a receipt. No credential is
    copied between hosts; a missing capability blocks the target with `no host has <cap>` and the
    ticket for a human, other targets continue.
 
 4. **Verify + rollback**: verify first proves the merged SHA reached production (a production
    deploy receipt naming that SHA: the provider's release for `command` targets, the site's
    production deploy for `git-integration`, never a preview status), then polls the health URL
-   (bounded retries). Deploy, verify and rollback share one per-target lock. Before rolling back
-   it checks the provider's current release is still this attempt's; a newer release (human or
+   (bounded retries). Deploy, verify and rollback share one per-target lock. Immediately before
+   issuing the rollback it re-reads the provider's current release and aborts unless it is still
+   this attempt's (the remaining check-then-act window is seconds; the coordination note in 5
+   narrows it further); a newer release (human or
    another fleet) holds for a human instead. On failure it rolls back (`fly releases rollback <previous>` via the same host;
    git-integration targets: redeploy the previous production deploy or revert-PR, human) and
    fails the phase. Every outcome posts one Linear comment with the deploy receipt (target,
