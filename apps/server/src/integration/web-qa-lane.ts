@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
@@ -132,7 +133,15 @@ function takeLock(job: string): boolean {
       writeFileSync(join(LOCK, "owner"), `${job} ${process.pid}\n`);
       return true;
     } catch {
-      const pid = Number(readFileSync(join(LOCK, "owner"), "utf8").split(" ")[1] ?? "0");
+      let owner = "";
+      try {
+        owner = readFileSync(join(LOCK, "owner"), "utf8");
+      } catch {
+        // No owner yet: a fresh lock (mkdir then write), unless it is old enough to be a crash.
+        const age = Date.now() - statSync(LOCK).mtimeMs;
+        if (age < 5 * 60_000) return false;
+      }
+      const pid = Number(owner.split(" ")[1] ?? "0");
       let alive = pid > 0;
       try {
         if (alive) process.kill(pid, 0);

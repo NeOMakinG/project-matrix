@@ -141,7 +141,9 @@ SB
       bhome="$ROOT/build-home"; mkdir -p "$bhome"
       sandbox-exec -f "$dir/build.sb" env -i HOME="$bhome" PATH="$BASE_PATH" LANG=en_US.UTF-8 TMPDIR="$bhome/tmp" \
         APP_ID="$app_id" BUILD_NUMBER="$(( $(date +%s) / 60 ))" CP_HOME_DIR="$bhome/.cocoapods" \
-        perl -e 'alarm shift; exec @ARGV' "$timeout_s" nice bash "$dir/build.sh" </dev/null
+        perl -e '$t = shift; $pid = fork // die; if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
+          $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 }; alarm $t; waitpid($pid, 0);
+          kill "KILL", -$pid; exit($? >> 8)' "$timeout_s" nice bash "$dir/build.sh" </dev/null
     ) >"$dir/build.log" 2>&1
     rc=$?
     set -e
@@ -192,7 +194,7 @@ SB
   shot)
     # One screenshot as base64 on stdout (the agent's evidence; it never gets a shell here).
     udid="$1"; udid_ok "$udid"
-    tmpd=$(mktemp -d -t mxshot); tmp="$tmpd/shot.png"
+    tmpd=$(mktemp -d -t mxshot); tmp="$tmpd/shot.png"; trap 'rm -rf "$tmpd"' EXIT
     xcrun simctl io "$udid" screenshot --type=png "$tmp" >/dev/null 2>&1 || { rm -rf "$tmpd"; die 11 "screenshot failed"; }
     base64 -i "$tmp"; rm -rf "$tmpd"
     ;;
@@ -205,7 +207,11 @@ SB
     done
     ;;
   cleanup)
-    dir=$(job_dir "$1"); rm -rf "$dir"
+    # Build output (node_modules, Pods, DerivedData) is rebuilt from scratch each job anyway:
+    # drop it so the shared Mac keeps its disk.
+    dir=$(job_dir "$1")
+    if [[ -f "$dir/src" ]]; then w=$(cat "$dir/src"); [[ "$w" == "$ROOT/build/"* && -d "$w/.git" ]] && git -C "$w" clean -qffdx; fi
+    rm -rf "$dir"
     ;;
   *) die 2 "unknown step $step" ;;
 esac

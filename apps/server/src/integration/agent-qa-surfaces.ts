@@ -74,7 +74,8 @@ export function combineOutcomes(
   deviceCriteria?: readonly number[],
 ): AgentQaOutcome {
   // Per-surface judgement covers the device criteria only: the rest stand in as checked here and
-  // are judged once, by the reconciler, against Matrix's own GitHub verification.
+  // are judged once, by the reconciler, against Matrix's own GitHub verification (renderAgentQaReport
+  // with the real code results). These placeholders only rank surfaces; they never reach a verdict.
   const others = deviceCriteria
     ? Array.from({ length: criteriaCount }, (_, i) => i + 1)
         .filter((n) => !deviceCriteria.includes(n))
@@ -130,7 +131,11 @@ export function combineOutcomes(
       blocked.push(`${t}: ${own.note ?? outcome.report.blockedReason ?? "blocked"}`);
     }
     summaries.push(`${t}: ${outcome.report.summary}`);
-    for (const s of outcome.report.steps)
+    // Each surface keeps its share of the 40-step report, failures and criterion checks first,
+    // so one long report never pushes another surface's evidence out.
+    const share = Math.max(1, Math.floor(40 / results.length));
+    const rank = (x: (typeof outcome.report.steps)[number]) => (!x.ok ? 0 : x.criterion ? 1 : 2);
+    for (const s of [...outcome.report.steps].sort((a, b) => rank(a) - rank(b)).slice(0, share))
       steps.push({ ...s, action: `[${t}] ${s.action}`, screenshot: rename(s.screenshot) });
     for (const f of outcome.report.findings)
       findings.push({ ...f, title: `[${t}] ${f.title}`, screenshot: rename(f.screenshot) });

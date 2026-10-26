@@ -19,7 +19,7 @@ TAPFLOW_MCP="${MATRIX_QA_TAPFLOW_MCP:-$HOME/.npm-global/bin/tapflow-mcp}"
 GATEWAY="${MATRIX_QA_GATEWAY:-http://100.90.255.43:8317}"
 NODE_DIR="${MATRIX_QA_NODE_DIR:-$(dirname "$(command -v node || echo /usr/bin/node)")}"
 
-common_allow=('Read(./**)' 'Edit(./out/**)')
+common_allow=('Read(./**)' 'Edit(./out/**)' 'Write(./out/**)')
 deny=(WebFetch WebSearch Agent Task 'Bash(curl:*)' 'Bash(ssh:*)')
 if [[ "$mode" == ios ]]; then
   [[ -x "$dir/qa-shot" ]] || die 2 "missing qa-shot"
