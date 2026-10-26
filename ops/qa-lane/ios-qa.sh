@@ -34,6 +34,11 @@ case "$step" in
     fi
     mkdir -p "$ROOT"
     free_gb=$(df -g "$ROOT" | awk 'NR==2 {print $4}')
+    # Leftover build output of an interrupted job is ours to drop (never while a job holds the lock).
+    if (( free_gb < min_free_gb )) && [[ ! -d "$LOCK" ]]; then
+      for w in "$ROOT"/build/*; do [[ -d "$w/.git" ]] && git -C "$w" clean -qffdx; done
+      free_gb=$(df -g "$ROOT" | awk 'NR==2 {print $4}')
+    fi
     (( free_gb >= min_free_gb )) || die 10 "simulator host overloaded: ${free_gb} GB free, need ${min_free_gb} GB"
     xcrun simctl list devices | grep -q "($udid)" || die 11 "simulator $udid not found"
     if ! booted "$udid"; then
