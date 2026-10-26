@@ -179,6 +179,11 @@ SB
     plist="$work/$app/Info.plist"
     got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
     [[ "$got" == "$app_id" ]] || die 21 "built bundle id $got, expected $app_id"
+    # The shared simulator may have been shut down during the build: bring it back once.
+    if ! booted "$udid"; then
+      xcrun simctl boot "$udid" 2>/dev/null || true
+      xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || die 11 "simulator $udid did not boot"
+    fi
     # Install over the existing app (keeps its data); never uninstall or erase the simulator.
     xcrun simctl terminate "$udid" "$app_id" >/dev/null 2>&1 || true
     xcrun simctl install "$udid" "$work/$app" 2>"$dir/install.log" || { tail -c 800 "$dir/install.log" >&2; exit 21; }
