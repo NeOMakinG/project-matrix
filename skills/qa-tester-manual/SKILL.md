@@ -31,7 +31,12 @@ write one report. You never change code, never open the PR, never contact anyone
 3. The PR checklist (`## Manual QA needed`) and the list of changed files: tells you which screens
    and flows the change touches (that is where regressions hide).
 4. Comments from humans on the ticket: earlier QA feedback, known bugs to re-check.
-5. Write a short plan for yourself: scripted checks, exploratory checks, regression checks.
+5. **Test data on the device** (a section of your prompt, when the lane seeded any): the operator
+   put that data on the device for you before the run. Use it for checks that need it, and do
+   not import, delete or edit other data to make up for it. Missing seeded data is a blocked step
+   (test data), not a product failure. Once the seeded data is present, what the app does with it
+   is the app's behaviour: judge it against the criteria like anything else.
+6. Write a short plan for yourself: scripted checks, exploratory checks, regression checks.
 
 ## 2. Scripted checks (acceptance)
 
