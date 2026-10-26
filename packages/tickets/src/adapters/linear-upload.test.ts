@@ -115,6 +115,11 @@ test("evidence uploads: png/jpg/webp screenshots and txt/log text only", () => {
 test("evidence uploads: name, signature and size must match the type", () => {
   expect(() => checkEvidenceUpload("s1.html", "image/png", PNG)).toThrow(/does not match/);
   expect(() => checkEvidenceUpload("png", "image/png", PNG)).toThrow(/does not match/);
+  expect(() => checkEvidenceUpload("x.sh.log", "text/plain", new Uint8Array([65]))).toThrow(
+    /does not match/,
+  );
+  expect(() => checkEvidenceUpload("S1.PNG", "image/png", PNG)).not.toThrow();
+  expect(() => checkEvidenceUpload("home.v2.png", "image/png", PNG)).not.toThrow();
   expect(() => checkEvidenceUpload("s1.png", "image/png", JPG)).toThrow(/not image\/png/);
   expect(() => checkEvidenceUpload("s1.png", "image/png", new Uint8Array())).toThrow(/empty/);
   const big = new Uint8Array(10 * 1024 * 1024 + 1);

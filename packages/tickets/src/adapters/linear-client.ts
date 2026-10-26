@@ -303,8 +303,12 @@ const startsWith = (bytes: Uint8Array, prefix: number[]) =>
 export function checkEvidenceUpload(name: string, contentType: string, bytes: Uint8Array): void {
   const type = EVIDENCE_TYPES[contentType.trim().toLowerCase()];
   if (!type) throw new Error(`upload type ${JSON.stringify(contentType)} is not allowed`);
-  const ext = name.toLowerCase().split(".").pop() ?? "";
-  if (!name.includes(".") || !type.ext.includes(ext))
+  // Text has no signature to check, so exactly one extension: `payload.sh.log` is not a log.
+  // Images are vouched for by their signature (`home.v2.png` is fine).
+  const parts = (type.magic ? /^[^.].*\.([A-Za-z0-9]+)$/ : /^[A-Za-z0-9_-]+\.([A-Za-z0-9]+)$/).exec(
+    name,
+  );
+  if (!parts?.[1] || !type.ext.includes(parts[1].toLowerCase()))
     throw new Error(`upload name does not match ${contentType}`);
   if (bytes.byteLength === 0) throw new Error("upload is empty");
   if (bytes.byteLength > type.maxBytes)
