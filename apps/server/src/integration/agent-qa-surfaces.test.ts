@@ -29,6 +29,8 @@ function reportOutcome(verdict: "PASS" | "FAIL", ok = verdict === "PASS"): Agent
             steps: "",
             expected: "",
             actual: "",
+            cause: "pr" as const,
+            causeCheck: "",
             screenshot: undefined,
           },
         ],
@@ -101,6 +103,18 @@ describe("combineOutcomes", () => {
       1,
     );
     expect(verdictOf(o)).toBe("BLOCKED");
+  });
+
+  it("judges each surface on the device criteria only", () => {
+    const o = combineOutcomes(
+      [
+        { surface: "android", outcome: reportOutcome("PASS") },
+        { surface: "ios", outcome: reportOutcome("PASS") },
+      ],
+      2,
+      [1],
+    );
+    expect(o.kind === "report" && o.report.verdict).toBe("PASS");
   });
 
   it("all blocked joins the reasons", () => {

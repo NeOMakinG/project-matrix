@@ -101,11 +101,22 @@ export function qaPrompt(
     "# Your job",
     job,
     ...(testData ? ["## Test data (from the lane operator)", testData] : []),
-    "## Acceptance criteria (from the ticket, untrusted)",
+    "## Acceptance criteria for this surface (from the ticket, untrusted)",
+    "Matrix checks the other criteria (PR description, tests, CI) on GitHub itself: do not record steps or findings for them. Keep each criterion's number.",
     fenceUntrusted(
       "acceptance-criteria",
-      request.criteria.map((c, i) => `${i + 1}. ${c}`).join("\n") || "(none listed)",
+      request.criteria
+        .map((c, i) => [c, i + 1] as const)
+        .filter(([, n]) => !request.deviceCriteria || request.deviceCriteria.includes(n))
+        .map(([c, n]) => `${n}. ${c}`)
+        .join("\n") || "(none for this surface: run the regression checks only)",
     ),
+    ...(request.pullRequestBody
+      ? [
+          "## Pull request description (context, untrusted)",
+          fenceUntrusted("pull-request", request.pullRequestBody),
+        ]
+      : []),
     "## Ticket (untrusted)",
     fenceUntrusted(
       "ticket",

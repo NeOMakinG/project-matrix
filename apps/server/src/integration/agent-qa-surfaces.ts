@@ -62,7 +62,7 @@ export class MultiSurfaceAgentQaLane implements AgentQaPort {
           };
       results.push({ surface, outcome });
     }
-    return combineOutcomes(results, request.criteria.length);
+    return combineOutcomes(results, request.criteria.length, request.deviceCriteria);
   }
 }
 
@@ -70,7 +70,16 @@ export class MultiSurfaceAgentQaLane implements AgentQaPort {
 export function combineOutcomes(
   results: { surface: QaSurface; outcome: AgentQaOutcome }[],
   criteriaCount: number,
+  /** Criteria the device agents check; the others Matrix verifies on GitHub (judged there). */
+  deviceCriteria?: readonly number[],
 ): AgentQaOutcome {
+  // Per-surface judgement covers the device criteria only: the rest stand in as checked here and
+  // are judged once, by the reconciler, against Matrix's own GitHub verification.
+  const others = deviceCriteria
+    ? Array.from({ length: criteriaCount }, (_, i) => i + 1)
+        .filter((n) => !deviceCriteria.includes(n))
+        .map((criterion) => ({ criterion, status: "pass" as const, detail: "checked by Matrix" }))
+    : undefined;
   const first = results[0];
   if (results.length === 1 && first) return first.outcome;
   const tag = (s: QaSurface) => NAMES[s] ?? s;
@@ -113,7 +122,7 @@ export function combineOutcomes(
     const prefix = `${surface}-`;
     const rename = (n: string | undefined) => (n ? `${prefix}${n}`.slice(0, 85) : undefined);
     const names = new Set(outcome.screenshots.map((s) => s.name));
-    const own = effectiveVerdict(outcome.report, criteriaCount, names);
+    const own = effectiveVerdict(outcome.report, criteriaCount, names, others);
     verdicts.push(`${t} ${own.verdict}`);
     if (own.verdict === "FAIL") worst = "FAIL";
     else if (own.verdict === "BLOCKED") {
