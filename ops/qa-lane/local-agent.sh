@@ -4,7 +4,7 @@
 # The job dir holds prompt.md and the mode's tool wrapper (./qa-shot or ./qa-browser); the agent
 # reads only the job dir, writes only out/, and runs with a cleared environment: HOME is a
 # throwaway dir under the job (no user config, no ~/.claude), the gateway key is the only secret
-# for web, plus the tapflow relay token for iOS (held by the tapflow MCP server it drives).
+# for web, plus the tapflow relay token for iOS (used by ./qa-ios, locked to one simulator).
 # Exit codes: 2 bad arguments, 30 agent failed.
 set -euo pipefail
 die() { echo "$2" >&2; exit "$1"; }
@@ -15,22 +15,15 @@ dir="$1" mode="$2" model="$3" timeout_s="$4"
 [[ "$timeout_s" =~ ^[0-9]{2,4}$ ]] || die 2 "invalid timeout"
 CLAUDE="${MATRIX_QA_CLAUDE:-$HOME/.local/bin/claude}"
 SECRETS="${MATRIX_QA_SECRETS:-$HOME/.local/bin/secrets}"
-TAPFLOW_MCP="${MATRIX_QA_TAPFLOW_MCP:-$HOME/.npm-global/bin/tapflow-mcp}"
 GATEWAY="${MATRIX_QA_GATEWAY:-http://100.90.255.43:8317}"
 NODE_DIR="${MATRIX_QA_NODE_DIR:-$(dirname "$(command -v node || echo /usr/bin/node)")}"
 
 common_allow=('Read(./**)' 'Edit(./out/**)' 'Write(./out/**)')
 deny=(WebFetch WebSearch Agent Task 'Bash(curl:*)' 'Bash(ssh:*)')
 if [[ "$mode" == ios ]]; then
-  [[ -x "$dir/qa-shot" ]] || die 2 "missing qa-shot"
-  t=mcp__tapflow__
-  allow=("Bash(./qa-shot:*)" "${t}list_devices" "${t}connect_device" "${t}query_ui_tree" "${t}screenshot"
-    "${t}tap" "${t}swipe" "${t}type_text" "${t}press_key" "${t}press_button")
-  deny+=("${t}install_app" "${t}launch_app" "${t}boot_device" "${t}shutdown_device" "${t}run_flow"
-    "${t}disconnect_device" "${t}list_builds")
-  python3 -c 'import json,sys; json.dump({"mcpServers":{"tapflow":{"command":sys.argv[1],"args":[]}}},open(sys.argv[2],"w"))' \
-    "$TAPFLOW_MCP" "$dir/../$(basename "$dir").mcp.json"
-  mcp=(--mcp-config "$dir/../$(basename "$dir").mcp.json")
+  [[ -x "$dir/qa-shot" && -x "$dir/qa-ios" ]] || die 2 "missing qa-shot/qa-ios"
+  allow=("Bash(./qa-ios:*)" "Bash(./qa-shot:*)")
+  mcp=()
 else
   [[ -x "$dir/qa-browser" ]] || die 2 "missing qa-browser"
   allow=("Bash(./qa-browser:*)")
@@ -53,7 +46,7 @@ cd "$dir"
 timeout -k 30 $((timeout_s + 120)) "$SECRETS" run -- bash -c '
   dir="$1" model="$2" timeout_s="$3" gateway="$4" claude="$5" path="$6" mode="$7"; shift 7
   extra=()
-  [[ -n "${TAPFLOW_TOKEN:-}" && "$mode" == ios ]] && extra=(TAPFLOW_RELAY_URL="$TAPFLOW_RELAY_URL" TAPFLOW_RELAY_WS="$TAPFLOW_RELAY_WS" TAPFLOW_TOKEN="$TAPFLOW_TOKEN")
+  [[ -n "${TAPFLOW_TOKEN:-}" && "$mode" == ios ]] && extra=(TAPFLOW_RELAY_WS="$TAPFLOW_RELAY_WS" TAPFLOW_TOKEN="$TAPFLOW_TOKEN")
   exec env -i HOME="$dir/home" TMPDIR="$dir/home" PATH="$path:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 \
     ANTHROPIC_BASE_URL="$gateway" ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY" "${extra[@]}" \
     timeout -k 30 "$timeout_s" "$claude" -p --model "$model" --setting-sources project --strict-mcp-config "$@"' \

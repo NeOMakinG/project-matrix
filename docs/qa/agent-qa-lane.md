@@ -273,10 +273,11 @@ device (Daymark's X scan cron on the Seeker at :10 past 9, 11, 14, 16, 19 and 21
 - Install with `simctl install` over the existing app (keeps its data), launch, first screenshot.
   Fixtures: `simctl addmedia` once per (simulator, fixture-set hash).
 - The QA agent runs on the Matrix host (`ops/qa-lane/local-agent.sh`): `claude -p`, cleared env,
-  throwaway HOME, tools = the tapflow MCP (`list_devices`, `connect_device`, `query_ui_tree`,
-  `screenshot`, `tap`, `swipe`, `type_text`, `press_key`, `press_button`; install/launch/boot/
-  shutdown/run_flow denied) and `./qa-shot <name>` (screenshot over a fixed SSH step). Secrets:
-  gateway key + tapflow PAT from Infisical, nothing else.
+  throwaway HOME, tools = `./qa-ios` (`packages/qa/bin/qa-ios.mjs`: tap, swipe, type, key, home/lock
+  over the tapflow relay WebSocket with the PAT header, locked to the job's UDID) and
+  `./qa-shot <name>` (simctl screenshot over a fixed SSH step). The relay's own MCP server is not
+  used: it connects without the PAT and this relay refuses it; its UI-tree and screenshot routes
+  need a relay-installed build (a PAT with `builds:write`). Secrets: gateway key + tapflow PAT.
 - Residual risk: PR build code runs as the mini's user (which holds a `gh` login); the PAT can
   drive the relay's other devices. Owner follow-up: a dedicated macOS build user on the mini.
 

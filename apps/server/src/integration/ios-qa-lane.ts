@@ -218,7 +218,15 @@ export class TapflowIosQaLane implements AgentQaPort {
       if (/^[\w.+() -]{1,40}$/.test(version)) build.version = version;
       if (project.fixtures) await this.#seed(job.id, project.fixtures.set);
       this.#writeShotTool(job.dir);
-      const intro = `Test the draft PR https://github.com/${project.repo}/pull/${request.pullRequest.number} at commit ${request.headSha} on the iOS simulator. The PR's simulator build of \`${project.appId}\` is installed and was just launched on the simulator with UDID ${c.udid} (${device.model ?? "iPhone"}, ${device.os ?? "iOS"}). Drive it ONLY through the tapflow MCP tools: call list_devices, pick the device whose id/name matches that UDID (never any other device), connect_device, then query_ui_tree / tap / swipe / type_text / press_key / press_button. Save evidence screenshots with \`./qa-shot <name>\` (writes out/shots/<name>.png) and reference those names in report.json. Write out/report.json (you can only write under out/).`;
+      const node = process.env.MATRIX_QA_NODE_DIR
+        ? join(process.env.MATRIX_QA_NODE_DIR, "node")
+        : "node";
+      writeTool(
+        job.dir,
+        "qa-ios",
+        `#!/usr/bin/env bash\nexec env QA_UDID=${c.udid} ${q(node)} ${q(join(REPO_ROOT, "packages", "qa", "bin", "qa-ios.mjs"))} "$@"\n`,
+      );
+      const intro = `Test the draft PR https://github.com/${project.repo}/pull/${request.pullRequest.number} at commit ${request.headSha} on the iOS simulator. The PR's simulator build of \`${project.appId}\` is installed and was just launched on the simulator ${device.model ?? "iPhone"} (${device.os ?? "iOS"}). See the screen with \`./qa-shot <name>\` (writes out/shots/<name>.png; Read the PNG to look at it) and drive it with \`./qa-ios\` (run \`./qa-ios help\`): tap/swipe take screenshot-pixel coordinates. Both tools are locked to that one simulator. Write out/report.json (you can only write under out/).`;
       writeFileSafe(
         job.dir,
         "prompt.md",
