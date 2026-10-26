@@ -251,6 +251,7 @@ test("seeds the project's fixtures after install, chunked, and tells the agent a
   expect(f.steps.find((s) => s[0] === "seed")?.slice(2)).toEqual([
     "SM02E4072815934",
     "/sdcard/DCIM/Camera",
+    "com.wayline.app",
   ]);
   expect(f.prompt()).toMatch(
     /## Test data on the device[^\n]*\n\nA trip dated 14 - 16 February 2025/,

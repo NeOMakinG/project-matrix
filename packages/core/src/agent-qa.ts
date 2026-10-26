@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CodeCriterionResult } from "./qa-criteria.js";
 import type { ProjectConfig, QaSurface } from "./types.js";
 
 export const QA_PASSED_LABEL = "qa:passed";
@@ -41,6 +42,9 @@ export const agentQaReportSchema = z.object({
           .default(false)
           .transform((c) => (typeof c === "number" ? c : undefined)),
         screenshot: shotName,
+        /** Set when the step could not be exercised: a tooling limit (no such gesture in the
+         * driver) or the environment. A not-tested step is neither a pass nor a failure. */
+        notTested: z.enum(["tooling", "environment"]).optional().catch(undefined),
       }),
     )
     .max(40)
@@ -54,11 +58,22 @@ export const agentQaReportSchema = z.object({
         expected: text(300).default(""),
         actual: text(300).default(""),
         screenshot: shotName,
+        /** "pre_existing" / "environment": not caused by this PR, with the check that shows it. */
+        cause: z.enum(["pr", "pre_existing", "environment"]).default("pr").catch("pr"),
+        causeCheck: text(300).default(""),
       }),
     )
     .max(20)
     .default([]),
 });
+
+type Finding = AgentQaReport["findings"][number];
+
+/** A finding counts against the PR unless the agent says why it is not the PR's and how it checked. */
+export function isPreExisting(f: Finding): boolean {
+  // A P1 (crash, data loss, broken main flow) always stops the PR, whoever caused it.
+  return f.severity !== "P1" && f.cause !== "pr" && f.causeCheck.replace(/\s+/g, " ").length >= 40;
+}
 
 export type AgentQaReport = z.output<typeof agentQaReportSchema>;
 
@@ -99,6 +114,11 @@ export interface AgentQaRequest {
   headSha: string;
   surfaces: QaSurface[];
   criteria: string[];
+  /** 1-based numbers of the criteria the device agent checks (the rest Matrix checks on GitHub).
+   * Absent: all of them. */
+  deviceCriteria?: number[];
+  /** The PR description, context for the agent (untrusted). */
+  pullRequestBody?: string;
   signal: AbortSignal;
 }
 
@@ -146,7 +166,10 @@ export function effectiveVerdict(
   /** Screenshot files the lane actually collected; when given, a criterion counts as checked only
    * by a passing step whose screenshot is among them (evidence, not just the agent's word). */
   shots?: ReadonlySet<string>,
+  /** Code/CI criteria Matrix verified itself; when given, the device agent only had the others. */
+  code?: readonly CodeCriterionResult[],
 ): { verdict: AgentQaVerdict; note?: string } {
+  if (code) return splitVerdict(report, criteriaCount, shots, code);
   const failedSteps = report.steps.filter((s) => !s.ok).length;
   const serious = report.findings.filter((f) => f.severity !== "P3").length;
   if (report.verdict === "PASS") {
@@ -182,6 +205,158 @@ export function effectiveVerdict(
       note: "the QA agent reported FAIL without a failed step or finding",
     };
   return { verdict: report.verdict };
+}
+
+export type CriterionStatus =
+  | "PASS"
+  | "FAIL"
+  | "NOT TESTED (tooling)"
+  | "NOT TESTED"
+  | "NOT VERIFIED";
+
+export interface CriterionLine {
+  criterion: number;
+  source: "device" | "github" | "both";
+  status: CriterionStatus;
+  detail?: string;
+}
+
+/** One line per acceptance criterion: its status and who verified it. */
+export function criterionLines(
+  report: AgentQaReport,
+  criteriaCount: number,
+  shots: ReadonlySet<string> | undefined,
+  code: readonly CodeCriterionResult[],
+): CriterionLine[] {
+  const byCode = new Map(code.map((c) => [c.criterion, c]));
+  return Array.from({ length: criteriaCount }, (_, i): CriterionLine => {
+    const n = i + 1;
+    const c = byCode.get(n);
+    const onGithub: CriterionStatus | undefined = c
+      ? c.status === "pass"
+        ? "PASS"
+        : c.status === "fail"
+          ? "FAIL"
+          : "NOT VERIFIED"
+      : undefined;
+    if (c && onGithub && !c.alsoDevice)
+      return { criterion: n, source: "github", status: onGithub, detail: c.detail };
+    const steps = report.steps.filter((s) => s.criterion === n);
+    const status: CriterionStatus = steps.some((s) => !s.ok && !s.notTested)
+      ? "FAIL"
+      : steps.some(
+            (s) =>
+              s.ok &&
+              !s.notTested &&
+              (!shots || (s.screenshot !== undefined && shots.has(s.screenshot))),
+          )
+        ? "PASS"
+        : steps.some((s) => s.notTested === "tooling")
+          ? "NOT TESTED (tooling)"
+          : "NOT TESTED";
+    if (!c || !onGithub) return { criterion: n, source: "device", status };
+    // Both halves must hold: a failure on either side fails it, an unverified code half blocks it.
+    const both: CriterionStatus =
+      status === "FAIL" || onGithub === "FAIL"
+        ? "FAIL"
+        : onGithub === "NOT VERIFIED"
+          ? "NOT VERIFIED"
+          : status;
+    return { criterion: n, source: "both", status: both, detail: c.detail };
+  });
+}
+
+/**
+ * Verdict when the criteria were split: FAIL needs an observed product defect (a failed device
+ * step, or a P1/P2 finding the PR caused) or a code/CI criterion that is false. A criterion the
+ * driver cannot exercise is NOT TESTED (tooling), listed but not a failure. PASS needs every
+ * code/CI criterion verified, at least one device criterion passed with a collected screenshot and
+ * every other device criterion passed or not testable by the tooling; anything short of that is
+ * BLOCKED. The agent's own FAIL does not stand without a defect (it cannot see GitHub, and earlier
+ * agents failed what they could not reach), but its BLOCKED always stands.
+ */
+function splitVerdict(
+  report: AgentQaReport,
+  criteriaCount: number,
+  shots: ReadonlySet<string> | undefined,
+  code: readonly CodeCriterionResult[],
+): { verdict: AgentQaVerdict; note?: string } {
+  if (report.verdict === "BLOCKED") return { verdict: "BLOCKED" };
+  const codeNumbers = new Set(code.filter((c) => !c.alsoDevice).map((c) => c.criterion));
+  const deviceSteps = report.steps.filter((s) => !s.criterion || !codeNumbers.has(s.criterion));
+  const failed = deviceSteps.filter((s) => !s.ok && !s.notTested).length;
+  const serious = report.findings.filter((f) => f.severity !== "P3" && !isPreExisting(f)).length;
+  const excused = report.findings.filter((f) => f.severity === "P2" && isPreExisting(f)).length;
+  const codeFailed = code.filter((c) => c.status === "fail").map((c) => c.criterion);
+  if (failed || serious || codeFailed.length)
+    return {
+      verdict: "FAIL",
+      ...(codeFailed.length && !failed && !serious
+        ? { note: `code/CI acceptance criteria ${codeFailed.join(", ")} are not met on GitHub` }
+        : {}),
+    };
+  if (criteriaCount < 1) return { verdict: "BLOCKED", note: NO_CRITERIA };
+  const lines = criterionLines(report, criteriaCount, shots, code);
+  const device = lines.filter((l) => l.source !== "github");
+  const unverified = lines.filter((l) => l.status === "NOT VERIFIED").map((l) => l.criterion);
+  if (unverified.length)
+    return {
+      verdict: "BLOCKED",
+      note: `Matrix could not verify code/CI acceptance criteria ${unverified.join(", ")} on GitHub`,
+    };
+  const unchecked = device.filter((l) => l.status === "NOT TESTED").map((l) => l.criterion);
+  if (unchecked.length)
+    return {
+      verdict: "BLOCKED",
+      note: `the QA agent did not check acceptance criteria ${unchecked.join(", ")} with a collected screenshot`,
+    };
+  if (device.length && !device.some((l) => l.status === "PASS"))
+    return { verdict: "BLOCKED", note: "no device acceptance criterion could be tested" };
+  const notes = [
+    ...(report.verdict === "PASS"
+      ? []
+      : [
+          "the QA agent reported FAIL, but no device step failed, no finding is caused by this PR and every code/CI criterion holds",
+        ]),
+    ...(excused
+      ? [
+          `${excused} P2 finding(s) counted as pre-existing / environment on the agent's check: review them below`,
+        ]
+      : []),
+  ];
+  return notes.length ? { verdict: "PASS", note: notes.join("; ") } : { verdict: "PASS" };
+}
+
+/** Title prefix of the tracker issues Matrix files for pre-existing findings (dedupe key). */
+export const PRE_EXISTING_PREFIX = "QA pre-existing:";
+
+/** The tracker issue for a pre-existing finding: escaped agent text, plus where it was seen. */
+export function preExistingIssue(
+  f: Finding,
+  ctx: { ticketId: string; pullRequestUrl: string; headSha: string },
+): { title: string; body: string } {
+  const title = `${PRE_EXISTING_PREFIX} ${clean(f.title.replace(/\s+/g, " "), 160)}`;
+  return {
+    title,
+    body: [
+      `Matrix agent QA saw this while testing ${md(ctx.ticketId, 40)} (${md(ctx.pullRequestUrl, 200)} at \`${ctx.headSha.slice(0, 12)}\`), and judged it not caused by that PR.`,
+      `Severity: ${f.severity} · Cause: ${f.cause === "environment" ? "environment" : "pre-existing"}`,
+      `Check: ${md(f.causeCheck, 300)}`,
+      `Steps: ${md(f.steps, 600) || "n/a"}`,
+      `Expected: ${md(f.expected) || "n/a"}`,
+      `Actual: ${md(f.actual) || "n/a"}`,
+    ].join("\n\n"),
+  };
+}
+
+/** Same issue for dedupe: case, spacing and punctuation do not matter. */
+export function sameIssueTitle(a: string, b: string): boolean {
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+  return norm(a) === norm(b);
 }
 
 /** `qaRun` ties the report to one QA run: a loop back that changes nothing gets a fresh run. */
@@ -230,6 +405,12 @@ export function renderAgentQaReport(
     images: ReadonlyMap<string, string>;
     /** Number of acceptance criteria the agent was asked to check. */
     criteriaCount?: number;
+    /** Code/CI criteria Matrix verified on GitHub (the agent only had the other ones). */
+    code?: readonly CodeCriterionResult[];
+    /** The acceptance criteria, for the per-criterion list. */
+    criteria?: readonly string[];
+    /** Pre-existing findings filed as tracker issues: finding index -> issue id. */
+    filed?: ReadonlyMap<number, string>;
   },
 ): RenderedReport {
   const prLink = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/.test(ctx.pullRequestUrl)
@@ -257,6 +438,7 @@ export function renderAgentQaReport(
     report,
     ctx.criteriaCount ?? 0,
     new Set(outcome.screenshots.map((s) => s.name)),
+    ctx.code,
   );
   const image = (name: string | undefined) => {
     if (!name) return "";
@@ -273,25 +455,51 @@ export function renderAgentQaReport(
   if (note) lines.push(`Matrix note: ${note}.`);
   if (verdict === "BLOCKED" && report.blockedReason)
     lines.push(`Blocked: ${md(report.blockedReason, 300)}`);
+  if (ctx.code) {
+    lines.push("### Acceptance criteria");
+    lines.push(
+      criterionLines(
+        report,
+        ctx.criteriaCount ?? 0,
+        new Set(outcome.screenshots.map((s) => s.name)),
+        ctx.code,
+      )
+        .map((l) => {
+          const text = ctx.criteria?.[l.criterion - 1];
+          return `- #${l.criterion} ${l.status} (${l.source})${text ? `: ${md(text, 200)}` : ""}${l.detail ? ` (${md(l.detail, 300)})` : ""}`;
+        })
+        .join("\n"),
+    );
+  }
   if (report.steps.length) {
     lines.push("### Steps");
     lines.push(
       report.steps
         .map(
           (s, i) =>
-            `${i + 1}. ${s.ok ? "PASS" : "FAIL"}${s.criterion ? ` (acceptance #${s.criterion})` : ""}: ${md(s.action)}. Expected: ${md(s.expected) || "n/a"}. Actual: ${md(s.actual) || "n/a"}.${image(s.screenshot)}`,
+            `${i + 1}. ${s.notTested ? `NOT TESTED (${s.notTested})` : s.ok ? "PASS" : "FAIL"}${s.criterion ? ` (acceptance #${s.criterion})` : ""}: ${md(s.action)}. Expected: ${md(s.expected) || "n/a"}. Actual: ${md(s.actual) || "n/a"}.${image(s.screenshot)}`,
         )
         .join("\n"),
     );
   }
-  if (report.findings.length) {
+  const finding = (f: Finding) =>
+    `- ${f.severity} ${md(f.title, 200)}. Steps: ${md(f.steps, 600) || "n/a"}. Expected: ${md(f.expected) || "n/a"}. Actual: ${md(f.actual) || "n/a"}.${image(f.screenshot)}`;
+  const own = report.findings.filter((f) => !ctx.code || !isPreExisting(f));
+  if (own.length) {
     lines.push("### Findings");
+    lines.push(own.map(finding).join("\n"));
+  }
+  const elsewhere = ctx.code
+    ? report.findings.map((f, i) => [f, i] as const).filter(([f]) => isPreExisting(f))
+    : [];
+  if (elsewhere.length) {
+    lines.push("### Pre-existing / environment (not caused by this PR, does not fail it)");
     lines.push(
-      report.findings
-        .map(
-          (f) =>
-            `- ${f.severity} ${md(f.title, 200)}. Steps: ${md(f.steps, 600) || "n/a"}. Expected: ${md(f.expected) || "n/a"}. Actual: ${md(f.actual) || "n/a"}.${image(f.screenshot)}`,
-        )
+      elsewhere
+        .map(([f, i]) => {
+          const id = ctx.filed?.get(i);
+          return `${finding(f)} Cause: ${f.cause === "environment" ? "environment" : "pre-existing"}; check: ${md(f.causeCheck, 300)}.${id ? ` Filed as ${md(id, 40)}.` : ""}`;
+        })
         .join("\n"),
     );
   }

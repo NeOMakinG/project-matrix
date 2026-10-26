@@ -2,6 +2,7 @@ import type { Ticket, TicketComment, TicketStore } from "@matrix/tickets";
 import type { DesignEvidence, DesignScope } from "./design.js";
 import type { HoldoutScenario } from "./holdout.js";
 import type { AutonomyMode, Phase, Receipt, RunEventKind } from "./ports.js";
+import type { PullRequestFacts } from "./qa-criteria.js";
 import type { JudgeScenarioEvidence } from "./qa-evidence.js";
 import type { PhaseModel, ProjectConfig, QaSurface, WorkflowState } from "./types.js";
 
@@ -114,6 +115,8 @@ export interface PullRequestPort {
   publish(request: PullRequestRequest): Promise<{ url: string; branch: string } | undefined>;
   /** Optional: add/remove labels on a published PR (labels created when missing). */
   label?(project: ProjectConfig, url: string, add: string[], remove: string[]): Promise<void>;
+  /** Optional: what GitHub says about a published PR now (body, changed files, head checks). */
+  facts?(project: ProjectConfig, url: string): Promise<PullRequestFacts>;
 }
 
 export interface DeployPort {
