@@ -208,7 +208,10 @@ export async function runViaOrca(
     );
     terminal = str(record(made.terminal).handle);
     if (!terminal) throw new Error("orca route: terminal create returned no handle");
-    trace.push(`${route.environment}: terminal ${terminal} runs ${argv.join(" ")}`);
+    // Short: remote jobs carry whole scripts (base64 stdin included) as argv.
+    trace.push(
+      `${route.environment}: terminal ${terminal} runs ${argv.join(" ").replace(/\s+/g, " ").slice(0, 160)}`,
+    );
     const lines: string[] = [];
     let cursor: string | undefined;
     for (;;) {
