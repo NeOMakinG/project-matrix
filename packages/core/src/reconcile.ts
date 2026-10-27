@@ -664,7 +664,9 @@ export class Reconciler {
       this.agentQaBlockedSeen.delete(key);
       prior = undefined;
     }
-    if (handedOver && prior === undefined && ticket.labels.includes(NEEDS_HUMAN_LABEL)) return;
+    // An explicit rerun is a human hand-over too: it does not wait for needs-human removal.
+    if (!rerun && handedOver && prior === undefined && ticket.labels.includes(NEEDS_HUMAN_LABEL))
+      return;
     // A BLOCKED report waits until a human removed needs-human (they fixed the cause).
     if (prior === "BLOCKED" && ticket.labels.includes(NEEDS_HUMAN_LABEL)) {
       this.agentQaBlockedSeen.add(key);

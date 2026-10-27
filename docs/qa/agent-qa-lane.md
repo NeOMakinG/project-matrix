@@ -95,6 +95,8 @@ redoes a posted verdict when:
 - A restart (blocked ticket moved back to Ready) is no longer read as manual QA feedback on the
   handoff it restarts at: it used to loop the ticket straight back to implement.
 - The `qa:rerun` label must exist in the Linear team (Matrix cannot create labels there).
+- A ticket whose body no longer lists any acceptance criteria keeps the QA run's criteria snapshot
+  (known limit: emptying the list does not invalidate a verdict; edit the criteria instead).
 
 ### 3. The lane (`apps/server/src/integration/agent-qa-lane.ts`)
 
