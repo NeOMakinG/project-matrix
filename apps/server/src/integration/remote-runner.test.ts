@@ -127,6 +127,7 @@ describe("runner hosts", () => {
         executor: g.executor,
         orcaCli: () => o.cli,
         pollMs: 0,
+        scan: async () => ({ ok: true, summary: "" }) as never,
       },
       "miniforum",
       "p",
@@ -166,6 +167,7 @@ describe("runner hosts", () => {
         executor: g.executor,
         orcaCli: () => o.cli,
         pollMs: 0,
+        scan: async () => ({ ok: true, summary: "" }) as never,
       },
       "miniforum",
       "p",
@@ -224,6 +226,7 @@ describe("runner hosts", () => {
       executor: g.executor,
       orcaCli: () => o.cli,
       pollMs: 0,
+      scan: async () => ({ ok: true, summary: "" }) as never,
     };
     const sb = remoteAwareSandbox(local, r);
     expect(
@@ -248,6 +251,22 @@ describe("runner hosts", () => {
 });
 
 describe("runner host safety", () => {
+  test("no scan configured: the scratch push is refused (repo hooks are skipped)", async () => {
+    const g = git();
+    const r: RemoteRunners = {
+      hosts,
+      project: async () => project,
+      executor: g.executor,
+      orcaCli: () => orca("done\n", 0).cli,
+      pollMs: 0,
+    };
+    const c = await remoteContext(r, "miniforum", "p", "/wt", "run-8");
+    await expect(
+      runRemote(c!, { argv: ["x"], env: {}, timeoutMs: 1, collect: true }),
+    ).rejects.toThrow("secret gate missing");
+    expect(g.ran.some((x) => x.startsWith("push"))).toBe(false);
+  });
+
   test("the scratch-push scan runs in the canonical repo, never the ticket worktree", async () => {
     const g = git();
     const seen: string[] = [];
