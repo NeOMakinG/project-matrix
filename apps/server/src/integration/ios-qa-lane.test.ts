@@ -111,3 +111,13 @@ test("a restarted server reclaims its own lock before the first job", async () =
   expect(f.steps[0]).toEqual(["reclaim", "matrix-server@bosgame-ios"]);
   expect(f.steps[1]?.[0]).toBe("precheck");
 });
+
+test("a lock lost mid-run (beat exit 12) blocks the result", async () => {
+  const f = fake({ fail: { beat: 12 }, slowAgentMs: 60 });
+  const lane = new TapflowIosQaLane(config, { remote: f.remote, local: f.local, beatMs: 10 });
+  const out = await lane.run(request());
+  expect(out).toMatchObject({
+    kind: "blocked",
+    reason: expect.stringMatching(/lost its simulator lock/),
+  });
+});

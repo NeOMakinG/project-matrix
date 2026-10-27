@@ -25,15 +25,24 @@ udid_ok() { need udid "$1" '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s; }
 
 reclaim_stale() {
-  local l="$1" owner last tomb
-  owner=$(cat "$l/owner" 2>/dev/null || true)
+  # Reclaimers are serialized by a guard (itself reclaimed after 60 s), and staleness is re-read
+  # under it: a holder that beat meanwhile keeps its lock; a second reclaimer sees the new lock.
+  local l="$1" g="$LOCKS/.guard" last tomb
   last=$(cat "$l/beat" 2>/dev/null || mtime "$l")
   (( $(date +%s) - last > STALE_S )) || return 1
-  tomb="$l.stale.$$.$RANDOM"
-  mv "$l" "$tomb" 2>/dev/null || return 0
-  if [[ "$(cat "$tomb/owner" 2>/dev/null || true)" != "$owner" ]]; then mv "$tomb" "$l" 2>/dev/null || true; return 0; fi
-  echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
-  rm -rf "$tomb"
+  if ! mkdir "$g" 2>/dev/null; then
+    (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g"
+    return 0
+  fi
+  last=$(cat "$l/beat" 2>/dev/null || mtime "$l")
+  if [[ -d "$l" ]] && (( $(date +%s) - last > STALE_S )); then
+    tomb="$l.stale.$$.$RANDOM"
+    if mv "$l" "$tomb" 2>/dev/null; then
+      echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
+      rm -rf "$tomb"
+    fi
+  fi
+  rm -rf "$g"
 }
 
 tapflow_state() {
@@ -62,13 +71,18 @@ acquire() {
   deadline=$(( $(date +%s) + wait_s ))
   while :; do
     st=$(tapflow_state "$udid")
-    # An unreachable relay cannot report a tester: the lock alone decides then.
+    # An unreachable relay cannot report a tester: fail closed.
+    [[ "$st" == error ]] && die 11 "tapflow relay unreachable: cannot tell whether $udid is in use"
     if [[ "$st" != busy ]]; then
       if mkdir "$L" 2>/dev/null; then
         echo "$token" >"$L/owner"; echo "$holder" >"$L/holder"; echo "$tenant" >"$L/tenant"
         date +%s >"$L/beat"; date +%s >"$L/since"
-        if [[ "$(tapflow_state "$udid")" == busy ]]; then rm -rf "$L"
-        else echo "$token"; return 0; fi
+        st=$(tapflow_state "$udid")
+        case "$st" in
+          free|absent) echo "$token"; return 0 ;;
+          error) rm -rf "$L"; die 11 "tapflow relay unreachable: cannot tell whether $udid is in use" ;;
+          *) rm -rf "$L" ;;
+        esac
       else
         reclaim_stale "$L" && continue
       fi
@@ -105,11 +119,22 @@ case "$cmd" in
     [[ "${1:-}" == "--" ]] && shift
     (( $# > 0 )) || die 2 "no command"
     token=$(acquire "$udid" "$holder" "$wait_s")
-    ( while sleep 240; do owned "$udid" "$token" || exit 0; date +%s >"$LOCKS/$udid.lock/beat"; done ) &
+    beater="" child=""
+    finish() {
+      [[ -n "$child" ]] && kill "$child" 2>/dev/null
+      [[ -n "$beater" ]] && kill "$beater" 2>/dev/null
+      [[ -n "$child" ]] && wait "$child" 2>/dev/null
+      owned "$udid" "$token" && rm -rf "$LOCKS/$udid.lock"
+      true
+    }
+    trap 'finish; exit 143' INT TERM HUP
+    ( while sleep 240; do owned "$udid" "$token" || exit 0; date +%s >"$LOCKS/$udid.lock/beat"; done ) </dev/null >/dev/null 2>&1 &
     beater=$!
-    rc=0; "$@" || rc=$?
-    kill "$beater" 2>/dev/null || true
-    owned "$udid" "$token" && rm -rf "$LOCKS/$udid.lock"
+    "$@" &
+    child=$!
+    rc=0; wait "$child" || rc=$?
+    child=""
+    finish
     exit "$rc"
     ;;
   *) die 2 "usage: sim-lock acquire|beat|release|status|run (see the header of this script)" ;;

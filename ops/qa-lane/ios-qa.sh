@@ -29,7 +29,8 @@ die() { echo "$2" >&2; exit "$1"; }
 need() { [[ "$2" =~ $3 ]] || die 2 "invalid $1"; }
 job_dir() { need job "$1" '^[a-z0-9-]{8,64}$'; echo "$ROOT/jobs/$1"; }
 udid_ok() { need udid "$1" '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'; }
-# The lock (if any) this job holds; steps after `lock` only know the job id.
+# The lock (if any) this job holds; steps after `lock` only know the job id. Always exits 0 (it is
+# used in assignments under set -e): test its output. tapflow_state needs Node >= 22 (WebSocket).
 held_lock() {
   local l
   for l in "$LOCKS"/*.lock; do
@@ -38,18 +39,29 @@ held_lock() {
   return 0
 }
 beat() { local l; l=$(held_lock "$1"); [[ -n "$l" ]] && date +%s >"$l/beat"; true; }
+# Steps that touch the shared build dir or the simulator refuse to run without the lock.
+owns() { [[ -n "$(held_lock "$1")" ]] || die 12 "simulator busy: this job no longer holds its lock"; beat "$1"; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s; }
 # A stale lock is moved aside atomically, and only if it is still the one judged stale.
 reclaim_stale() {
-  local l="$1" owner last tomb
-  owner=$(cat "$l/owner" 2>/dev/null || true)
+  # Reclaimers are serialized by a guard (itself reclaimed after 60 s), and staleness is re-read
+  # under it: a holder that beat meanwhile keeps its lock; a second reclaimer sees the new lock.
+  local l="$1" g="$LOCKS/.guard" last tomb
   last=$(cat "$l/beat" 2>/dev/null || mtime "$l")
   (( $(date +%s) - last > STALE_S )) || return 1
-  tomb="$l.stale.$$.$RANDOM"
-  mv "$l" "$tomb" 2>/dev/null || return 0
-  if [[ "$(cat "$tomb/owner" 2>/dev/null || true)" != "$owner" ]]; then mv "$tomb" "$l" 2>/dev/null || true; return 0; fi
-  echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
-  rm -rf "$tomb"
+  if ! mkdir "$g" 2>/dev/null; then
+    (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g"
+    return 0
+  fi
+  last=$(cat "$l/beat" 2>/dev/null || mtime "$l")
+  if [[ -d "$l" ]] && (( $(date +%s) - last > STALE_S )); then
+    tomb="$l.stale.$$.$RANDOM"
+    if mv "$l" "$tomb" 2>/dev/null; then
+      echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
+      rm -rf "$tomb"
+    fi
+  fi
+  rm -rf "$g"
 }
 # tapflow's own occupancy: free | busy | absent | error. The relay answers local sockets without a
 # token. MATRIX_QA_TAPFLOW_STATE_FILE replaces the query (tests only).
@@ -133,8 +145,12 @@ case "$step" in
         echo "$job" >"$L/owner"; echo "$holder" >"$L/holder"; echo "$TENANT" >"$L/tenant"
         date +%s >"$L/beat"; date +%s >"$L/since"
         # A tester may have joined between the check and the mkdir: give the lock back and wait.
-        if [[ "$(tapflow_state "$udid")" == busy ]]; then rm -rf "$L"
-        else exit 0; fi
+        st=$(tapflow_state "$udid")
+        case "$st" in
+          free|absent) exit 0 ;;
+          error) rm -rf "$L"; die 11 "tapflow relay unreachable on the simulator host" ;;
+          *) rm -rf "$L" ;;
+        esac
       else
         reclaim_stale "$L" && continue
       fi
@@ -177,7 +193,7 @@ case "$step" in
     need sha "$sha" '^[a-f0-9]{40}$'; need timeout "$timeout_s" '^[0-9]{2,4}$'
     need app_id "$app_id" '^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)+$'
     (( timeout_s <= 5400 )) || die 2 "timeout above the lock's stale limit"
-    beat "$1"
+    owns "$1"
     mirror="$ROOT/mirrors/${repo/\//__}.git" work="$ROOT/build/${repo/\//__}"
     mkdir -p "$ROOT/mirrors" "$ROOT/build" "$ROOT/build-home/tmp"
     cat >"$dir/build.sb" <<SB
@@ -253,7 +269,7 @@ SB
     udid_ok "$udid"; need app "$app_glob" '^[A-Za-z0-9._/*-]{1,200}$'
     [[ "$app_glob" != *..* && "$app_glob" != /* ]] || die 2 "invalid app"
     need app_id "$app_id" '^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)+$'
-    beat "$1"
+    owns "$1"
     work=$(cat "$dir/src")
     app=$(cd "$work" && compgen -G "$app_glob" | head -1 || true)
     [[ -n "$app" && -d "$work/$app" ]] || die 21 "no simulator .app at $app_glob"
@@ -263,7 +279,7 @@ SB
     # The build ran for a while: a person or agent may have taken the simulator through tapflow
     # since. Never install over a live session; wait for it (bounded), else report busy.
     wait_tapflow_free "$udid" 600
-    beat "$1"
+    owns "$1"
     # The shared simulator may have been shut down during the build: bring it back once.
     if ! booted "$udid"; then
       xcrun simctl boot "$udid" 2>/dev/null || true
@@ -284,7 +300,7 @@ SB
     # Photos into the simulator library once per fixture set (addmedia would duplicate them).
     dir=$(job_dir "$1") udid="$2" set_id="$3"
     udid_ok "$udid"; need set "$set_id" '^[a-z0-9-]{1,40}-[a-f0-9]{12}$'
-    beat "$1"
+    owns "$1"
     marker="$ROOT/seeded/$udid-$set_id"
     if [[ -f "$marker" ]]; then echo "fixtures $set_id already on $udid"; exit 0; fi
     files=("$dir"/fx-*)

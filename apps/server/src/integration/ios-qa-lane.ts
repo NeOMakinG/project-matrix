@@ -184,6 +184,8 @@ export class TapflowIosQaLane implements AgentQaPort {
     };
     let locked = false;
     let beater: ReturnType<typeof setInterval> | undefined;
+    // Set when a beat finds the lock gone (reclaimed by another tenant): nothing of this run counts.
+    let lost = false;
     try {
       // Two rounds: the simulator host may be briefly overloaded or the sim mid-reboot.
       let info: string | undefined;
@@ -220,9 +222,11 @@ export class TapflowIosQaLane implements AgentQaPort {
       locked = true;
       // Builds and agent runs outlast the stale window: beat from here, on its own SSH session.
       beater = setInterval(() => {
-        this.#step(["beat", job.id], 60_000).catch((e: Error) =>
-          console.error(`[ios-qa-lane] lock beat failed: ${e.message.slice(0, 160)}`),
-        );
+        if (!beater) return;
+        this.#step(["beat", job.id], 60_000).catch((e: Error) => {
+          if (e.message.startsWith(WHAT[12] ?? "simulator busy")) lost = true;
+          console.error(`[ios-qa-lane] lock beat failed: ${e.message.slice(0, 160)}`);
+        });
       }, this.#beatMs);
       beater.unref?.();
       const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
@@ -264,6 +268,10 @@ export class TapflowIosQaLane implements AgentQaPort {
         qaPrompt(readManual(), request, intro, project.fixtures?.note),
       );
       await runLocalAgent(this.#local, job.dir, "ios", c.model, c.agentTimeoutMs);
+      if (lost)
+        throw new Error(
+          "simulator busy: the lane lost its simulator lock during the run (another tenant may have used it)",
+        );
       const files = collectLocal(job.dir);
       for (const line of (await this.#step(["collect", job.id], 5 * 60_000)).split("\n")) {
         const [name, data] = line.split("\t");
@@ -287,6 +295,7 @@ export class TapflowIosQaLane implements AgentQaPort {
       return { kind: "blocked", reason: (error as Error).message.slice(0, 600), device, build };
     } finally {
       if (beater) clearInterval(beater);
+      beater = undefined;
       // Cleanup touches the shared build dir: it runs while this job still holds the lock.
       await this.#step(["cleanup", job.id], 5 * 60_000).catch(() => undefined);
       if (locked) await this.#step(["unlock", job.id], 60_000).catch(() => undefined);

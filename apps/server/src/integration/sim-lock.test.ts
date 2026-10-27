@@ -90,3 +90,21 @@ test("reclaim drops only this holder's lock", () => {
   expect(r.stdout).toMatch(/reclaimed/);
   expect(existsSync(join(e.locks, `${UDID}.lock`))).toBe(false);
 });
+
+test("sim-lock fails closed when the relay cannot be asked; lane steps need the lock", () => {
+  const e = env("error");
+  expect(run(SIMLOCK, ["acquire", UDID, "x", "0"], e.vars).status).toBe(11);
+  expect(existsSync(join(e.locks, `${UDID}.lock`))).toBe(false);
+  const f = env("free");
+  const i = run(LANE, ["install", "mx-job-aaaa1111", UDID, "a/*.app", "com.wayline.app"], f.vars);
+  expect(i.status).toBe(12);
+  expect(i.stderr).toMatch(/no longer holds its lock/);
+});
+
+test("sim-lock run holds the lock for the command and releases it", () => {
+  const e = env("free");
+  const lockDir = join(e.locks, `${UDID}.lock`);
+  const r = run(SIMLOCK, ["run", UDID, "agent-c", "0", "--", "test", "-d", lockDir], e.vars);
+  expect(r.status).toBe(0);
+  expect(existsSync(lockDir)).toBe(false);
+});
