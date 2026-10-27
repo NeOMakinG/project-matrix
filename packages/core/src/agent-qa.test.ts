@@ -1,9 +1,15 @@
 import { expect, test } from "vitest";
 import {
+  agentQaDeviceRecord,
+  agentQaHeading,
+  agentQaInputs,
+  deviceOutcomeFromRecord,
   effectiveVerdict,
+  latestAgentQaReport,
   parseAgentQaReport,
   priorAgentQaVerdict,
   renderAgentQaReport,
+  rerunCommentPending,
 } from "./agent-qa.js";
 
 const SHA = "a".repeat(40);
@@ -159,4 +165,65 @@ test("a ticket without acceptance criteria never passes on one checked step", ()
   });
   // A defect found without criteria still fails.
   expect(effectiveVerdict({ ...r, steps: [{ ...step, ok: false }] }, 0).verdict).toBe("FAIL");
+});
+
+test("the heading carries the inputs fingerprint; older headings without one still parse", () => {
+  const inputs = agentQaInputs("## Root cause\n\nx", ["a", "b"]);
+  expect(inputs).toMatch(/^[a-f0-9]{12}$/);
+  expect(agentQaInputs("## Root cause\n\nx\r\n", ["a", "b"])).toBe(inputs);
+  expect(agentQaInputs("## Root cause\n\ny", ["a", "b"])).not.toBe(inputs);
+  expect(agentQaInputs("## Root cause\n\nx", ["a"])).not.toBe(inputs);
+  const now = `${agentQaHeading("PASS", SHA, "run-1", inputs)} (draft PR)`;
+  const old = `Matrix agent QA FAIL for ${SHA} (QA run run-1) (draft PR)`;
+  expect(latestAgentQaReport([{ body: old, byMatrix: true }], SHA, "run-1")).toEqual({
+    verdict: "FAIL",
+  });
+  // The newest report wins.
+  expect(
+    latestAgentQaReport(
+      [
+        { body: old, byMatrix: true },
+        { body: now, byMatrix: true },
+      ],
+      SHA,
+      "run-1",
+    ),
+  ).toEqual({ verdict: "PASS", inputs });
+  expect(agentQaHeading("PASS", SHA, "run-1", "not-hex")).not.toContain("inputs");
+});
+
+test("/qa rerun counts only from a person, after Matrix's latest report", () => {
+  const report = { body: `Matrix agent QA PASS for ${SHA} (QA run r)`, byMatrix: true };
+  const ask = { body: "/qa rerun", byMatrix: false, author: "valentin" };
+  expect(rerunCommentPending([report, ask])).toBe(true);
+  expect(rerunCommentPending([ask, report])).toBe(false);
+  expect(rerunCommentPending([report, { ...ask, author: undefined }])).toBe(false);
+  expect(rerunCommentPending([report, { body: "/qa rerun", byMatrix: true }])).toBe(false);
+  expect(rerunCommentPending([report, { ...ask, body: "please /qa rerun" }])).toBe(false);
+  expect(rerunCommentPending([report, { ...ask, body: "  /QA  rerun now" }])).toBe(true);
+});
+
+test("a device record round-trips for its head only and rejects tampered data", () => {
+  const outcome = {
+    kind: "report" as const,
+    report: {
+      verdict: "PASS" as const,
+      summary: "ok",
+      steps: [{ ...step, screenshot: "s1.png" }],
+      findings: [],
+    },
+    screenshots: [{ name: "s1.png", bytes: new Uint8Array([1]) }],
+    device: { serial: "emu" },
+    build: { appId: "com.x", kind: "release" },
+    durationMs: 60_000,
+  };
+  const record = JSON.parse(
+    JSON.stringify(agentQaDeviceRecord(outcome, SHA, new Map([["s1.png", "https://u/s1.png"]]))),
+  );
+  const back = deviceOutcomeFromRecord(record, SHA);
+  expect(back?.outcome.screenshots.map((s) => s.name)).toEqual(["s1.png"]);
+  expect(back?.outcome.report.steps[0]?.criterion).toBe(1);
+  expect(back?.images.get("s1.png")).toBe("https://u/s1.png");
+  expect(deviceOutcomeFromRecord(record, "b".repeat(40))).toBeUndefined();
+  expect(deviceOutcomeFromRecord({ ...record, provenance: "x" }, SHA)).toBeUndefined();
 });

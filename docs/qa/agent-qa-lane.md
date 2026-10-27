@@ -58,9 +58,39 @@ Handover: a ticket whose QA run handed off to a human before the project switche
 `driver: "agent"` goes through the lane once a human removes its `needs-human` label.
 
 Idempotency across restarts: every report comment starts with
-`Matrix agent QA <VERDICT> for <sha>`. Before running, the reconciler reads the ticket comments:
-an existing PASS/FAIL report for this head is never re-run; a BLOCKED one is re-run only once the
-human removed `needs-human`.
+`Matrix agent QA <VERDICT> for <sha> (QA run <run>, inputs <fingerprint>)`. Before running, the
+reconciler reads the ticket comments: a BLOCKED report is re-run only once the human removed
+`needs-human`; a PASS/FAIL report for this head and QA run is re-applied unless one of the rerun
+triggers below fired.
+
+### Rerun triggers (2026-10-27)
+
+A verdict is keyed by PR head SHA and QA run. A ticket re-armed without a new commit (moved back to
+Ready after its FAIL blocked it) used to get its old verdict re-applied, never re-tested: NEO-8's
+FAIL on "root cause in the PR description" stayed after the description was fixed. Matrix now
+redoes a posted verdict when:
+
+| What changed since the last verdict | What Matrix does |
+| --- | --- |
+| PR head SHA | new key: full run (unchanged) |
+| PR description or the ticket's acceptance criteria (`inputs` fingerprint in the heading: sha256 of the description and criteria, 12 hex) | re-evaluates the GitHub-checked criteria against the stored device result of the same head; no rebuild, no device time |
+| `qa:rerun` label on the ticket | full device run on the same head; Matrix removes the label when the run starts (a failed removal skips the tick, never a double run) |
+| a `/qa rerun` comment (first word) from a person | full device run on the same head, once: a later Matrix report consumes it |
+
+- The device result of every device run is kept as a `log` receipt on the QA run (provenance
+  `matrix:agent-qa-device:v1`: report, screenshot names and uploaded URLs, device, build). A
+  GitHub-only re-evaluation re-renders the report from it with fresh PR facts and CI; when no record
+  exists for the head, it falls back to a device run.
+- A PASS is re-checked at most every 2 minutes (one Linear read, one GitHub read). A FAIL is only
+  at merge again after a human re-armed it, so it is checked before the FAIL is applied again.
+- A report posted before fingerprints existed has no `inputs`: it is redone only on an explicit
+  request (label or comment), never silently.
+- `/qa rerun` counts from any non-Matrix commenter with a user (integrations without one are
+  ignored): commenting needs access to the tracker team, so that is the owner or a team member.
+  Explicit requests also re-run a BLOCKED verdict without waiting for `needs-human` removal.
+- A restart (blocked ticket moved back to Ready) is no longer read as manual QA feedback on the
+  handoff it restarts at: it used to loop the ticket straight back to implement.
+- The `qa:rerun` label must exist in the Linear team (Matrix cannot create labels there).
 
 ### 3. The lane (`apps/server/src/integration/agent-qa-lane.ts`)
 

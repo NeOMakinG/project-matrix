@@ -9,17 +9,23 @@ import {
   type TicketStore,
 } from "@matrix/tickets";
 import {
+  AGENT_QA_DEVICE_PROVENANCE,
   type AgentQaOutcome,
   type AgentQaPort,
   type AgentQaVerdict,
+  agentQaDeviceRecord,
+  agentQaInputs,
+  deviceOutcomeFromRecord,
   isPreExisting,
+  latestAgentQaReport,
   NO_CRITERIA,
   PRE_EXISTING_PREFIX,
   preExistingIssue,
-  priorAgentQaVerdict,
   QA_FAILED_LABEL,
   QA_PASSED_LABEL,
+  QA_RERUN_LABEL,
   renderAgentQaReport,
+  rerunCommentPending,
   sameIssueTitle,
 } from "./agent-qa.js";
 import type { EventBus } from "./bus.js";
@@ -277,6 +283,8 @@ export class Reconciler {
   private readonly agentQaUnposted = new Map<string, { body: string; verdict: AgentQaVerdict }>();
   /** BLOCKED keys whose needs-human label was seen on the ticket (removal then means retry). */
   private readonly agentQaBlockedSeen = new Set<string>();
+  /** Last rerun-trigger check (label, PR description, criteria) per QA key: at most every 2 min. */
+  private readonly agentQaTriggerAt = new Map<string, number>();
   /**
    * Agent QA label writes that failed, by `${project}\0${ticket}`: retried every tick whatever the
    * workflow's phase (a FAIL already looped back), so a stale `qa:passed` never outlives a FAIL.
@@ -611,15 +619,48 @@ export class Reconciler {
       return;
     }
     const applied = this.agentQaVerdicts.get(key);
-    if (applied === "PASS" || applied === "FAIL") return;
-    const prior = applied ?? priorAgentQaVerdict(comments, headSha, qaRun.id);
+    const latest = latestAgentQaReport(comments, headSha, qaRun.id);
+    let prior = applied ?? latest?.verdict;
+    let rerun: AgentQaRerun | undefined;
     if (prior === "PASS" || prior === "FAIL") {
-      // The report was posted (e.g. by an earlier process) but its effects may not have landed.
-      await this.applyAgentQaVerdict(project, w, key, url, prior);
-      return;
+      rerun = await this.agentQaRerun(
+        project,
+        w,
+        key,
+        url,
+        manual,
+        comments,
+        prior,
+        latest?.inputs,
+      );
+      if (!rerun) {
+        // The report was posted (e.g. by an earlier process) but its effects may not have landed.
+        if (!applied) await this.applyAgentQaVerdict(project, w, key, url, prior);
+        return;
+      }
+    } else if (rerunCommentPending(comments)) {
+      rerun = { device: true, reason: "a /qa rerun comment" };
     }
     const ticket = await tickets.get(w.ticketId).catch(() => null);
     if (!ticket) return;
+    if (!rerun && ticket.labels.includes(QA_RERUN_LABEL))
+      rerun = { device: true, reason: `the ${QA_RERUN_LABEL} label`, label: true };
+    if (rerun?.label) {
+      // Removed when the run starts; a failed removal waits for a later tick (no double run).
+      if (!tickets.removeLabel) return;
+      try {
+        await tickets.removeLabel(w.ticketId, QA_RERUN_LABEL);
+      } catch (error) {
+        this.trackerFailed(project.id, w.ticketId, "removeLabel", error);
+        return;
+      }
+    }
+    if (rerun) {
+      // A fresh verdict replaces the old one; the old BLOCKED wait no longer applies.
+      this.agentQaVerdicts.delete(key);
+      this.agentQaBlockedSeen.delete(key);
+      prior = undefined;
+    }
     if (handedOver && prior === undefined && ticket.labels.includes(NEEDS_HUMAN_LABEL)) return;
     // A BLOCKED report waits until a human removed needs-human (they fixed the cause).
     if (prior === "BLOCKED" && ticket.labels.includes(NEEDS_HUMAN_LABEL)) {
@@ -634,7 +675,10 @@ export class Reconciler {
       if (tickets.addLabel) return;
     }
     this.agentQaBlockedSeen.delete(key);
-    const criteria = manual.criteria.length ? manual.criteria : acceptanceCriteria(ticket.body);
+    const criteria = qaCriteria(ticket.body, manual.criteria);
+    // GitHub-only re-evaluation: the device result for this head is re-used, nothing is rebuilt.
+    const stored =
+      rerun && !rerun.device ? await this.storedDeviceOutcome(qaRun.id, headSha) : undefined;
     const pr = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/);
     const sources = classifyCriteria(criteria);
     const numbered = (...source: string[]) =>
@@ -666,13 +710,33 @@ export class Reconciler {
     const job = (async () => {
       let outcome: AgentQaOutcome;
       let code: CodeCriterionResult[] = [];
+      let facts: PullRequestFacts | undefined;
+      if (stored) {
+        [code, facts] = await verifyCode();
+        await this.finishAgentQa(
+          project,
+          w,
+          key,
+          headSha,
+          qaRun.id,
+          url,
+          stored.outcome,
+          criteria,
+          code,
+          {
+            images: stored.images,
+            inputs: facts ? agentQaInputs(facts.body, criteria) : undefined,
+          },
+        );
+        return;
+      }
       try {
         if (!pr?.[1] || !pr[2]) throw new Error("the draft PR is not a GitHub pull request");
         // The PR checklist is these criteria: with none there is nothing a pass could stand on.
         if (!criteria.length) throw new Error(NO_CRITERIA);
         if (!this.o.agentQa?.handles(project))
           throw new Error("no agent QA lane is configured for this project on the Matrix host");
-        const [, facts] = await verifyCode();
+        [, facts] = await verifyCode();
         outcome = await this.o.agentQa.run({
           project,
           ticket: {
@@ -695,12 +759,71 @@ export class Reconciler {
       } catch (error) {
         outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
       }
-      if (outcome.kind === "report") [code] = await verifyCode();
-      await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome, criteria, code);
+      if (outcome.kind === "report") [code, facts] = await verifyCode();
+      await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome, criteria, code, {
+        inputs: facts ? agentQaInputs(facts.body, criteria) : undefined,
+      });
     })()
       .catch((error) => this.trackerFailed(project.id, w.ticketId, "agent-qa", error))
       .finally(() => this.agentQaJobs.delete(key));
     this.agentQaJobs.set(key, job);
+  }
+
+  /**
+   * Whether a PASS/FAIL already posted for this head and QA run must be redone: an explicit request
+   * (`qa:rerun` label, `/qa rerun` comment) re-runs the device lane; a changed PR description or
+   * acceptance criteria re-evaluates the GitHub-checked criteria against the stored device result.
+   * A report without an inputs fingerprint (posted before fingerprints existed) is only redone on
+   * request. PASS is re-checked at most every 2 minutes; a FAIL is only seen at merge again once a
+   * human re-armed the ticket, so it is checked before the FAIL is applied again.
+   */
+  private async agentQaRerun(
+    project: ProjectConfig,
+    w: WorkflowState,
+    key: string,
+    url: string,
+    manual: ManualQaData,
+    comments: readonly TicketComment[],
+    prior: "PASS" | "FAIL",
+    recorded: string | undefined,
+  ): Promise<AgentQaRerun | undefined> {
+    if (rerunCommentPending(comments)) return { device: true, reason: "a /qa rerun comment" };
+    const now = this.clock().getTime();
+    const last = this.agentQaTriggerAt.get(key);
+    if (prior === "PASS" && last !== undefined && now - last < 2 * 60_000) return undefined;
+    if (this.agentQaTriggerAt.size > 5_000) this.agentQaTriggerAt.clear();
+    this.agentQaTriggerAt.set(key, now);
+    const ticket = await this.o
+      .tickets(project.id)
+      .get(w.ticketId)
+      .catch(() => null);
+    if (!ticket) return undefined;
+    if (ticket.labels.includes(QA_RERUN_LABEL))
+      return { device: true, reason: `the ${QA_RERUN_LABEL} label`, label: true };
+    if (!recorded) return undefined;
+    let body: string;
+    try {
+      const facts = await this.o.pullRequests?.facts?.(project, url);
+      if (!facts) return undefined;
+      body = facts.body;
+    } catch {
+      return undefined;
+    }
+    if (agentQaInputs(body, qaCriteria(ticket.body, manual.criteria)) === recorded)
+      return undefined;
+    return { device: false, reason: "the PR description or acceptance criteria changed" };
+  }
+
+  /** The device result kept for this head on the QA run, if any. */
+  private async storedDeviceOutcome(qaRunId: string, headSha: string) {
+    const receipts = await this.o.store.listReceipts(qaRunId).catch(() => []);
+    for (const r of [...receipts].reverse()) {
+      const data = r.data as { provenance?: unknown } | undefined;
+      if (r.kind !== "log" || data?.provenance !== AGENT_QA_DEVICE_PROVENANCE) continue;
+      const found = deviceOutcomeFromRecord(data, headSha);
+      if (found) return found;
+    }
+    return undefined;
   }
 
   private async finishAgentQa(
@@ -713,11 +836,13 @@ export class Reconciler {
     outcome: AgentQaOutcome,
     criteria: string[],
     code: CodeCriterionResult[],
+    opts: { images?: ReadonlyMap<string, string>; inputs?: string | undefined } = {},
   ): Promise<void> {
     const tickets = this.o.tickets(project.id);
     const id = started.ticketId;
-    const images = new Map<string, string>();
-    if (outcome.kind === "report" && tickets.uploadFile)
+    const reused = opts.images !== undefined;
+    const images = new Map<string, string>(opts.images ?? []);
+    if (!reused && outcome.kind === "report" && tickets.uploadFile)
       for (const shot of outcome.screenshots.slice(0, 12)) {
         try {
           images.set(shot.name, await tickets.uploadFile(id, shot.name, "image/png", shot.bytes));
@@ -740,9 +865,22 @@ export class Reconciler {
       outcome.kind === "report"
         ? await this.filePreExisting(project, id, url, headSha, outcome.report)
         : new Map<number, string>();
+    // Keep the device result so a later description-only change re-uses it (best effort).
+    if (!reused && outcome.kind === "report")
+      await this.o.store
+        .addReceipts(qaRunId, [
+          {
+            kind: "log",
+            ok: true,
+            summary: `agent QA device result for ${headSha.slice(0, 12)}`,
+            data: agentQaDeviceRecord(outcome, headSha, images),
+          },
+        ])
+        .catch((error) => this.trackerFailed(project.id, id, "agent-qa-record", error));
     const rendered = renderAgentQaReport(outcome, {
       headSha,
       qaRun: qaRunId,
+      ...(opts.inputs ? { inputs: opts.inputs } : {}),
       pullRequestUrl: url,
       images,
       criteriaCount: criteria.length,
@@ -1225,6 +1363,10 @@ export class Reconciler {
       delete next.stoppedBy;
       const saved = await this.o.store.saveWorkflow(next);
       this.quotaDeferrals.delete(`${project.id}\u0000${ticketId}`);
+      // The move to Ready was this restart, not QA feedback on the handoff it restarts at.
+      const prefix = `${project.id}\u0000${ticketId}\u0000`;
+      for (const k of this.handoffLeftReady)
+        if (k.startsWith(prefix)) this.handoffLeftReady.delete(k);
       this.o.bus.publish({ type: "workflow.changed", workflow: saved });
     } catch (error) {
       if (error instanceof VersionConflictError) return;
@@ -2620,6 +2762,20 @@ export class Reconciler {
 }
 
 type AgentQaLabelFix = LabelRetry;
+
+/** Why a posted agent QA verdict is redone; `device: false` re-checks only the GitHub criteria. */
+interface AgentQaRerun {
+  device: boolean;
+  reason: string;
+  /** Requested with the `qa:rerun` label (removed when the run starts). */
+  label?: boolean;
+}
+
+/** The ticket's acceptance criteria as they are now; the QA run's snapshot when it lists none. */
+function qaCriteria(body: string, snapshot: string[]): string[] {
+  const now = acceptanceCriteria(body);
+  return now.length ? now : snapshot;
+}
 
 /** Label-write retry backoff: doubles from the base, capped (an hour for permission failures). */
 const LABEL_RETRY_BASE_MS = 30_000;
