@@ -452,6 +452,10 @@ const INFRA_FAILURES: ReadonlyArray<readonly [string, RegExp]> = [
   ],
   ["disk", /ENOSPC|No space left on device|disk (?:is )?full/i],
   [
+    "gateway",
+    /API Error: (?:Connection closed|Request rejected \(429\)|5\d\d\b|Overloaded)|All credentials for model|rate_limit_error|overloaded_error|\b429 Too Many Requests/i,
+  ],
+  [
     "device",
     /device unavailable|device (?:is )?offline|emulator (?:is )?offline|no devices\/emulators found|all automated Android devices unavailable|device host (?:unreachable|overloaded)/i,
   ],
@@ -465,6 +469,23 @@ export function infraFailure(reason: string): string | undefined {
 }
 
 const BLOCKED_REASON_RE = /^The agent QA lane could not test this change: ?(.*)$/m;
+/** Per-surface reports put the reason on a `Blocked:` line (`Android: ...; iOS: ...`). */
+const SURFACE_BLOCKED_RE = /^Blocked: ?(.*)$/m;
+
+/**
+ * Infra class of a BLOCKED reason when every surface that blocked did so on infra; a single real
+ * cause on any surface (missing test data, an unchecked criterion) makes it a real BLOCKED.
+ */
+export function infraFailureAll(reason: string): string | undefined {
+  const parts = reason.split(/;\s*(?=(?:Android|iOS|Web|web):)/);
+  let kind: string | undefined;
+  for (const part of parts) {
+    const k = infraFailure(part.replace(/^(?:Android|iOS|Web|web):\s*/, ""));
+    if (!k) return undefined;
+    kind ??= k;
+  }
+  return kind;
+}
 
 /**
  * Matrix's agent QA reports for this head and QA run, oldest first, with the inputs each was
@@ -480,7 +501,10 @@ export function agentQaReports(
     if (!(c.authoredByMatrix ?? c.byMatrix)) continue;
     const m = c.body.match(HEADING_RE);
     if (!m || headSha !== m[2] || m[3] !== runTag(qaRun)) continue;
-    const reason = m[1] === "BLOCKED" ? c.body.match(BLOCKED_REASON_RE)?.[1] : undefined;
+    const reason =
+      m[1] === "BLOCKED"
+        ? (c.body.match(BLOCKED_REASON_RE)?.[1] ?? c.body.match(SURFACE_BLOCKED_RE)?.[1])
+        : undefined;
     out.push({
       verdict: m[1] as AgentQaVerdict,
       ...(m[4] ? { inputs: m[4] } : {}),
@@ -503,13 +527,13 @@ export function standingAgentQaVerdict(
   const reports = agentQaReports(comments, headSha, qaRun);
   const newest = reports.at(-1);
   if (newest?.verdict !== "BLOCKED" || newest.reason === undefined) return undefined;
-  const infra = infraFailure(newest.reason);
+  const infra = infraFailureAll(newest.reason);
   if (!infra) return undefined;
   for (let i = reports.length - 2; i >= 0; i--) {
     const r = reports[i] as (typeof reports)[number];
     if (r.verdict === "BLOCKED") {
       // Another BLOCKED in between: an infra one is skipped, a real one stands.
-      if (r.reason !== undefined && infraFailure(r.reason)) continue;
+      if (r.reason !== undefined && infraFailureAll(r.reason)) continue;
       return undefined;
     }
     if (r.inputs && newest.inputs && r.inputs !== newest.inputs) return undefined;
