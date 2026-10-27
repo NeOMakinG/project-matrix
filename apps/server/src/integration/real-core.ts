@@ -378,8 +378,10 @@ export class RealCore implements CorePort {
         },
       });
       config.baseBranch = repo.baseBranch;
-      // Matrix stops at merge: the human merges the draft PR on GitHub.
+      // Matrix ends at the merge and merges the PR itself once the gate holds (0 P1, relevant CI
+      // green, agent QA PASS on the head). Deploys stay off until targets are configured.
       config.lastPhase = "merge";
+      config.deploy ??= { merge: "auto", targets: [] };
       config.checks = input.checks?.map(copyCheck) ?? (await detectChecks(repo, git));
       const editablePaths = input.repo.editablePaths
         ? validateEditablePaths(input.repo.editablePaths)

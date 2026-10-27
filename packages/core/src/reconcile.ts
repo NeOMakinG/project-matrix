@@ -447,6 +447,7 @@ export class Reconciler {
     for (const w of await this.o.store.listWorkflows({ status: ["waiting_approval"] })) {
       const project = byId.get(w.projectId);
       if (!project || w.phase !== "merge" || this.isActive(w)) continue;
+      if (await this.adoptExternalHead(project, w)) continue;
       if (this.o.pullRequests) await this.publishPullRequest(project, w);
       await this.observeHandoff(project, w);
       await this.maybeRunAgentQa(project, w);
@@ -903,6 +904,118 @@ export class Reconciler {
     );
   }
 
+  /** Base syncs per ticket in the last day: a base that keeps moving under a ticket stops here. */
+  private readonly baseSyncs = new Map<string, number[]>();
+
+  /**
+   * Requeues a merge-waiting workflow after its branch moved onto a newer base (or its head moved
+   * after QA). Withdraws pending merge approvals. Retries once on a version race, so a worktree
+   * that already moved never stays behind a stale `merge` state; not counted as a review loop,
+   * but more than 5 base syncs a day block the ticket for a human.
+   */
+  private async requeueForBase(
+    project: ProjectConfig,
+    w: WorkflowState,
+    phase: "checks" | "implement",
+    reason: string,
+  ): Promise<void> {
+    const key = `${w.projectId}\u0000${w.ticketId}`;
+    const now = this.clock().getTime();
+    const recent = (this.baseSyncs.get(key) ?? []).filter((t) => now - t < 86_400_000);
+    recent.push(now);
+    if (this.baseSyncs.size > 5_000) this.baseSyncs.clear();
+    this.baseSyncs.set(key, recent);
+    for (const a of await this.o.store.listApprovals(w.projectId, w.ticketId, "merge"))
+      if (a.status === "pending")
+        await this.o.store
+          .decideApproval(
+            a.id,
+            "rejected",
+            { id: this.ownerId, kind: "agent" },
+            `superseded: ${reason}`,
+          )
+          .catch(() => undefined);
+    let current: WorkflowState | null = w;
+    for (let tries = 0; tries < 2 && current; tries++) {
+      if (current.phase !== "merge" || current.status !== "waiting_approval") return;
+      const blocked = recent.length > 5;
+      const next: WorkflowState = blocked
+        ? { ...current, status: "blocked", lastError: `base sync limit (6 in a day): ${reason}` }
+        : // New generation: the earlier checks/review/QA steps of this loop never replay.
+          {
+            ...current,
+            phase,
+            attempt: 0,
+            status: "pending",
+            lastError: reason,
+            generation: (current.generation ?? 0) + 1,
+          };
+      delete next.reviewedTree;
+      try {
+        const saved = await this.o.store.saveWorkflow(next);
+        this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+        await this.applyEffects(project, saved, {
+          state: saved,
+          effects: blocked ? [{ type: "blocked", reason: saved.lastError ?? reason }] : [],
+        });
+        return;
+      } catch (error) {
+        if (!(error instanceof VersionConflictError)) throw error;
+        current = await this.o.store.getWorkflow(w.projectId, w.ticketId);
+      }
+    }
+  }
+
+  /** Last external-head check per ticket (one GitHub read per ticket per minute). */
+  private readonly externalHeadAt = new Map<string, number>();
+
+  /**
+   * A PR head pushed outside Matrix (an agent's rebase, a human fix) is never left untested and
+   * never tested stale: the run worktree adopts it and checks, review and QA run again on it.
+   * True when the workflow was requeued.
+   */
+  private async adoptExternalHead(project: ProjectConfig, w: WorkflowState): Promise<boolean> {
+    const port = this.o.pullRequests;
+    if (!port?.externalHead || !this.o.git.adoptHead || !w.workdir) return false;
+    if (w.status !== "waiting_approval") return false;
+    const key = `${w.projectId}\u0000${w.ticketId}`;
+    const now = this.clock().getTime();
+    const last = this.externalHeadAt.get(key);
+    if (last !== undefined && now - last < AUTO_MERGE_RETRY_MS) return false;
+    if (this.externalHeadAt.size > 5_000) this.externalHeadAt.clear();
+    this.externalHeadAt.set(key, now);
+    try {
+      const external = await port.externalHead(project, w.ticketId);
+      const head = await this.o.git.headSha(w.workdir);
+      const fresh = (await this.o.store.getProject(project.id)) ?? project;
+      if (external && external.headSha !== head) {
+        await this.o.git.adoptHead(w.workdir, external.headSha, external.forkSha);
+        await this.requeueForBase(
+          fresh,
+          w,
+          "checks",
+          `adopted the PR head ${external.headSha.slice(0, 12)} pushed outside Matrix (Matrix had ${head.slice(0, 12)}); checks, review and QA run again on it`,
+        );
+        return true;
+      }
+      // An adoption whose requeue was lost (crash, version race) left an unvalidated head: re-run.
+      const qa = await this.latestRun(w, "qa");
+      if (qa?.headSha && qa.headSha !== head && (await this.o.git.isClean(w.workdir))) {
+        await this.requeueForBase(
+          fresh,
+          w,
+          "checks",
+          `the branch head ${head.slice(0, 12)} differs from the QA-validated ${qa.headSha.slice(0, 12)}; checks, review and QA run again`,
+        );
+        return true;
+      }
+      return false;
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "adopt-head", error);
+      return false;
+    }
+  }
+
   /** Last auto-merge attempt per head (throttles retries while CI is still pending). */
   private readonly autoMergeTriedAt = new Map<string, number>();
 
@@ -920,6 +1033,30 @@ export class Reconciler {
     } catch {
       return;
     }
+    // A head moved after QA (a rebase whose requeue was lost to a crash or a version race) is
+    // never merged and never waited on: checks, review and QA run again on it.
+    // Uncommitted changes here can only be an interrupted conflict sync (git conflict markers):
+    // Implement resolves and commits them.
+    const qa = await this.latestRun(w, "qa");
+    const clean = await this.o.git.isClean(w.workdir).catch(() => undefined);
+    if (clean === false) {
+      await this.requeueForBase(
+        fresh,
+        w,
+        "implement",
+        "the run worktree has uncommitted changes while waiting to merge (an interrupted base sync leaves git conflict markers): resolve every conflict marker, keeping the base's newer behaviour plus this ticket's change, and keep the tests passing",
+      );
+      return;
+    }
+    if (clean && qa?.headSha && qa.headSha !== headSha) {
+      await this.requeueForBase(
+        fresh,
+        w,
+        "checks",
+        `the branch head ${headSha.slice(0, 12)} differs from the QA-validated ${qa.headSha.slice(0, 12)}; checks, review and QA run again`,
+      );
+      return;
+    }
     if (!(await this.autoMergePassed(fresh, w, headSha))) return;
     const key = `${project.id}\u0000${w.ticketId}\u0000${headSha}`;
     const now = this.clock().getTime();
@@ -928,12 +1065,57 @@ export class Reconciler {
     if (this.autoMergeTriedAt.size > 5_000) this.autoMergeTriedAt.clear();
     this.autoMergeTriedAt.set(key, now);
     if (await this.gateProblems(fresh, w, "merge")) return;
+    if ((await this.syncWithBase(fresh, w, headSha)) !== "current") return;
     try {
       const saved = await this.o.store.saveWorkflow({ ...w, status: "pending" });
       this.o.bus.publish({ type: "workflow.changed", workflow: saved });
     } catch (error) {
       if (!(error instanceof VersionConflictError)) throw error;
     }
+  }
+
+  /**
+   * Before an auto-merge: a PR that conflicts with its base (or is behind a base that must be up to
+   * date) is moved onto the base tip first. A clean rebase changes the code, so checks, review and
+   * QA run again on the new head; a conflict goes back to Implement with the markers to resolve.
+   * Neither counts as a review loop: nothing was wrong with the change itself.
+   */
+  private async syncWithBase(
+    project: ProjectConfig,
+    w: WorkflowState,
+    headSha: string,
+  ): Promise<"current" | "wait" | "requeued"> {
+    const port = this.o.pullRequests;
+    if (!port?.baseState || !this.o.git.syncOnto || !w.workdir) return "current";
+    let state: Awaited<ReturnType<NonNullable<typeof port.baseState>>>;
+    try {
+      state = await port.baseState(project, w.ticketId, headSha);
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "base-state", error);
+      return "wait";
+    }
+    if (state.kind !== "outdated") return state.kind;
+    let result: Awaited<ReturnType<NonNullable<GitPort["syncOnto"]>>>;
+    try {
+      result = await this.o.git.syncOnto(w.workdir, state.baseSha);
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "rebase", error);
+      return "wait";
+    }
+    // GitHub still reports the old head as outdated while the branch already sits on the base tip.
+    if (result.kind === "current") return "wait";
+    const onto = `${state.base} ${state.baseSha.slice(0, 12)}`;
+    const reason =
+      result.kind === "rebased"
+        ? `rebased onto ${onto} before the merge (${state.reason}); the code changed, so checks, review and QA run again on ${result.headSha.slice(0, 12)}`
+        : `the branch conflicts with ${onto} (${state.reason}) in: ${result.files.slice(0, 20).join(", ")}. Matrix re-applied this ticket's change on the new base and left git conflict markers in those files. Resolve every conflict marker, keeping ${state.base}'s newer behaviour plus this ticket's change, and keep the tests passing`;
+    await this.requeueForBase(
+      project,
+      w,
+      result.kind === "rebased" ? "checks" : "implement",
+      reason,
+    );
+    return "requeued";
   }
 
   private async agentQaRerun(
@@ -1371,7 +1553,7 @@ export class Reconciler {
         w.ticketId,
         [
           `Matrix needs a human: ${reason}: ${link}`,
-          "Checks and review passed; no driver for this surface runs on the Matrix host. Test the draft PR on a device with the checklist in its description, then merge it on GitHub and approve the merge in Matrix. To request changes instead, comment here and move the ticket back to Ready: the next run treats your comments as review feedback.",
+          "Checks and review passed; no driver for this surface runs on the Matrix host. Test the draft PR on a device with the checklist in its description, then approve the merge in Matrix. To request changes instead, comment here and move the ticket back to Ready: the next run treats your comments as review feedback.",
         ].join("\n\n"),
       ),
     );
@@ -1939,7 +2121,7 @@ export class Reconciler {
     const problems = await this.gateProblems(fresh, w, phase);
     if (problems) return { ok: false, reason: problems, kind: "gates" };
 
-    // A manual QA handoff always needs a human merge approval, whatever the autonomy setting,
+    // A manual QA handoff always needs a merge approval, whatever the autonomy setting,
     // except the auto-merge gate: the agent QA lane passed exactly this head (ADR 0007).
     const manual =
       phase === "merge" &&
@@ -2726,6 +2908,13 @@ export class Reconciler {
     }
     const saved = await this.o.store.saveWorkflow(next);
     await this.applyEffects(project, saved, { ...t, state: saved });
+    // The merge itself is reported on the ticket (PR link and merge commit), not only the status.
+    if (w.phase === "merge" && outcome.ok && outcome.summary)
+      await this.trackerWrite(project.id, w.ticketId, "comment", () =>
+        this.o
+          .tickets(project.id)
+          .comment(w.ticketId, `Matrix merged this ticket: ${outcome.summary}`),
+      );
   }
 
   /**

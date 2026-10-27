@@ -172,8 +172,11 @@ rolling limits still hold).
 ## Existing repos
 
 A repo registered with `repo` on `POST /v1/projects` (see
-[self-hosting](self-hosting.md#existing-repos-draft-prs-human-merge)) uses the same Linear
-settings. Its runs stop at **Awaiting merge** with a draft GitHub PR linked in the live status
-comment (`- Draft PR: ...`). The ticket moves to Done once a human merged that PR on GitHub and
-approved the merge in Matrix. `PATCH /v1/projects/{id}` with `tickets` changes the team, label
+[self-hosting](self-hosting.md#existing-repos-draft-prs-autonomous-merge)) uses the same Linear
+settings. Its runs reach **Awaiting merge** with a draft GitHub PR linked in the live status
+comment (`- Draft PR: ...`). With the merge policy `auto` (the default for registered repos),
+Matrix squash-merges that PR itself once the agent QA lane passed the current head, no P1 is
+open and the relevant CI is green, comments the merge commit on the ticket and moves it to Done.
+A PR that conflicts with (or is behind) its base is rebased first; a rebase that changes the code
+re-runs checks, review and QA, and a conflict goes back to Implement. `PATCH /v1/projects/{id}` with `tickets` changes the team, label
 or key env var name without recreating the project.

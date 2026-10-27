@@ -11,8 +11,8 @@ verified inside a run on the Matrix host. Instead of blocking with nothing to sh
 opt into a handoff of the draft PR:
 
 - `qa.driver: "agent"` (the default choice, android/ios/web): the **agent QA lane** builds the
-  draft PR, a QA agent tests it on a device, simulator or Chrome and its verdict drives the ticket (PASS keeps
-  it at Awaiting merge for a human merge, FAIL loops back to Implement, BLOCKED asks a human).
+  draft PR, a QA agent tests it on a device, simulator or Chrome and its verdict drives the ticket (PASS lets
+  Matrix merge it on its own, FAIL loops back to Implement, BLOCKED asks a human).
   See [agent-qa-lane.md](agent-qa-lane.md).
 - `qa.driver: "manual"`: a human tests it (this page).
 

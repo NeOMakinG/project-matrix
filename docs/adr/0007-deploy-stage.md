@@ -62,9 +62,13 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
    tailnet addresses.
 
 2. **Merge gate for `merge: "auto"`**: 0 open P1 review findings, every required GitHub check
-   green on the validated head, and an agent QA PASS (for web: on the PR's deploy preview). The
-   merge port then calls `gh pr merge --squash --match-head-commit <sha>` host-side; anything else
-   stays the current "human merges, Matrix observes" flow. Matrix never pushes the base branch.
+   green on the validated head (relevant CI: lint/typecheck/test/build checks not also failing on
+   the base, plus unplaced checks; deploy-preview checks never block), and an agent QA PASS (for
+   web: on the PR's deploy preview). A PR GitHub reports as conflicting or behind is rebased onto
+   the base tip first: a clean rebase re-runs checks, review and QA on the new head, a conflict
+   goes back to Implement. The merge port then calls `gh pr merge --squash --match-head-commit
+   <sha>` host-side. Matrix never pushes the base branch. (2026-10-27: the owner made `auto` the
+   policy for every project; a merge-only profile with no targets deploys nothing.)
 
 3. **Capability-routed deploy port**: host config (`MATRIX_DEPLOY_HOSTS`, not project config)
    maps capability names (`fly`, `eas`, `railway`, `gh`) to a host and a transport: `local`,

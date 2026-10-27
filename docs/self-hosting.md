@@ -182,7 +182,7 @@ the eventual durable integration; do not invent a `matrix migrate` command. Keep
 rollback checkout and restore evidence. Re-run doctor and operator runtime QA;
 passing unit tests does not mark PR #27/#26/#24 ready.
 
-## Existing repos (draft PRs, human merge)
+## Existing repos (draft PRs, autonomous merge)
 
 Matrix can work on a repo that already exists on the host (for example `~/Projects/wayline`)
 instead of creating an empty one. The feature is off until the operator allowlists where such

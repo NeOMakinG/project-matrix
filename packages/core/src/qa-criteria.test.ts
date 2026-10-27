@@ -1,11 +1,16 @@
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
   type AgentQaReport,
   agentQaReportSchema,
   effectiveVerdict,
   renderAgentQaReport,
 } from "./agent-qa.js";
-import { classifyCriteria, type PullRequestFacts, verifyCodeCriteria } from "./qa-criteria.js";
+import {
+  classifyCriteria,
+  mergeBlockingChecks,
+  type PullRequestFacts,
+  verifyCodeCriteria,
+} from "./qa-criteria.js";
 
 // NEO-8's criteria, verbatim.
 const NEO8 = [
@@ -358,4 +363,32 @@ test("a failing preview E2E run counts; an unknown check still running is unveri
     baseFailing: ["Quality gate"],
   });
   expect(verifyCodeCriteria(NEO8, [6], gate, HEAD, ok)[0]?.status).toBe("unverified");
+});
+
+describe("mergeBlockingChecks (auto-merge CI gate)", () => {
+  test("deploy previews and failures shared with the base never block", () => {
+    const out = mergeBlockingChecks({
+      checks: [
+        { name: "app - typecheck, tests, lint", state: "failure" },
+        { name: "Redirect rules", state: "failure" },
+        { name: "deploy/netlify", state: "failure" },
+        { name: "PR has runtime receipts", state: "success" },
+      ],
+      baseFailing: ["app - typecheck, tests, lint"],
+    });
+    expect(out).toEqual({ failing: [], pending: [] });
+  });
+
+  test("a new CI failure, an unplaced failure and running CI block", () => {
+    const out = mergeBlockingChecks({
+      checks: [
+        { name: "unit tests", state: "failure" },
+        { name: "license scan", state: "failure" },
+        { name: "build", state: "pending" },
+        { name: "Pages changed", state: "pending" },
+      ],
+      baseFailing: [],
+    });
+    expect(out).toEqual({ failing: ["unit tests", "license scan"], pending: ["build"] });
+  });
 });

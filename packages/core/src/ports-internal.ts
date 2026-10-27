@@ -52,6 +52,17 @@ export interface GitPort {
    * tracked files, and returns the exact HEAD SHA the checks will run against.
    */
   cleanForChecks?(workdir: string): Promise<string>;
+  /**
+   * Optional (feature-detected): moves the clean run branch onto `onto` (a commit already in the
+   * repository). A clean rebase keeps the commits; a conflicting one re-applies the branch's
+   * squashed change on `onto` and leaves the conflict markers uncommitted for the implementer.
+   */
+  syncOnto?(workdir: string, onto: string): Promise<BaseSyncResult>;
+  /**
+   * Optional (feature-detected): points the clean run branch at `headSha` (a commit pushed to the
+   * PR outside Matrix, already fetched) and moves the trusted BASE to `forkSha`.
+   */
+  adoptHead?(workdir: string, headSha: string, forkSha: string): Promise<void>;
 }
 
 export interface QaDriver {
@@ -117,7 +128,34 @@ export interface PullRequestPort {
   label?(project: ProjectConfig, url: string, add: string[], remove: string[]): Promise<void>;
   /** Optional: what GitHub says about a published PR now (body, changed files, head checks). */
   facts?(project: ProjectConfig, url: string): Promise<PullRequestFacts>;
+  /**
+   * Optional: whether the published PR of `headSha` can merge into its base as is. `outdated`
+   * (conflicts, or behind a base that must be up to date) fetches the base tip host-side and
+   * returns its SHA so the run branch can be rebased onto it before the auto-merge.
+   */
+  baseState?(project: ProjectConfig, ticketId: string, headSha: string): Promise<BaseState>;
+  /**
+   * Optional: the head of the ticket's open PR when someone pushed to it outside Matrix (it differs
+   * from the head Matrix last published). The commit is fetched host-side; `forkSha` is its
+   * merge-base with the fetched base tip. Undefined when the PR head is Matrix's own.
+   */
+  externalHead?(
+    project: ProjectConfig,
+    ticketId: string,
+  ): Promise<{ headSha: string; forkSha: string } | undefined>;
 }
+
+export type BaseState =
+  | { kind: "current" }
+  | { kind: "wait"; reason: string }
+  | { kind: "outdated"; reason: string; base: string; baseSha: string };
+
+/** Outcome of moving a run branch onto a newer base tip (host-side, never pushes). */
+export type BaseSyncResult =
+  | { kind: "current" }
+  | { kind: "rebased"; headSha: string }
+  /** The ticket's change is re-applied on the base with conflict markers left uncommitted. */
+  | { kind: "conflict"; files: string[] };
 
 export interface DeployPort {
   deploy(

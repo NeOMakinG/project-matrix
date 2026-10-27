@@ -11,7 +11,7 @@ performed by `matrix doctor`.
 
 With `MATRIX_RUNTIME=orca` every agent session Matrix starts runs in an Orca terminal, so you
 can watch (and stop) it from Orca desktop or mobile. Linear stays the place for tasks, context
-and outputs; Matrix keeps the gates (independent review model, holdout QA, human merge).
+and outputs; Matrix keeps the gates (independent review model, holdout QA, merge gate).
 `native` stays the default and the fallback.
 
 Per ticket: one Orca worktree (`worktree create --no-parent --setup skip --linear-issue NEO-n`),

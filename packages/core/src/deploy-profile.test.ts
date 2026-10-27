@@ -12,7 +12,9 @@ const base = {
   holdoutThreshold: 0.8,
   qa: { surfaces: ["web", "api"], driver: "agent" },
 } as unknown as ProjectConfig;
-const auto = { ...base, deploy: { merge: "auto", targets: [] } } as ProjectConfig;
+const target = { name: "site", kind: "git-integration", paths: ["**"] };
+const auto = { ...base, deploy: { merge: "auto", targets: [target] } } as ProjectConfig;
+const mergeOnly = { ...base, deploy: { merge: "auto", targets: [] } } as ProjectConfig;
 const w = { phase: "merge", status: "running", attempt: 0, loops: 0 } as unknown as WorkflowState;
 const ok = { ok: true, summary: "merged", receipts: [] };
 const backoff = { baseMs: 1, maxMs: 1 };
@@ -23,6 +25,12 @@ describe("deploy profile in the state machine", () => {
     expect(autonomyFor(auto, "deploy")).toBe("autonomous");
     expect(autonomyFor(auto, "review")).toBe("human");
     expect(autonomyFor(base, "merge")).toBe("human");
+  });
+
+  test("a merge-only profile (no targets) merges autonomously but never deploys", () => {
+    expect(autonomyFor(mergeOnly, "merge")).toBe("autonomous");
+    expect(autonomyFor(mergeOnly, "deploy")).toBe("human");
+    expect(advance(w, ok, mergeOnly, backoff, new Date()).state.status).toBe("done");
   });
 
   test("a deploy profile extends an external repo past the merge to deploy then verify", () => {

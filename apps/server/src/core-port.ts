@@ -23,7 +23,7 @@ export interface Project {
   workspace: "orca" | "native";
   autonomy: Record<Phase, AutonomyMode>;
   createdAt: string;
-  /** Present for an existing repo registered on the host (draft PRs, human merge on GitHub). */
+  /** Present for an existing repo registered on the host (draft PRs, merged by Matrix when the merge policy is auto). */
   repo?: {
     external: true;
     baseBranch: string;
