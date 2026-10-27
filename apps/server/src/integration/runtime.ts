@@ -2,6 +2,7 @@ import type { GitPort, HandlerDeps, Workspace } from "@matrix/core";
 import { FakeGit, FakeRunner, FakeSandbox, FakeWorkspace, qaEvidence } from "@matrix/core/testing";
 
 import { type NativeRuntimeOptions, nativeRuntime } from "./native-runtime.js";
+import type { CleanupHost } from "./ticket-cleanup.js";
 
 export type RuntimeKind = "fake" | "native" | "orca";
 
@@ -13,6 +14,8 @@ export interface Runtime {
   deps: Omit<HandlerDeps, "store" | "holdout">;
   /** Model gateway preflight (reason to wait, or null); the reconciler defers model phases on it. */
   gatewayReady?: (model: string) => Promise<string | null>;
+  /** Host ports for the merged/closed-PR cleanup sweep (absent on the fake runtime). */
+  cleanup?: CleanupHost;
 }
 
 export class RuntimeUnavailableError extends Error {}

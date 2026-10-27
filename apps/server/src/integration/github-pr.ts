@@ -426,6 +426,38 @@ export class GitHubPullRequests implements PullRequestPort {
   }
 
   /**
+   * GitHub state of the PR Matrix recorded for a ticket (read-only), for the cleanup sweep.
+   * Undefined when Matrix never opened one; throws when GitHub cannot be read.
+   */
+  async prState(
+    projectId: string,
+    ticketId: string,
+  ): Promise<
+    | { state: "MERGED" | "CLOSED" | "OPEN"; headRefOid?: string; url: string; closedAt?: number }
+    | undefined
+  > {
+    const known = this.record(projectId, ticketId);
+    if (!known || !PR_URL.test(known.url)) return undefined;
+    const out = await this.#gh(["pr", "view", known.url, "--json", "state,headRefOid,closedAt"]);
+    const pr = JSON.parse(out || "{}") as {
+      state?: unknown;
+      headRefOid?: unknown;
+      closedAt?: unknown;
+    };
+    const closedAt = typeof pr.closedAt === "string" ? Date.parse(pr.closedAt) : Number.NaN;
+    if (pr.state !== "MERGED" && pr.state !== "CLOSED" && pr.state !== "OPEN")
+      throw new Error(`unexpected PR state for ${ticketId}`);
+    return {
+      state: pr.state,
+      url: known.url,
+      ...(Number.isFinite(closedAt) ? { closedAt } : {}),
+      ...(typeof pr.headRefOid === "string" && SHA.test(pr.headRefOid)
+        ? { headRefOid: pr.headRefOid }
+        : {}),
+    };
+  }
+
+  /**
    * Merge state of a ticket's PR (merges happen on GitHub, by a human). `pending` until a PR for
    * the recorded branch is merged.
    */
