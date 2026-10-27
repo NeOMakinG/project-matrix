@@ -453,7 +453,7 @@ const INFRA_FAILURES: ReadonlyArray<readonly [string, RegExp]> = [
   ["disk", /ENOSPC|No space left on device|disk (?:is )?full/i],
   [
     "gateway",
-    /API Error: (?:Connection closed|Request rejected \(429\)|5\d\d\b|Overloaded)|All credentials for model|rate[ _-]?limit(?:ed)?\b|overloaded_error|\b429 Too Many Requests/i,
+    /API Error: (?:Connection closed|Request rejected \(429\)|5\d\d\b|Overloaded)|All credentials for model|rate_limit_error|overloaded_error|\b429 Too Many Requests/i,
   ],
   [
     "device",

@@ -309,15 +309,20 @@ test("gateway drops are infra; a per-surface BLOCKED is infra only when every su
   expect(infraFailure("API Error: Request rejected (429) · All credentials for model")).toBe(
     "gateway",
   );
-  expect(infraFailureAll("Android: QA agent failed: API Error: Connection closed mid-response")).toBe(
-    "gateway",
-  );
+  expect(
+    infraFailureAll("Android: QA agent failed: API Error: Connection closed mid-response"),
+  ).toBe("gateway");
   expect(
     infraFailureAll(
       "Android: the QA agent did not check acceptance criteria 3, 6 with a collected screenshot; iOS: QA agent failed: API Error: Request rejected (429)",
     ),
   ).toBeUndefined();
-  const head = (v: string) => `Matrix agent QA ${v} for ${SHA} (QA run run-1, inputs dfeea545a54f) (draft PR)`;
+  // A product blocker that mentions rate limits is not the gateway.
+  expect(
+    infraFailureAll("Android: could not verify the rate limit acceptance criterion"),
+  ).toBeUndefined();
+  const head = (v: string) =>
+    `Matrix agent QA ${v} for ${SHA} (QA run run-1, inputs dfeea545a54f) (draft PR)`;
   const pass = { body: `${head("PASS")}\n\nok`, byMatrix: true };
   const surface = {
     body: `${head("BLOCKED")}\n\nSummary: Android BLOCKED, iOS PASS.\n\nBlocked: Android: QA agent failed: API Error: Connection closed mid-response\n\n### Acceptance criteria`,
