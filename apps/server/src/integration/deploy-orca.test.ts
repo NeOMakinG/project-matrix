@@ -28,6 +28,15 @@ describe("orca deploy route", () => {
     expect(script).toContain(`test "$(git rev-parse HEAD)" = ${SHA}`);
   });
 
+  test("corrupt payload is a failure, not a throw; truncated stdout never passes", () => {
+    expect(decodePayload(["__MXB_x__", "@@@", "__MXE_x__"], "x")?.exitCode).toBe(126);
+    const script = routeScript({ nonce: "t", argv: ["fly", "x"] }).replace(
+      "pack 2000000",
+      "pack 3",
+    );
+    expect(decodePayload(shRun(script, "echo 123456"), "t")?.exitCode).toBe(125);
+  });
+
   test("no payload until the end marker", () => {
     expect(decodePayload(["__MXB_x__", "abc"], "x")).toBeUndefined();
   });
@@ -82,7 +91,7 @@ describe("orca deploy route", () => {
       },
     };
     await expect(
-      runViaOrca(route, ["fly", "deploy"], { repo: "o/r", timeoutMs: 1, cli }),
+      runViaOrca(route, ["fly", "deploy"], { repo: "o/r", timeoutMs: 5_000, cli }),
     ).rejects.toThrow("pty refused");
     expect(calls).toEqual(["worktree create", "terminal create", "worktree rm"]);
   });

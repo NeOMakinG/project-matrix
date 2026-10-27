@@ -51,7 +51,7 @@ export function routeScript(input: {
     'd="$(mktemp -d)"',
     `( ${run} ) >"$d/out" 2>"$d/err" </dev/null`,
     "rc=$?",
-    'pack() { head -c "$1" "$d/out" >"$d/o"; { printf "rc=%s out=%s\\n" "$rc" "$(wc -c <"$d/o" | tr -d " ")"; cat "$d/o"; tail -c 16000 "$d/err"; } | gzip -c | base64 | fold -w 120 >"$d/p"; }',
+    'pack() { head -c "$1" "$d/out" >"$d/o"; { printf "rc=%s out=%s full=%s\\n" "$rc" "$(wc -c <"$d/o" | tr -d " ")" "$(wc -c <"$d/out" | tr -d " ")"; cat "$d/o"; tail -c 16000 "$d/err"; } | gzip -c | base64 | fold -w 120 >"$d/p"; }',
     "pack 2000000",
     `[ "$(wc -l <"$d/p")" -gt ${PAYLOAD_LINES} ] && pack 60000`,
     `printf '__MX%s_%s__\\n' B ${input.nonce}`,
@@ -70,24 +70,39 @@ export function decodePayload(
   const begin = trimmed.lastIndexOf(`__MXB_${nonce}__`);
   const end = trimmed.lastIndexOf(`__MXE_${nonce}__`);
   if (begin < 0 || end <= begin) return undefined;
-  const raw = gunzipSync(
-    Buffer.from(
-      trimmed
-        .slice(begin + 1, end)
-        .join("")
-        .replace(/\s/g, ""),
-      "base64",
-    ),
-  );
+  let raw: Buffer;
+  try {
+    raw = gunzipSync(
+      Buffer.from(
+        trimmed
+          .slice(begin + 1, end)
+          .join("")
+          .replace(/[^A-Za-z0-9+/=]/g, ""),
+        "base64",
+      ),
+    );
+  } catch (e) {
+    return {
+      exitCode: 126,
+      stdout: "",
+      output: `orca route: unreadable payload (${(e as Error).message})`,
+    };
+  }
   const nl = raw.indexOf(10);
   const header = raw.subarray(0, nl).toString("utf8");
-  const m = /^rc=(\d+) out=(\d+)$/.exec(header);
-  if (!m) throw new Error(`orca route: bad payload header ${JSON.stringify(header.slice(0, 40))}`);
+  const m = /^rc=(\d+) out=(\d+) full=(\d+)$/.exec(header);
+  if (!m)
+    return {
+      exitCode: 126,
+      stdout: "",
+      output: `orca route: bad payload header ${JSON.stringify(header.slice(0, 40))}`,
+    };
   const outLen = Number(m[2]);
   const stdout = raw.subarray(nl + 1, nl + 1 + outLen).toString("utf8");
   const stderr = raw.subarray(nl + 1 + outLen).toString("utf8");
   return {
-    exitCode: Number(m[1]),
+    // Truncated stdout never passes as a success: callers parse it (e.g. release JSON).
+    exitCode: Number(m[1]) === 0 && Number(m[3]) > outLen ? 125 : Number(m[1]),
     stdout,
     output: `${stdout.slice(-16_000)}\n${stderr}`,
   };
@@ -126,6 +141,13 @@ export async function runViaOrca(
       ...(opts.binary ? { binary: opts.binary } : {}),
     });
   const sleep = opts.sleep ?? sleepMs;
+  const deadline = Date.now() + opts.timeoutMs;
+  const budget = (cap: number) => {
+    if (opts.signal?.aborted) throw new Error("orca route: cancelled");
+    const left = deadline - Date.now();
+    if (left <= 0) throw new Error("orca route: timed out before the command started");
+    return Math.min(cap, left);
+  };
   const nonce = randomBytes(8).toString("hex");
   const name = `mx-${opts.label ?? "deploy"}-${(opts.checkout?.sha ?? "run").slice(0, 8)}-${nonce.slice(0, 6)}`;
   const trace: string[] = [];
@@ -146,7 +168,7 @@ export async function runViaOrca(
           "--no-parent",
           "--json",
         ],
-        180_000,
+        budget(180_000),
       ),
     );
     worktree = str(record(created.worktree).path);
@@ -159,24 +181,26 @@ export async function runViaOrca(
     });
     const command = `/bin/sh -c "$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d)"`;
     const made = record(
-      await cli.call([
-        "terminal",
-        "create",
-        "--worktree",
-        `path:${worktree}`,
-        "--title",
-        name,
-        "--command",
-        command,
-        "--json",
-      ]),
+      await cli.call(
+        [
+          "terminal",
+          "create",
+          "--worktree",
+          `path:${worktree}`,
+          "--title",
+          name,
+          "--command",
+          command,
+          "--json",
+        ],
+        budget(120_000),
+      ),
     );
     terminal = str(record(made.terminal).handle);
     if (!terminal) throw new Error("orca route: terminal create returned no handle");
     trace.push(`${route.environment}: terminal ${terminal} runs ${argv.join(" ")}`);
     const lines: string[] = [];
     let cursor: string | undefined;
-    const deadline = Date.now() + opts.timeoutMs;
     for (;;) {
       if (opts.signal?.aborted) throw new Error("orca route: cancelled");
       const read = record(
@@ -194,13 +218,38 @@ export async function runViaOrca(
         ).terminal,
       );
       const tail = Array.isArray(read.tail) ? read.tail.map(String) : [];
-      lines.push(...tail);
+      const next = str(read.nextCursor);
+      // Without a cursor the read is the whole retained tail: replace, never append twice.
+      if (next) lines.push(...tail);
+      else lines.splice(0, lines.length, ...tail);
       if (lines.length > 6_000) lines.splice(0, lines.length - 6_000);
-      cursor = str(read.nextCursor) ?? cursor;
+      cursor = next ?? cursor;
       const got = decodePayload(lines, nonce);
       if (got) return { ...got, trace };
-      if (Date.now() >= deadline)
-        return { exitCode: 124, stdout: "", output: "timed out on the orca route", trace };
+      if (Date.now() >= deadline) {
+        // Stop the command before the terminal is closed, so a timed-out deploy is not left
+        // running behind a failed receipt; the receipt still says it may have landed.
+        for (let i = 0; i < 2; i++)
+          await cli
+            .call([
+              "terminal",
+              "send",
+              "--terminal",
+              terminal,
+              "--interrupt",
+              "--text",
+              "\u0003",
+              "--json",
+            ])
+            .catch(() => undefined);
+        return {
+          exitCode: 124,
+          stdout: "",
+          output:
+            "timed out on the orca route; interrupted. The command may have partly run: verify re-reads the provider before acting",
+          trace,
+        };
+      }
       await sleep(opts.pollMs ?? 3_000);
     }
   } finally {

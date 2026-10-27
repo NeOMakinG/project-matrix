@@ -31,7 +31,16 @@ const o = {
 };
 let ok = true;
 for (const step of steps) {
-  if (step.action !== "dry-run" || !step.host) continue;
+  if (
+    step.action === "block" ||
+    step.action === "hold" ||
+    (step.action === "dry-run" && !step.host)
+  ) {
+    ok = false;
+    console.log(`FAIL: ${step.target}: ${step.reason}`);
+    continue;
+  }
+  if (step.action !== "dry-run") continue;
   for (const r of await rehearse(o, { ...plan, steps }, step, profile)) {
     ok &&= r.ok;
     console.log(`${r.ok ? "ok" : "FAIL"}: ${r.summary}`);

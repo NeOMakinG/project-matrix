@@ -171,7 +171,9 @@ export async function rehearse(
   const receipts: Receipt[] = [];
   const via =
     host.transport === "orca" ? `orca --environment ${host.orca?.environment}` : host.transport;
-  const probe = await runOnHost(host, ["fly", "auth", "whoami"], {
+  const probeArgv =
+    target.capability === "fly" ? ["fly", "auth", "whoami"] : ["git", "rev-parse", "HEAD"];
+  const probe = await runOnHost(host, probeArgv, {
     checkout: { repo: plan.repo, sha },
     timeoutMs: 10 * MIN,
     ...(signal ? { signal } : {}),
@@ -181,7 +183,7 @@ export async function rehearse(
   receipts.push({
     kind: "log",
     ok: probe.exitCode === 0,
-    summary: `${target.name}: route ${host.name} (${via}) checkout ${sha.slice(0, 12)} + fly auth whoami exit ${probe.exitCode}`,
+    summary: `${target.name}: route ${host.name} (${via}) checkout ${sha.slice(0, 12)} + ${probeArgv.join(" ")} exit ${probe.exitCode}`,
     data: { tail: probe.tail },
   });
   if (probe.exitCode !== 0) return receipts;
@@ -357,6 +359,13 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
   };
 }
 
+/** `$1` app, `$2` image that must still be newest, `$3` image to roll back to. */
+export const GUARDED_ROLLBACK = [
+  'cur="$(fly releases -a "$1" --json --image | python3 -c \'import json,sys; r=json.load(sys.stdin); print(max(r, key=lambda x: x.get("Version", 0)).get("ImageRef", ""))\')" || exit 4',
+  '[ "$cur" = "$2" ] || { echo "rollback refused: newest release is now $cur" >&2; exit 3; }',
+  'exec fly deploy -a "$1" --image "$3" --now',
+].join("\n");
+
 async function rollback(
   o: DeployStageOptions,
   hostName: string,
@@ -388,7 +397,9 @@ async function rollback(
       .catch(() => undefined);
   const run = await runOnHost(
     host,
-    ["fly", "deploy", "-a", app, "--image", previous.image, "--now"],
+    // Re-checked inside the same shell right before the deploy: the check-then-act window is
+    // one command, not the Orca round trips between the read above and this run.
+    ["sh", "-c", GUARDED_ROLLBACK, "sh", app, current.image, previous.image],
     {
       timeoutMs: 20 * MIN,
       repo,
