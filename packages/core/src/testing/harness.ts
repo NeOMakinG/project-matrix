@@ -156,6 +156,10 @@ export function createHarness(opts: HarnessOptions = {}) {
       host: "bosgame",
       ownerId,
       clock: () => now,
+      // Waits (agent QA infra retries) pass on the fake clock, instantly.
+      sleep: async (ms: number) => {
+        now = new Date(now.getTime() + ms);
+      },
       ids: () => `${prefix}-${++seq}`,
     });
   const reconciler = makeReconciler(`reconciler:${prefix}-a`);

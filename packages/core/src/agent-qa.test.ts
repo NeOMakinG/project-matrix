@@ -5,11 +5,13 @@ import {
   agentQaInputs,
   deviceOutcomeFromRecord,
   effectiveVerdict,
+  infraFailure,
   latestAgentQaReport,
   parseAgentQaReport,
   priorAgentQaVerdict,
   renderAgentQaReport,
   rerunCommentPending,
+  standingAgentQaVerdict,
 } from "./agent-qa.js";
 
 const SHA = "a".repeat(40);
@@ -239,4 +241,62 @@ test("a device record round-trips for its head only and rejects tampered data", 
     deviceOutcomeFromRecord(record, SHA, ["Tap Share opens the sheet", github]),
   ).toBeUndefined();
   expect(deviceOutcomeFromRecord(record, SHA, [github, device])).toBeUndefined();
+});
+
+test("infra failures are told apart from real BLOCKED reasons", () => {
+  const npm =
+    "build failed: npm error llama.rn: getaddrinfo EAI\\_AGAIN release-assets.githubusercontent.com";
+  expect(infraFailure(npm)).toBe("dns");
+  expect(
+    infraFailure("dial tcp: lookup api.anthropic.com on 127.0.0.11:53: read udp: i/o timeout"),
+  ).toBe("dns");
+  expect(infraFailure("build failed: npm error code ECONNRESET")).toBe("network");
+  expect(infraFailure("build failed: npm error code E503 Service Unavailable")).toBe("registry");
+  expect(infraFailure("build failed: ENOSPC: no space left on device, write")).toBe("disk");
+  expect(infraFailure("device unavailable: emulator-5554 offline")).toBe("device");
+  expect(infraFailure("device host unreachable over SSH: Connection closed")).toBe("device");
+  expect(infraFailure("build failed:")).toBe("interrupted");
+  expect(infraFailure("build failed: ")).toBe("interrupted");
+  // Real causes stay BLOCKED.
+  expect(infraFailure("build failed: error TS2304: Cannot find name 'foo'")).toBeUndefined();
+  expect(infraFailure("the QA agent's report.json is invalid")).toBeUndefined();
+  expect(infraFailure("device lane busy (held by another tenant)")).toBeUndefined();
+  expect(infraFailure("the acceptance criteria are empty")).toBeUndefined();
+});
+
+test("an infra BLOCKED never replaces the PASS/FAIL before it for the same inputs", () => {
+  const inputs = "dfeea545a54f";
+  const head = (v: string, i = inputs) =>
+    `Matrix agent QA ${v} for ${SHA} (QA run run-1, inputs ${i}) (draft PR)`;
+  const blocked = (reason: string, i = inputs) => ({
+    body: `${head("BLOCKED", i)}\n\nDevice: x\n\nThe agent QA lane could not test this change: ${reason}\n\nNothing passed.`,
+    byMatrix: true,
+  });
+  const pass = { body: `${head("PASS")}\n\nall good`, byMatrix: true };
+  const dns = blocked("build failed: npm error getaddrinfo EAI\\_AGAIN registry.npmjs.org");
+  expect(standingAgentQaVerdict([pass, dns], SHA, "run-1")).toEqual({
+    verdict: "PASS",
+    inputs,
+    infra: "dns",
+  });
+  // Several infra failures in a row still fall back to the PASS.
+  expect(standingAgentQaVerdict([pass, dns, blocked("build failed:")], SHA, "run-1")?.verdict).toBe(
+    "PASS",
+  );
+  // A real BLOCKED in between stands; so does a newest real BLOCKED.
+  const real = blocked("no acceptance criteria");
+  expect(standingAgentQaVerdict([pass, real, dns], SHA, "run-1")).toBeUndefined();
+  expect(standingAgentQaVerdict([pass, real], SHA, "run-1")).toBeUndefined();
+  // Changed inputs: the old PASS no longer speaks for them.
+  expect(
+    standingAgentQaVerdict(
+      [pass, blocked("getaddrinfo EAI_AGAIN x", "000000000000")],
+      SHA,
+      "run-1",
+    ),
+  ).toBeUndefined();
+  // Forged reports from a person never count.
+  expect(standingAgentQaVerdict([{ ...pass, byMatrix: false }, dns], SHA, "run-1")).toBeUndefined();
+  // Another head or QA run is not this verdict.
+  expect(standingAgentQaVerdict([pass, dns], "b".repeat(40), "run-1")).toBeUndefined();
 });

@@ -431,6 +431,93 @@ export function latestAgentQaReport(
   return found;
 }
 
+/**
+ * Build/infra failures that say nothing about the change under test: DNS and network errors,
+ * registry 5xx, a full disk, an offline device or device host, a build killed before it printed
+ * anything. Returns the failure class, or undefined for a real BLOCKED (missing criteria, test
+ * data, a report the agent could not write...). Markdown escapes from a posted report are undone.
+ */
+const INFRA_FAILURES: ReadonlyArray<readonly [string, RegExp]> = [
+  [
+    "dns",
+    /EAI_AGAIN|ENOTFOUND|getaddrinfo|Temporary failure in name resolution|Could not resolve host|no such host|lookup \S+ on \S+:\d+: |server misbehaving/i,
+  ],
+  [
+    "network",
+    /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EPIPE|socket hang up|i\/o timeout|network (?:error|timeout|is unreachable)|Connection (?:timed out|reset by peer)|TLS handshake timeout|ERR_SOCKET_TIMEOUT|Could not (?:GET|HEAD|download) 'https?:/i,
+  ],
+  [
+    "registry",
+    /\bE50[0-4]\b|\b50[234] (?:Bad Gateway|Service Unavailable|Gateway Time-?out)|(?:status code|HTTP\/?\d?(?:\.\d)?) 50[0-4]\b/i,
+  ],
+  ["disk", /ENOSPC|No space left on device|disk (?:is )?full/i],
+  [
+    "device",
+    /device unavailable|device (?:is )?offline|emulator (?:is )?offline|no devices\/emulators found|all automated Android devices unavailable|device host (?:unreachable|overloaded)/i,
+  ],
+  ["interrupted", /^(?:iOS |web )?build failed:?\s*$/i],
+];
+
+export function infraFailure(reason: string): string | undefined {
+  const text = reason.replace(/\\([\\`*_{}[\]()#+\-.!|<>~])/g, "$1").trim();
+  for (const [kind, re] of INFRA_FAILURES) if (re.test(text)) return kind;
+  return undefined;
+}
+
+const BLOCKED_REASON_RE = /^The agent QA lane could not test this change: ?(.*)$/m;
+
+/**
+ * Matrix's agent QA reports for this head and QA run, oldest first, with the inputs each was
+ * judged on and, for a BLOCKED, the reason it gave.
+ */
+export function agentQaReports(
+  comments: readonly QaComment[],
+  headSha: string,
+  qaRun: string,
+): { verdict: AgentQaVerdict; inputs?: string; reason?: string }[] {
+  const out: { verdict: AgentQaVerdict; inputs?: string; reason?: string }[] = [];
+  for (const c of comments) {
+    if (!(c.authoredByMatrix ?? c.byMatrix)) continue;
+    const m = c.body.match(HEADING_RE);
+    if (!m || headSha !== m[2] || m[3] !== runTag(qaRun)) continue;
+    const reason = m[1] === "BLOCKED" ? c.body.match(BLOCKED_REASON_RE)?.[1] : undefined;
+    out.push({
+      verdict: m[1] as AgentQaVerdict,
+      ...(m[4] ? { inputs: m[4] } : {}),
+      ...(reason !== undefined ? { reason } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * The verdict that stands for this head and QA run once infra failures are set aside: a BLOCKED
+ * caused by infrastructure (see `infraFailure`) never replaces the PASS or FAIL posted before it
+ * for the same inputs. Returns that PASS/FAIL when the newest report is such an infra BLOCKED.
+ */
+export function standingAgentQaVerdict(
+  comments: readonly QaComment[],
+  headSha: string,
+  qaRun: string,
+): { verdict: "PASS" | "FAIL"; inputs?: string; infra: string } | undefined {
+  const reports = agentQaReports(comments, headSha, qaRun);
+  const newest = reports.at(-1);
+  if (newest?.verdict !== "BLOCKED" || newest.reason === undefined) return undefined;
+  const infra = infraFailure(newest.reason);
+  if (!infra) return undefined;
+  for (let i = reports.length - 2; i >= 0; i--) {
+    const r = reports[i] as (typeof reports)[number];
+    if (r.verdict === "BLOCKED") {
+      // Another BLOCKED in between: an infra one is skipped, a real one stands.
+      if (r.reason !== undefined && infraFailure(r.reason)) continue;
+      return undefined;
+    }
+    if (r.inputs && newest.inputs && r.inputs !== newest.inputs) return undefined;
+    return { verdict: r.verdict, ...(r.inputs ? { inputs: r.inputs } : {}), infra };
+  }
+  return undefined;
+}
+
 /** The verdict of an earlier report comment for this head and QA run, if Matrix posted one. */
 export function priorAgentQaVerdict(
   comments: readonly QaComment[],
