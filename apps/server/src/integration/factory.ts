@@ -584,7 +584,10 @@ async function createOwnedFactory(
       // The state-owner lease is exclusive per data dir, so host + data dir names exactly one
       // live server: only its own route worktrees are ever reaped.
       setRouteOwner(
-        `${options.host}:${createHash("sha256").update(resolve(options.dataDir)).digest("hex").slice(0, 12)}`,
+        `${options.host.slice(0, 40)}:${createHash("sha256")
+          .update(`${options.host}\u0000${resolve(options.dataDir)}`)
+          .digest("hex")
+          .slice(0, 16)}`,
       );
       if (routes.length && options.runtime !== "fake") {
         const reap = guarded("orca-reaper", async () => {

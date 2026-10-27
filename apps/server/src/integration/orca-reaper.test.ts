@@ -34,6 +34,7 @@ describe("orca route reaper", () => {
       w("/ws/wayline/mx-notes", 900),
       w("/ws/wayline/mx-run-cccccccc-abcdef", 900, { comment: "matrix-route:other" }),
       w("/ws/wayline/mx-run-dddddddd-abcdef", 900, { comment: "" }),
+      w("/ws/wayline/mx-run-eeeeeeee-abcdef", 900, { createdAt: "2026-10-27T10:00:00Z" }),
       w("/ws/wayline", 900, { isMainWorktree: true }),
     ]);
     const r = await reapRouteWorktrees({
@@ -44,7 +45,7 @@ describe("orca route reaper", () => {
       owner: "matrix-route:bosgame",
     });
     expect(r.removed).toEqual(["macbook-pro:/ws/wayline/mx-run-91c13da1-cfa872"]);
-    expect(r.kept).toBe(2);
+    expect(r.kept).toBe(3);
     const rm = f.calls.filter((c) => c[1] === "rm").map((c) => c[3]);
     expect(rm).toEqual(["path:/ws/wayline/mx-run-91c13da1-cfa872"]);
     // terminals are stopped before the worktree goes

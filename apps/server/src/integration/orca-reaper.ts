@@ -53,7 +53,13 @@ export async function reapRouteWorktrees(o: {
       // Only worktrees this Matrix server created (another server's runs are not ours to judge).
       if (str(w.comment) !== (o.owner ?? routeComment())) continue;
       const created = Number(w.createdAt ?? w.lastActivityAt ?? 0);
-      if (live.has(liveKey(environment, path)) || !created || now - created < maxAge) {
+      // Unknown or malformed age never authorizes a delete.
+      if (
+        live.has(liveKey(environment, path)) ||
+        !Number.isFinite(created) ||
+        created <= 0 ||
+        now - created < maxAge
+      ) {
         result.kept += 1;
         continue;
       }
