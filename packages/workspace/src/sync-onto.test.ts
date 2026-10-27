@@ -83,3 +83,18 @@ describe("syncOnto (rebase before an auto-merge)", { timeout: 60_000 }, () => {
     await expect(f.port.syncOnto(f.workdir, tip)).rejects.toThrow(/uncommitted/);
   });
 });
+
+describe("syncOnto refuses what a rebase would lose", { timeout: 60_000 }, () => {
+  test("a run branch with a merge commit is not rebased", async () => {
+    const f = await fixture();
+    await f.commit(f.workdir, "b.txt", "ticket\n", "ticket");
+    f.git(f.repo, "branch", "side", "main");
+    await f.commit(f.repo, "a.txt", "side\n", "side");
+    const sideTip = f.git(f.repo, "rev-parse", "HEAD");
+    f.git(f.workdir, "merge", "-q", "--no-edit", sideTip);
+    const tip = await f.commit(f.repo, "b.txt", "main\n", "main moved");
+    const head = f.git(f.workdir, "rev-parse", "HEAD");
+    await expect(f.port.syncOnto(f.workdir, tip)).rejects.toThrow(/merge commits/);
+    expect(f.git(f.workdir, "rev-parse", "HEAD")).toBe(head);
+  });
+});

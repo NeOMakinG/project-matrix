@@ -659,6 +659,15 @@ export class WorktreeGitPort implements GitPort {
       head,
     ]);
     if (ancestor.exitCode === 0) return { kind: "current" };
+    // Matrix's commit gate only writes single-parent commits; a merge commit (and the conflict
+    // resolution it may carry) would be dropped by a plain rebase, so it is refused instead.
+    const fork0 = (await this.#git(workdir, ["merge-base", onto, head])).trim();
+    if (
+      (
+        await this.#git(workdir, ["rev-list", "--merges", "--max-count=1", `${fork0}..${head}`])
+      ).trim()
+    )
+      throw new Error("run branch contains merge commits; not rebasing");
     const filters = await this.#filterOverrides(gitdir);
     const env = {
       GIT_COMMITTER_NAME: "Matrix",
@@ -682,7 +691,7 @@ export class WorktreeGitPort implements GitPort {
     if ((await this.headSha(workdir)) !== head || !(await this.isClean(workdir)))
       throw new Error("rebase --abort did not restore the run branch");
     // Squashed change of the branch since it forked from the old base, re-applied on `onto`.
-    const fork = (await this.#git(workdir, ["merge-base", onto, head])).trim();
+    const fork = fork0;
     const patch = await this.#run(gitdir, [
       "--git-dir",
       gitdir,
@@ -696,6 +705,12 @@ export class WorktreeGitPort implements GitPort {
     ]);
     if (patch.exitCode !== 0) throw new Error("could not diff the run branch");
     const dir = await mkdtemp(join(tmpdir(), "matrix-sync-"));
+    // Any failure below puts the branch, worktree and trusted BASE back exactly as they were.
+    const rollback = async () => {
+      await this.#git(workdir, ["update-ref", branch, head]).catch(() => undefined);
+      await this.#git(workdir, ["reset", "--hard", "--quiet", head], true).catch(() => undefined);
+      await this.#trusted.record(workdir, entry).catch(() => undefined);
+    };
     try {
       const file = join(dir, "change.patch");
       await writeFile(file, `${patch.stdout}\n`, { mode: 0o600 });
@@ -723,8 +738,7 @@ export class WorktreeGitPort implements GitPort {
         .filter(Boolean);
       if (applied.exitCode !== 0 && unmerged.length === 0) {
         // Not a conflict git can mark: put the branch back exactly as it was.
-        await this.#git(workdir, ["reset", "--hard", "--quiet", head], true);
-        await this.#trusted.record(workdir, entry);
+        await rollback();
         throw new Error(
           `could not re-apply the change on ${onto.slice(0, 12)}: ${applied.stderrTail.trim().slice(-300)}`,
         );
@@ -732,6 +746,9 @@ export class WorktreeGitPort implements GitPort {
       // Unstage so no unmerged index entries remain; files keep their markers, new files stay.
       await this.#git(workdir, ["reset", "--quiet"], true);
       return { kind: "conflict", files: unmerged.length ? unmerged : ["(see git status)"] };
+    } catch (error) {
+      if ((await this.headSha(workdir).catch(() => "")) !== head) await rollback();
+      throw error;
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
