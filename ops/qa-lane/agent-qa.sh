@@ -17,7 +17,7 @@ ROOT="${MATRIX_QA_ROOT:-/srv/matrix-qa}"
 LOCK=/tmp/matrix-qa-lane.lock
 STALE_S=7200 # > longest step: 2 x 300 s git + 5400 s build (+ kill grace)
 # Package-manager network failures worth one build retry (see `build`).
-NET_ERR='EAI_AGAIN|ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|socket hang up|getaddrinfo|ERR_SOCKET_TIMEOUT|network (error|timeout)|npm (ERR!|error) code E5[0-9][0-9]|50[234] (Bad Gateway|Service Unavailable|Gateway Time-?out)|ERR_PNPM_(META_FETCH_FAIL|FETCH_5[0-9][0-9])'
+NET_ERR='EAI_AGAIN|ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EHOSTUNREACH|socket hang up|getaddrinfo|ERR_SOCKET_TIMEOUT|npm (ERR!|error) (network|code E5[0-9][0-9])|npm (ERR!|error) .*50[234] (Bad Gateway|Service Unavailable|Gateway Time-?out)|ERR_PNPM_(META_FETCH_FAIL|FETCH_5[0-9][0-9])'
 export ANDROID_HOME="${ANDROID_HOME:-/opt/android-sdk}" ANDROID_SDK_ROOT="${ANDROID_HOME:-/opt/android-sdk}"
 export PATH="$ANDROID_HOME/platform-tools:$PATH"
 
@@ -246,17 +246,18 @@ case "$step" in
         git checkout --quiet --force --detach "$4"; git clean -qffdx
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
       cd "$work"
-      build_once() { as_build ABI="$abi" APP_ID="$app_id" VERSION_CODE="$(( $(date +%s) / 60 ))" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"; }
+      build_once() { as_build ABI="$abi" APP_ID="$app_id" VERSION_CODE="$(( $(date +%s) / 60 ))" timeout -k 30 "$1" nice bash "$dir/build.sh"; }
       started=$(date +%s)
       # npm/pnpm network errors (DNS, resets, registry 5xx) get one retry when they hit early (the
       # install, first 10 min), so a transient blip is not reported; any other failure fails now.
-      if ! build_once; then
+      if ! build_once "$timeout_s"; then
         (( $(date +%s) - started < 600 )) || exit 1
         tail -c 6000 "$dir/build.log" | grep -qE "$NET_ERR" || exit 1
         pkill -KILL -u "$BUILD_USER" || true
         echo "matrix-qa: network error during the build install; retrying once in 30 s"
         sleep 30; beat "$1"
-        build_once
+        # Both builds together stay within timeout_s (the lock and SSH limits assume one build).
+        build_once "$(( timeout_s - ($(date +%s) - started) - 30 ))"
       fi
     ) >"$dir/build.log" 2>&1
     rc=$?

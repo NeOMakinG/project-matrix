@@ -657,7 +657,8 @@ export class Reconciler {
       console.error(
         `[agent-qa] ${w.ticketId} ${headSha.slice(0, 12)}: newest report is an infra BLOCKED (${standing.infra}); the earlier ${standing.verdict} stands`,
       );
-      await this.keepAgentQaVerdict(project, w, key, url, standing.verdict);
+      // Applied as on any read of an unapplied PASS/FAIL (a FAIL loops back, idempotently).
+      await this.applyAgentQaVerdict(project, w, key, url, standing.verdict);
       return;
     }
     let prior = applied ?? latest?.verdict;
