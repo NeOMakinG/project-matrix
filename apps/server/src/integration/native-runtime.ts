@@ -444,12 +444,15 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       });
       return { exitCode: result.exitCode, stdout: result.stdout };
     },
-    terminals: async (workdir) =>
-      orca
-        ? parseTerminalList(
-            await orca.cli.call(["terminal", "list", "--worktree", `path:${workdir}`, "--json"]),
-          )
-        : [],
+    // Every terminal, filtered here by exact path: Orca's `path:` selector fails once the
+    // worktree is gone, which is exactly when a ticket's leftover terminals must still close.
+    terminals: async (workdir) => {
+      if (!orca) return [];
+      const result = await orca.cli.call(["terminal", "list", "--limit", "5000", "--json"]);
+      if ((result as { truncated?: unknown } | null)?.truncated === true)
+        throw new Error("orca terminal list truncated; refusing a partial view");
+      return parseTerminalList(result).filter((t) => t.worktreePath === workdir);
+    },
     closeTerminal: async (handle) => {
       await orca?.cli.call(["terminal", "close", "--terminal", handle, "--json"]);
     },
