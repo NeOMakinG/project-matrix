@@ -172,6 +172,10 @@ async function typeScript(
       ["terminal", "send", "--terminal", terminal, "--text", text, "--enter", "--json"],
       budget(30_000),
     );
+  // A plain POSIX shell takes the long lines: zsh line-editor plugins (highlighting,
+  // autosuggestions) re-render on every typed character and crawl on 3000-byte lines.
+  await send("exec /bin/sh");
+  await sleep(1_000);
   await send(`umask 077; _mx_f="\${TMPDIR:-/tmp}/mx-${nonce}.b64"; : >"$_mx_f"`);
   for (let i = 0; i < encoded.length; i += CHUNK)
     await send(`printf %s ${encoded.slice(i, i + CHUNK)} >>"$_mx_f"`);
