@@ -127,6 +127,7 @@ describe("runner hosts", () => {
         executor: g.executor,
         orcaCli: () => o.cli,
         pollMs: 0,
+        scan: async () => ({ ok: true, summary: "" }) as never,
       },
       "miniforum",
       "p",
@@ -147,8 +148,8 @@ describe("runner hosts", () => {
     expect(g.ran.some((x) => x.startsWith("fetch"))).toBe(false);
     expect(g.ran).toEqual(
       expect.arrayContaining([
-        `push --quiet --no-follow-tags https://github.com/o/r.git ${SHA}:refs/heads/matrix-run/run-1`,
-        "push --quiet https://github.com/o/r.git :refs/heads/matrix-run/run-1",
+        `push --quiet --no-verify --no-follow-tags https://github.com/o/r.git ${SHA}:refs/heads/matrix-run/run-1`,
+        "push --quiet --no-verify https://github.com/o/r.git :refs/heads/matrix-run/run-1",
       ]),
     );
     const cmd = o.calls.find((x) => x[1] === "create" && x[0] === "terminal")!.join(" ");
@@ -166,6 +167,7 @@ describe("runner hosts", () => {
         executor: g.executor,
         orcaCli: () => o.cli,
         pollMs: 0,
+        scan: async () => ({ ok: true, summary: "" }) as never,
       },
       "miniforum",
       "p",
@@ -178,7 +180,9 @@ describe("runner hosts", () => {
     expect(g.ran.some((x) => x.startsWith("fetch"))).toBe(false);
     expect(
       g.ran.filter((x) =>
-        x.startsWith("push --quiet https://github.com/o/r.git :refs/heads/matrix-run/run-2"),
+        x.startsWith(
+          "push --quiet --no-verify https://github.com/o/r.git :refs/heads/matrix-run/run-2",
+        ),
       ).length,
     ).toBe(1);
   });
@@ -222,6 +226,7 @@ describe("runner hosts", () => {
       executor: g.executor,
       orcaCli: () => o.cli,
       pollMs: 0,
+      scan: async () => ({ ok: true, summary: "" }) as never,
     };
     const sb = remoteAwareSandbox(local, r);
     expect(
@@ -246,6 +251,22 @@ describe("runner hosts", () => {
 });
 
 describe("runner host safety", () => {
+  test("no scan configured: the scratch push is refused (repo hooks are skipped)", async () => {
+    const g = git();
+    const r: RemoteRunners = {
+      hosts,
+      project: async () => project,
+      executor: g.executor,
+      orcaCli: () => orca("done\n", 0).cli,
+      pollMs: 0,
+    };
+    const c = await remoteContext(r, "miniforum", "p", "/wt", "run-8");
+    await expect(
+      runRemote(c!, { argv: ["x"], env: {}, timeoutMs: 1, collect: true }),
+    ).rejects.toThrow("secret gate missing");
+    expect(g.ran.some((x) => x.startsWith("push"))).toBe(false);
+  });
+
   test("the scratch-push scan runs in the canonical repo, never the ticket worktree", async () => {
     const g = git();
     const seen: string[] = [];
