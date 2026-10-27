@@ -173,6 +173,11 @@ export function deployProfileProblems(profile: DeployProfile): string[] {
         problems.push(
           `${at}: git-integration targets need version {url, field} as production proof`,
         );
+      // The provider deploys on merge by itself: a hold could not stop it, so it is refused.
+      if (t.holdOn?.length)
+        problems.push(
+          `${at}: holdOn cannot hold a git-integration target (the provider deploys on merge)`,
+        );
     } else {
       if (!t.capability || !t.run?.length)
         problems.push(`${at}: command targets need capability and run`);
@@ -185,8 +190,15 @@ export function deployProfileProblems(profile: DeployProfile): string[] {
         if (t.run.some((a) => /[\0\n\r]/.test(a) || a.length > 200))
           problems.push(`${at}: run arguments must be single-line and short`);
       }
-      if (t.rollback && t.capability !== "fly")
-        problems.push(`${at}: fly-releases rollback needs the fly capability`);
+      // Production proof is implemented for Fly only (release image label); others stay human.
+      if (t.capability && t.capability !== "fly")
+        problems.push(
+          `${at}: only fly command targets are supported (no production proof for ${t.capability} yet)`,
+        );
+      if (t.capability === "fly" && !t.rollback?.app)
+        problems.push(
+          `${at}: fly targets need rollback {kind: fly-releases, app} (also the release proof)`,
+        );
       if (!t.health) problems.push(`${at}: command targets need a health check`);
     }
   }

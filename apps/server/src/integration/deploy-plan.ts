@@ -34,7 +34,7 @@ export function parseDeployHosts(raw: string | undefined): DeployHost[] {
   return hosts;
 }
 
-export type StepAction = "provider" | "run" | "hold" | "block" | "skip";
+export type StepAction = "provider" | "run" | "dry-run" | "hold" | "block" | "skip";
 
 export interface DeployStep {
   target: string;
@@ -102,6 +102,18 @@ export function planDeploy(input: {
       continue;
     }
     const cap = target.capability as DeployCapability;
+    if (target.dryRun || input.dryRun) {
+      const dry = input.hosts.find((h) => h.capabilities.includes(cap));
+      steps.push({
+        ...base,
+        action: "dry-run",
+        capability: cap,
+        ...(dry ? { host: dry.name } : {}),
+        argv: deployArgv(target, input.mergeCommit),
+        reason: `dry run, nothing runs (would run on ${dry?.name ?? `no host: no host has ${cap}`})`,
+      });
+      continue;
+    }
     const host = input.hosts.find((h) => h.capabilities.includes(cap));
     if (!host) {
       steps.push({ ...base, action: "block", capability: cap, reason: `no host has ${cap}` });
@@ -119,7 +131,7 @@ export function planDeploy(input: {
   return {
     repo: input.repo,
     mergeCommit: input.mergeCommit,
-    dryRun: input.dryRun === true || input.profile.targets.some((t) => t.dryRun),
+    dryRun: input.dryRun === true,
     files: input.files ?? [],
     steps,
   };
@@ -133,7 +145,8 @@ export function renderPlan(plan: DeployPlan, profile: DeployProfile): string {
   for (const s of plan.steps) {
     const t = profile.targets.find((x) => x.name === s.target);
     lines.push(`- ${s.target} [${s.kind}] ${s.action.toUpperCase()}: ${s.reason}`);
-    if (s.action === "run") {
+    const acts = s.action === "run" || s.action === "dry-run";
+    if (acts) {
       if (t?.coordinate?.deck)
         lines.push(
           `  1. deck note, then hold if another actor released in the last ${t.coordinate.recentForeignDeployMinutes} min`,
@@ -145,11 +158,13 @@ export function renderPlan(plan: DeployPlan, profile: DeployProfile): string {
         `  3. prove: newest release is ours with image label matrix-${plan.mergeCommit.slice(0, 12)}`,
       );
     }
-    if (t?.health && (s.action === "run" || s.action === "provider"))
+    if (t?.health && (acts || s.action === "provider"))
       lines.push(`  health: GET ${t.health.url} expect ${t.health.expect}`);
-    if (s.action === "run" && t?.rollback)
+    if (acts && t?.rollback)
       lines.push(
-        `  rollback on failure: redeploy the previous ${t.rollback.app} image (if the current release is still ours)`,
+        t.coordinate
+          ? `  on failure: hold and post the failing receipt; a human rolls ${t.rollback.app} back (shared app)`
+          : `  rollback on failure: redeploy the previous ${t.rollback.app} image (if the current release is still ours)`,
       );
   }
   return lines.join("\n");

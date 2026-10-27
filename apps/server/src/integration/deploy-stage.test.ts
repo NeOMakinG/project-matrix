@@ -145,7 +145,18 @@ describe("deploy stage", () => {
       executor,
       fetch: okFetch(SHA, 503),
     };
-    const v = await verifyPort(o).verify(ctx([]));
+    const shared = await verifyPort(o).verify(ctx([]));
+    expect(
+      (Array.isArray(shared) ? shared : shared.receipts).some((r) =>
+        r.summary.includes("a human decides"),
+      ),
+    ).toBe(true);
+    expect(ran.some((c) => c.includes("registry.fly.io/app:old"))).toBe(false);
+    const solo = structuredClone(profile);
+    delete solo.targets[1]!.coordinate;
+    const c = ctx([]);
+    (c.project as { deploy: DeployProfile }).deploy = solo;
+    const v = await verifyPort(o).verify(c);
     const receipts = Array.isArray(v) ? v : v.receipts;
     expect(receipts.some((r) => r.summary.includes("rolled back app to v9"))).toBe(true);
     expect(ran.some((c) => c.includes("registry.fly.io/app:old"))).toBe(true);

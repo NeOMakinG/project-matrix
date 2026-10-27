@@ -93,7 +93,8 @@ describe("deploy plan", () => {
     expect(text).toContain("DRY RUN");
     expect(text).toContain("deck note");
     expect(text).toContain("fly deploy -a eagleray-api --remote-only --image-label");
-    expect(text).toContain("rollback on failure");
+    expect(text).toContain("a human rolls eagleray-api back");
+    expect(p.steps.find((x) => x.target === "api")?.action).toBe("dry-run");
   });
 });
 
@@ -114,6 +115,18 @@ describe("deploy profile validation", () => {
     expect(publicHttpsProblem("https://100.90.255.43/")).toMatch(/private/);
     expect(publicHttpsProblem("https://miniforum1.tail5788db.ts.net/")).toMatch(/public/);
     expect(publicHttpsProblem("https://eagleray-api.fly.dev/health")).toBeNull();
+  });
+  test("holdOn on a git-integration target and non-fly command targets are refused", () => {
+    const bad: DeployProfile = {
+      merge: "auto",
+      targets: [
+        { ...eagleray.targets[0]!, holdOn: ["x/**"] },
+        { ...eagleray.targets[1]!, name: "m", capability: "eas", run: ["eas", "build"] },
+      ],
+    };
+    const text = deployProfileProblems(bad).join();
+    expect(text).toMatch(/holdOn cannot hold/);
+    expect(text).toMatch(/only fly command targets/);
   });
   test("ssh hosts need user@host", () => {
     expect(() =>

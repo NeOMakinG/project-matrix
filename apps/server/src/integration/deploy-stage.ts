@@ -151,7 +151,23 @@ async function httpStatus(
     redirect: "manual",
     signal: AbortSignal.timeout(20_000),
   });
-  return { status: res.status, body: (await res.text()).slice(0, 20_000) };
+  return { status: res.status, body: await boundedText(res, 20_000) };
+}
+
+/** Reads at most `max` bytes of a response body, then cancels the stream. */
+async function boundedText(res: Response, max: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (size < max) {
+    const { done, value } = await reader.read();
+    if (done || !value) break;
+    chunks.push(value);
+    size += value.length;
+  }
+  await reader.cancel().catch(() => undefined);
+  return new TextDecoder().decode(Buffer.concat(chunks).subarray(0, max));
 }
 
 /**
@@ -170,7 +186,7 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
       const receipts: Receipt[] = [];
       for (const step of plan.steps) {
         const t = profile.targets.find((x) => x.name === step.target)!;
-        if (step.action === "skip" || plan.dryRun) {
+        if (step.action === "skip" || step.action === "dry-run" || plan.dryRun) {
           receipts.push({
             kind: "log",
             ok: true,
@@ -219,8 +235,18 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
               ok: bad === null,
               summary: `${t.name}: ${bad ?? `GET ${h.url} ${h.expect}`}`,
             });
+            // A shared app (another fleet deploys it) has no writer lock covering everyone: no
+            // automatic rollback there, the failing receipt asks a human (ADR 0007 section 4).
             if (bad && t.kind === "command")
-              receipts.push(await rollback(o, step.host!, t.rollback?.app, sha));
+              receipts.push(
+                t.coordinate
+                  ? {
+                      kind: "log",
+                      ok: false,
+                      summary: `${t.name}: health failed on a shared app; not rolled back automatically, a human decides (fly deploy -a ${t.rollback?.app} --image <previous>)`,
+                    }
+                  : await rollback(o, step.host!, t.rollback?.app, sha),
+              );
           }
         });
       }
