@@ -305,12 +305,13 @@ export const REPORT_PLACEHOLDER = "@@MATRIX_REPORT_DIR@@";
  * Env names come from the spec and are validated as identifiers by the route before `eval`.
  */
 export const REPORT_WRAPPER = [
-  'r="$PWD/.matrix-report"; mkdir -p "$r" || exit 97',
+  // Wrapper state lives in _mx_* names; env names in that namespace are refused.
+  '_mx_r="$PWD/.matrix-report"; mkdir -p "$_mx_r" || exit 97',
   // Literal replacement with parameter expansion: no sed metacharacters, no trailing-newline loss.
-  `sub() { s="$1"; o=""; while :; do case "$s" in *${REPORT_PLACEHOLDER}*) o="$o\${s%%${REPORT_PLACEHOLDER}*}$r"; s="\${s#*${REPORT_PLACEHOLDER}}";; *) break;; esac; done; w="$o$s"; }`,
-  'n="$1"; shift',
-  'while [ "$n" -gt 0 ]; do k="$1"; shift; case "$k" in *[!A-Za-z0-9_]*|[0-9]*|"") exit 96;; esac; eval "v=\\${$k-}" || exit 95; sub "$v"; export "$k=$w"; n=$((n-1)); done',
-  `for a; do shift; case "$a" in *${REPORT_PLACEHOLDER}*) sub "$a"; a="$w";; esac; set -- "$@" "$a"; done`,
+  `_mx_sub() { _mx_s="$1"; _mx_o=""; while :; do case "$_mx_s" in *${REPORT_PLACEHOLDER}*) _mx_o="$_mx_o\${_mx_s%%${REPORT_PLACEHOLDER}*}$_mx_r"; _mx_s="\${_mx_s#*${REPORT_PLACEHOLDER}}";; *) break;; esac; done; _mx_w="$_mx_o$_mx_s"; }`,
+  '_mx_n="$1"; shift',
+  'while [ "$_mx_n" -gt 0 ]; do _mx_k="$1"; shift; case "$_mx_k" in *[!A-Za-z0-9_]*|[0-9]*|_mx_*|"") exit 96;; esac; eval "_mx_v=\\${$_mx_k-}" || exit 95; _mx_sub "$_mx_v"; export "$_mx_k=$_mx_w"; _mx_n=$((_mx_n-1)); done',
+  `for _mx_a; do shift; case "$_mx_a" in *${REPORT_PLACEHOLDER}*) _mx_sub "$_mx_a"; _mx_a="$_mx_w";; esac; set -- "$@" "$_mx_a"; done`,
   'exec "$@"',
 ].join("\n");
 

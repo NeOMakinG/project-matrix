@@ -295,8 +295,9 @@ describe("remote check report path", () => {
         "-c",
         REPORT_WRAPPER,
         "sh",
-        "1",
+        "2",
         "OUT_ENV",
+        "n",
         "sh",
         "-c",
         'cd app && printf env >"$OUT_ENV" && printf arg >"$1" && printf %s "$2" >"$OUT_ENV.k"',
@@ -304,7 +305,14 @@ describe("remote check report path", () => {
         `${REPORT_PLACEHOLDER}/a.json`,
         "keep\n",
       ],
-      { cwd: root, env: { PATH: process.env.PATH ?? "", OUT_ENV: `${REPORT_PLACEHOLDER}/e.tap` } },
+      {
+        cwd: root,
+        env: {
+          PATH: process.env.PATH ?? "",
+          OUT_ENV: `${REPORT_PLACEHOLDER}/e.tap`,
+          n: `${REPORT_PLACEHOLDER}/n`,
+        },
+      },
     );
     expect(readFileSync(join(root, ".matrix-report/e.tap"), "utf8")).toBe("env");
     expect(readFileSync(join(root, ".matrix-report/a.json"), "utf8")).toBe("arg");
