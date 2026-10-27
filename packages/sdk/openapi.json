@@ -235,6 +235,11 @@
               }
             },
             "required": ["driver"]
+          },
+          "deploy": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Deploy profile (ADR 0007)"
           }
         },
         "required": ["id", "name", "description", "workspace", "autonomy", "createdAt"]
@@ -870,6 +875,135 @@
             },
             "additionalProperties": false,
             "description": "Replaces QA settings; null removes them"
+          },
+          "deploy": {
+            "type": ["object", "null"],
+            "properties": {
+              "merge": {
+                "type": "string",
+                "enum": ["auto", "human"]
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9-]{1,40}$"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": ["git-integration", "command"]
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "maxItems": 50
+                    },
+                    "health": {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "maxLength": 300
+                        },
+                        "expect": {
+                          "type": "integer",
+                          "minimum": 100,
+                          "maximum": 599
+                        }
+                      },
+                      "required": ["url", "expect"],
+                      "additionalProperties": false
+                    },
+                    "version": {
+                      "type": "object",
+                      "properties": {
+                        "url": {
+                          "type": "string",
+                          "maxLength": 300
+                        },
+                        "field": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_]{1,40}$"
+                        }
+                      },
+                      "required": ["url", "field"],
+                      "additionalProperties": false
+                    },
+                    "waitStatus": {
+                      "type": "string",
+                      "maxLength": 80
+                    },
+                    "capability": {
+                      "type": "string",
+                      "enum": ["fly", "eas", "railway", "gh"]
+                    },
+                    "run": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "maxLength": 200
+                      },
+                      "maxItems": 20
+                    },
+                    "rollback": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": ["fly-releases"]
+                        },
+                        "app": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9-]{1,60}$"
+                        }
+                      },
+                      "required": ["kind", "app"],
+                      "additionalProperties": false
+                    },
+                    "holdOn": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 200
+                      },
+                      "maxItems": 50
+                    },
+                    "coordinate": {
+                      "type": "object",
+                      "properties": {
+                        "deck": {
+                          "type": "boolean"
+                        },
+                        "recentForeignDeployMinutes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 1440
+                        }
+                      },
+                      "required": ["deck", "recentForeignDeployMinutes"],
+                      "additionalProperties": false
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": ["name", "kind", "paths"],
+                  "additionalProperties": false
+                },
+                "maxItems": 10
+              }
+            },
+            "required": ["merge", "targets"],
+            "additionalProperties": false,
+            "description": "Replaces the deploy profile; null removes it"
           }
         },
         "additionalProperties": false

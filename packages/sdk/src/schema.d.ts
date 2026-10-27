@@ -4286,6 +4286,10 @@ export interface components {
         /** @enum {string} */
         driver: "none" | "manual" | "agent";
       };
+      /** @description Deploy profile (ADR 0007) */
+      deploy?: {
+        [key: string]: unknown;
+      };
     };
     /** @enum {string} */
     AutonomyMode: "human" | "gated" | "autonomous";
@@ -4493,6 +4497,40 @@ export interface components {
          * @enum {string}
          */
         driver?: "none" | "manual" | "agent";
+      } | null;
+      /** @description Replaces the deploy profile; null removes it */
+      deploy?: {
+        /** @enum {string} */
+        merge: "auto" | "human";
+        targets: {
+          name: string;
+          /** @enum {string} */
+          kind: "git-integration" | "command";
+          paths: string[];
+          health?: {
+            url: string;
+            expect: number;
+          };
+          version?: {
+            url: string;
+            field: string;
+          };
+          waitStatus?: string;
+          /** @enum {string} */
+          capability?: "fly" | "eas" | "railway" | "gh";
+          run?: string[];
+          rollback?: {
+            /** @enum {string} */
+            kind: "fly-releases";
+            app: string;
+          };
+          holdOn?: string[];
+          coordinate?: {
+            deck: boolean;
+            recentForeignDeployMinutes: number;
+          };
+          dryRun?: boolean;
+        }[];
       } | null;
     };
     TrackerFailure: {

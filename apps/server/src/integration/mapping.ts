@@ -5,6 +5,8 @@ import {
   autonomyFor,
   CHECK_PARSERS,
   type CheckCommand,
+  type DeployProfile,
+  deployProfileProblems,
   PHASES,
   type Phase,
   type ProjectConfig,
@@ -102,7 +104,7 @@ export function applyRunSettings(
   patch: Pick<
     UpdateProjectInput,
     "timeouts" | "idleTimeoutMs" | "implementGuidance" | "resources" | "baselineWarmup" | "qa"
-  >,
+  > & { deploy?: DeployProfile | null | undefined },
 ): void {
   if (patch.resources === null) delete config.resources;
   else if (patch.resources) {
@@ -140,6 +142,14 @@ export function applyRunSettings(
     const qa = validQaSettings(patch.qa);
     if (qa.surfaces?.length || qa.driver) config.qa = qa;
     else delete config.qa;
+  }
+  if (patch.deploy === null) delete config.deploy;
+  else if (patch.deploy !== undefined) {
+    if (!config.matrix?.repo?.github)
+      throw new CoreError("invalid_request", "deploy profiles need an existing GitHub repo");
+    const problems = deployProfileProblems(patch.deploy as DeployProfile);
+    if (problems.length) throw new CoreError("invalid_request", problems.join("; "));
+    config.deploy = structuredClone(patch.deploy as DeployProfile);
   }
   if (patch.implementGuidance === null) delete config.implementGuidance;
   else if (patch.implementGuidance !== undefined) {
@@ -237,6 +247,7 @@ export function toProject(config: StoredProject): Project {
           },
         }
       : {}),
+    ...(config.deploy ? { deploy: structuredClone(config.deploy) } : {}),
   };
 }
 

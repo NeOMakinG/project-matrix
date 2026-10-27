@@ -45,6 +45,7 @@ export interface Project {
   idleTimeoutMs?: number;
   implementGuidance?: string;
   qa?: { surfaces?: NonNullable<QaSettingsInput["surfaces"]>; driver: "none" | "manual" | "agent" };
+  deploy?: import("@matrix/core").DeployProfile;
 }
 
 /** Per-project QA surfaces (trusted host config, never ticket text). */
@@ -136,6 +137,8 @@ export interface UpdateProjectInput {
   implementGuidance?: string | null;
   /** Replaces the QA settings; null removes them. */
   qa?: QaSettingsInput | null;
+  /** Deploy stage (ADR 0007); null removes it. */
+  deploy?: import("@matrix/core").DeployProfile | null;
 }
 
 export type RunState = "queued" | "running" | "paused" | "awaiting_approval" | RunStatus;

@@ -35,7 +35,17 @@ export function requiredDeviceSurfaces(
   ticket: { body: string; labels?: readonly string[] },
   changedPaths?: readonly string[],
 ): QaSurface[] {
-  return routeQaSurfaces(project, ticket, changedPaths, ticketSurfaces(ticket.body)).surfaces;
+  const route = routeQaSurfaces(project, ticket, changedPaths, ticketSurfaces(ticket.body));
+  // Nothing merges and deploys on its own untested: an auto-merge project with the Chrome lane
+  // smoke-tests its deploy preview even for a backend/docs-only diff (ADR 0007 merge gate).
+  if (
+    route.backendOnly &&
+    project.deploy?.merge === "auto" &&
+    project.qa?.driver === "agent" &&
+    project.qa.surfaces?.includes("web")
+  )
+    return ["web"];
+  return route.surfaces;
 }
 
 /** Who tests a handed-off draft PR: a human, or the agent QA lane (`qa.driver: "agent"`). */

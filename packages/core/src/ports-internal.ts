@@ -123,9 +123,16 @@ export interface DeployPort {
   deploy(
     ctx: PhaseContext,
     request: ActionRequest,
-  ): Promise<{ ok: boolean; summary: string; url?: string }>;
+  ): Promise<{
+    ok: boolean;
+    summary: string;
+    url?: string;
+    /** A human must act (held migration, missing capability, coordination): never retried. */
+    blocked?: boolean;
+    receipts?: Receipt[];
+  }>;
 }
 
 export interface VerifyPort {
-  verify(ctx: PhaseContext): Promise<Receipt[]>;
+  verify(ctx: PhaseContext): Promise<Receipt[] | { receipts: Receipt[]; blocked?: string }>;
 }

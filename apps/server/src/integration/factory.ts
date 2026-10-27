@@ -22,7 +22,10 @@ import { OrcaWorkspace } from "@matrix/workspace";
 import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
 import { createSurfaceLanes } from "./agent-qa-surfaces.js";
+import type { DeployHost } from "./deploy-plan.js";
+import { deployPort, verifyPort } from "./deploy-stage.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
+import { autoLimits } from "./host-limits.js";
 import { repoKnowledge } from "./knowledge.js";
 import type { StoredProject } from "./mapping.js";
 import { gatewayModels } from "./model-plan.js";
@@ -54,6 +57,12 @@ export interface FactoryOptions {
   databaseUrl?: string;
   dataDir: string;
   host: string;
+  /** Deploy capability map (`MATRIX_DEPLOY_HOSTS`). */
+  deployHosts?: DeployHost[];
+  /** Deck note before coordinated deploys (EagleRay activity log). */
+  deckNote?: (summary: string) => Promise<void>;
+  /** Run concurrency per host (`MATRIX_LIMITS`); defaults keep one heavy run per host. */
+  limits?: Partial<import("@matrix/core").Limits>;
   /** OpenAI-compatible gateway for triage; required unless the runtime is fake. */
   gateway?: { baseUrl: string; apiKey: string };
   triageModel?: string;
@@ -222,12 +231,32 @@ async function createOwnedFactory(
     (options.agentQaLaneConfig
       ? createSurfaceLanes(options.agentQaLaneConfig, `matrix-server@${hostname()}`)
       : undefined);
+  const deployStage = {
+    prs: pullRequests,
+    hosts: options.deployHosts ?? [],
+    ...(options.deckNote ? { deckNote: options.deckNote } : {}),
+  };
+  const deploy = deployPort(deployStage);
+  const verify = verifyPort(deployStage);
   const handlers = {
     ...createDefaultHandlers({
       ...runtime.deps,
       store,
       holdout,
       merge: externalAwareMerge(pullRequests, runtime.deps.merge),
+      deploy: {
+        deploy: (ctx, req) =>
+          ctx.project.deploy
+            ? deploy.deploy(ctx, req)
+            : (runtime.deps.deploy?.deploy(ctx, req) ??
+              Promise.resolve({ ok: false, summary: "no deploy port configured" })),
+      },
+      verify: {
+        verify: (ctx) =>
+          ctx.project.deploy
+            ? verify.verify(ctx)
+            : (runtime.deps.verify?.verify(ctx) ?? Promise.resolve([])),
+      },
     }),
     compound: createCompoundHandler({
       store,
@@ -258,13 +287,10 @@ async function createOwnedFactory(
       if (!core) throw new Error("factory not ready");
       return core.withTicketSnapshotLock(projectId, operation);
     },
-    limits: {
-      perProject: options.runtime === "fake" ? 4 : 1,
-      perModel: {},
-      defaultPerModel: options.runtime === "fake" ? 4 : 1,
-      perHost: {},
-      defaultPerHost: options.runtime === "fake" ? 8 : 1,
-    },
+    limits:
+      options.runtime === "fake"
+        ? { perProject: 4, perModel: {}, defaultPerModel: 4, perHost: {}, defaultPerHost: 8 }
+        : { ...autoLimits(options.host), ...options.limits },
     backoff: { baseMs: 5_000, maxMs: 10 * 60_000 },
     // The fake runtime has no subscription to protect; real runtimes always get the guard.
     ...(options.runtime === "fake" && !options.quota ? {} : resolveQuota(options.quota)),

@@ -83,6 +83,19 @@ describe("reconcile loop", () => {
     await h2.reconciler.idle();
   });
 
+  test("a heavy limit of 1 never throttles light runs (spike/implement/checks/review)", async () => {
+    const h = createHarness({ limits: { defaultPerHost: 3, defaultHeavyPerHost: 1 } });
+    await h.setup();
+    h.tickets.add("A", 1);
+    h.tickets.add("B", 2);
+    h.tickets.add("C", 3);
+    h.tickets.add("D", 4);
+    const report = await h.reconciler.tick();
+    expect(report.dispatched).toHaveLength(3);
+    expect(report.skipped.at(-1)?.reason).toBe("host limit bosgame");
+    await h.reconciler.idle();
+  });
+
   test("replays a completed step instead of running it again", async () => {
     const h = createHarness();
     await h.setup();

@@ -7,6 +7,7 @@ export { checkMode, warmBaseline } from "./check-gate.js";
 export * from "./check-parsers.js";
 export * from "./check-run.js";
 export { MIGRATIONS_DIR, PgStore } from "./db/pg-store.js";
+export * from "./deploy-profile.js";
 export * from "./design.js";
 export * from "./environment.js";
 export * from "./handlers.js";

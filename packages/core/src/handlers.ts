@@ -967,8 +967,10 @@ const deploy =
     return {
       ok: res.ok,
       summary: res.summary,
+      ...(res.blocked && !res.ok ? { blocked: true } : {}),
       receipts: [
         { kind: "log", ok: res.ok, summary: res.summary, ...(res.url ? { url: res.url } : {}) },
+        ...(res.receipts ?? []),
       ],
     };
   };
@@ -977,14 +979,34 @@ const verify =
   (deps: HandlerDeps): PhaseHandler =>
   async (ctx) => {
     if (!deps.verify) return { ok: false, summary: "no verify port configured", receipts: [] };
-    const receipts = await deps.verify.verify(ctx);
-    const ok = receipts.length > 0 && receipts.every((r) => r.ok);
+    const result = await deps.verify.verify(ctx);
+    const receipts = Array.isArray(result) ? result : result.receipts;
+    const held = Array.isArray(result) ? undefined : result.blocked;
+    const ok = !held && receipts.length > 0 && receipts.every((r) => r.ok);
+    // A merged deploy that failed (rolled back) or needs a human never loops back to implement.
+    if (held || (!ok && ctx.project.deploy))
+      return {
+        ok: false,
+        blocked: true,
+        summary: held ?? `post-deploy verification failed: ${failedSummary(receipts)}`,
+        receipts,
+      };
     return {
       ok,
       summary: ok ? "post-deploy verification passed" : "post-deploy verification failed",
       receipts,
     };
   };
+
+function failedSummary(receipts: Receipt[]): string {
+  return (
+    receipts
+      .filter((r) => !r.ok)
+      .map((r) => r.summary)
+      .join("; ")
+      .slice(0, 400) || "no verification receipts"
+  );
+}
 
 const compound =
   (deps: HandlerDeps): PhaseHandler =>
