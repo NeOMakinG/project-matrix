@@ -186,7 +186,9 @@ export function renderPlan(plan: DeployPlan, profile: DeployProfile): string {
       lines.push(`  health: GET ${t.health.url} expect ${t.health.expect}`);
     if (acts && t?.rollback)
       lines.push(
-        `  rollback on failure: redeploy the previous ${t.rollback.app} image (only while the newest release is still ours${t.coordinate?.deck ? "; deck note first" : ""})`,
+        t.coordinate && !t.coordinate.autoRollback
+          ? `  on failure: hold and post the failing receipt; a human rolls ${t.rollback.app} back (shared app)`
+          : `  rollback on failure: redeploy the previous ${t.rollback.app} image (only while the newest release is still ours${t.coordinate?.deck ? "; deck note first" : ""})`,
       );
   }
   return lines.join("\n");

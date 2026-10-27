@@ -145,8 +145,31 @@ describe("deploy stage", () => {
       executor,
       fetch: okFetch(SHA, 503),
     };
+    const off = await verifyPort(o).verify(ctx([]));
+    expect(
+      (Array.isArray(off) ? off : off.receipts).some((r) => r.summary.includes("a human decides")),
+    ).toBe(true);
+    const auto = structuredClone(profile);
+    auto.targets[1]!.coordinate!.autoRollback = true;
+    const actx = () => {
+      const c = ctx([]);
+      (c.project as { deploy: DeployProfile }).deploy = auto;
+      return c;
+    };
+    const noDeck = await verifyPort({
+      ...o,
+      deckNote: async () => {
+        throw new Error("503");
+      },
+    }).verify(actx());
+    expect(
+      (Array.isArray(noDeck) ? noDeck : noDeck.receipts).some((r) =>
+        r.summary.includes("deck note failed"),
+      ),
+    ).toBe(true);
+    expect(ran.some((c) => c.includes("registry.fly.io/app:old"))).toBe(false);
     const deck = vi.fn(async () => undefined);
-    const shared = await verifyPort({ ...o, deckNote: deck }).verify(ctx([]));
+    const shared = await verifyPort({ ...o, deckNote: deck }).verify(actx());
     expect(
       (Array.isArray(shared) ? shared : shared.receipts).some((r) =>
         r.summary.includes("rolled back app to v9"),
@@ -164,7 +187,7 @@ describe("deploy stage", () => {
       },
       { Version: 10, Status: "complete", CreatedAt: "2026-01-01T00:00:00Z", ImageRef: tag },
     ]);
-    const v = await verifyPort({ ...o, executor: foreign.executor }).verify(ctx([]));
+    const v = await verifyPort({ ...o, deckNote: deck, executor: foreign.executor }).verify(actx());
     const receipts = Array.isArray(v) ? v : v.receipts;
     expect(receipts.some((r) => r.summary.includes("rolled back"))).toBe(false);
     expect(foreign.ran.some((c) => c.includes("'deploy'"))).toBe(false);

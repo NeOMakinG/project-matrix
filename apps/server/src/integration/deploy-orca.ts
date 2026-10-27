@@ -205,16 +205,19 @@ export async function runViaOrca(
       if (opts.signal?.aborted) throw new Error("orca route: cancelled");
       const read = record(
         record(
-          await cli.call([
-            "terminal",
-            "read",
-            "--terminal",
-            terminal,
-            "--limit",
-            "2000",
-            ...(cursor ? ["--cursor", cursor] : []),
-            "--json",
-          ]),
+          await cli.call(
+            [
+              "terminal",
+              "read",
+              "--terminal",
+              terminal,
+              "--limit",
+              "2000",
+              ...(cursor ? ["--cursor", cursor] : []),
+              "--json",
+            ],
+            Math.max(5_000, Math.min(60_000, deadline - Date.now())),
+          ),
         ).terminal,
       );
       const tail = Array.isArray(read.tail) ? read.tail.map(String) : [];

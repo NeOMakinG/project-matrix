@@ -338,7 +338,20 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
             // a newer release by a human or the other fleet on a shared app is never touched.
             if (bad && t.kind === "command")
               receipts.push(
-                await rollback(o, step.host!, t.rollback?.app, sha, plan.repo, t.coordinate?.deck),
+                t.coordinate && !t.coordinate.autoRollback
+                  ? {
+                      kind: "log",
+                      ok: false,
+                      summary: `${t.name}: health failed on a shared app; not rolled back automatically (coordinate.autoRollback off), a human decides (fly deploy -a ${t.rollback?.app} --image <previous>)`,
+                    }
+                  : await rollback(
+                      o,
+                      step.host!,
+                      t.rollback?.app,
+                      sha,
+                      plan.repo,
+                      t.coordinate?.deck,
+                    ),
               );
           }
         });
@@ -389,12 +402,21 @@ async function rollback(
       ok: false,
       summary: `rollback skipped: current ${app} release is not ours; needs a human`,
     };
-  if (deck)
-    await o
-      .deckNote?.(
-        `Matrix rolling back ${app} to v${previous.version} (health failed on ${sha.slice(0, 12)})`,
-      )
-      .catch(() => undefined);
+  // A shared app is only touched after the coordination note is really posted.
+  if (deck) {
+    const noted = await (o.deckNote
+      ? o
+          .deckNote(
+            `Matrix rolling back ${app} to v${previous.version} (health failed on ${sha.slice(0, 12)})`,
+          )
+          .then(
+            () => true,
+            () => false,
+          )
+      : Promise.resolve(false));
+    if (!noted)
+      return { kind: "log", ok: false, summary: "rollback held: deck note failed; needs a human" };
+  }
   const run = await runOnHost(
     host,
     // Re-checked inside the same shell right before the deploy: the check-then-act window is

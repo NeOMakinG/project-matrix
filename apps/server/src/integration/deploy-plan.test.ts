@@ -93,7 +93,7 @@ describe("deploy plan", () => {
     expect(text).toContain("DRY RUN");
     expect(text).toContain("deck note");
     expect(text).toContain("fly deploy -a eagleray-api --remote-only --image-label");
-    expect(text).toContain("only while the newest release is still ours; deck note first");
+    expect(text).toContain("a human rolls eagleray-api back");
     expect(p.steps.find((x) => x.target === "api")?.action).toBe("dry-run");
   });
 });
