@@ -186,7 +186,7 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
       const receipts: Receipt[] = [];
       for (const step of plan.steps) {
         const t = profile.targets.find((x) => x.name === step.target)!;
-        if (step.action === "skip" || step.action === "dry-run" || plan.dryRun) {
+        if (step.action === "skip" || step.action === "dry-run" || plan.dryRun || t.dryRun) {
           receipts.push({
             kind: "log",
             ok: true,
@@ -251,7 +251,17 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
         });
       }
       await postReceipt(ctx, plan.mergeCommit, got.url, receipts);
-      return { receipts };
+      const held = plan.steps.filter((x) => x.action === "hold" || x.action === "block");
+      return held.length
+        ? {
+            receipts,
+            blocked:
+              `deploy held for a human: ${held.map((x) => `${x.target}: ${x.reason}`).join("; ")}`.slice(
+                0,
+                600,
+              ),
+          }
+        : { receipts };
     },
   };
 }
