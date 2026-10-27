@@ -25,7 +25,9 @@ import type { ProjectConfig } from "../types.js";
 export class FakeTicketStore implements TicketStore {
   readonly kind = "markdown" as const;
   readonly tickets = new Map<string, Ticket>();
-  readonly comments: { id: string; body: string }[] = [];
+  readonly comments: { id: string; body: string; seq?: number }[] = [];
+  /** Posting order across Matrix and human comments (unsequenced human comments sort last). */
+  private commentSeq = 0;
   private seq = 0;
 
   add(title: string, priority: Ticket["priority"] = 2): Ticket {
@@ -69,7 +71,11 @@ export class FakeTicketStore implements TicketStore {
     return next;
   }
   async comment(id: string, body: string) {
-    this.comments.push({ id, body });
+    this.comments.push({ id, body, seq: this.commentSeq++ });
+  }
+  /** A human comment posted now (ordered against Matrix's own comments). */
+  addHumanComment(id: string, body: string, author = "valentin") {
+    this.humanComments.push({ id, body, author, seq: this.commentSeq++ });
   }
   async link() {}
   async ready() {
@@ -93,16 +99,22 @@ export class FakeTicketStore implements TicketStore {
     });
   }
   /** Comments humans wrote on the tracker (Matrix's own posts are `comments`). */
-  readonly humanComments: { id: string; body: string; author: string }[] = [];
+  readonly humanComments: { id: string; body: string; author: string; seq?: number }[] = [];
   async listComments(id: string): Promise<TicketComment[]> {
+    const order = (c: { seq?: number }) => c.seq ?? Number.MAX_SAFE_INTEGER;
     return [
       ...this.comments
         .filter((c) => c.id === id)
-        .map((c, i) => ({ id: `m${i}`, body: c.body, byMatrix: true })),
+        .map((c, i) => ({ c, out: { id: `m${i}`, body: c.body, byMatrix: true } })),
       ...this.humanComments
         .filter((c) => c.id === id)
-        .map((c, i) => ({ id: `h${i}`, body: c.body, author: c.author, byMatrix: false })),
-    ];
+        .map((c, i) => ({
+          c,
+          out: { id: `h${i}`, body: c.body, author: c.author, byMatrix: false },
+        })),
+    ]
+      .sort((a, b) => order(a.c) - order(b.c))
+      .map((x) => x.out);
   }
 }
 

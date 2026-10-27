@@ -1,10 +1,15 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { CodeCriterionResult } from "./qa-criteria.js";
+import { type CodeCriterionResult, classifyCriteria } from "./qa-criteria.js";
 import type { ProjectConfig, QaSurface } from "./types.js";
 
 export const QA_PASSED_LABEL = "qa:passed";
 export const QA_FAILED_LABEL = "qa:failed";
 export const AGENT_QA_MARKER = "Matrix agent QA";
+/** A human asks for a fresh agent QA run on the same head; Matrix removes it when the run starts. */
+export const QA_RERUN_LABEL = "qa:rerun";
+/** Provenance of the receipt that keeps a device result for a later GitHub-only re-evaluation. */
+export const AGENT_QA_DEVICE_PROVENANCE = "matrix:agent-qa-device:v1";
 
 /** BLOCKED reason when the ticket lists no acceptance criteria (the PR checklist is empty). */
 export const NO_CRITERIA =
@@ -374,32 +379,181 @@ export function sameIssueTitle(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
-/** `qaRun` ties the report to one QA run: a loop back that changes nothing gets a fresh run. */
-export function agentQaHeading(verdict: AgentQaVerdict, headSha: string, qaRun: string): string {
-  return `${AGENT_QA_MARKER} ${verdict} for ${headSha} (QA run ${runTag(qaRun)})`;
+/**
+ * `qaRun` ties the report to one QA run: a loop back that changes nothing gets a fresh run.
+ * `inputs` fingerprints what the GitHub-checked criteria were judged on (PR description and
+ * acceptance criteria); a later change to either re-evaluates them (see `agentQaInputs`).
+ */
+export function agentQaHeading(
+  verdict: AgentQaVerdict,
+  headSha: string,
+  qaRun: string,
+  inputs?: string,
+): string {
+  const tag = inputs && /^[a-f0-9]{12}$/.test(inputs) ? `, inputs ${inputs}` : "";
+  return `${AGENT_QA_MARKER} ${verdict} for ${headSha} (QA run ${runTag(qaRun)}${tag})`;
 }
 
 function runTag(qaRun: string): string {
   return qaRun.replace(/[^A-Za-z0-9-]/g, "").slice(0, 12) || "unknown";
 }
 
-/** The verdict of an earlier report comment for this head and QA run, if Matrix posted one. */
-export function priorAgentQaVerdict(
-  comments: readonly { body: string; byMatrix: boolean; authoredByMatrix?: boolean }[],
+/** Fingerprint of a verdict's non-code inputs: the PR description and the acceptance criteria. */
+export function agentQaInputs(pullRequestBody: string, criteria: readonly string[]): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify([pullRequestBody.replace(/\r/g, "").trim(), criteria.map((c) => c.trim())]),
+    )
+    .digest("hex")
+    .slice(0, 12);
+}
+
+type QaComment = { body: string; byMatrix: boolean; authoredByMatrix?: boolean; author?: string };
+
+const HEADING_RE =
+  /^Matrix agent QA (PASS|FAIL|BLOCKED) for ([a-f0-9]{40}) \(QA run ([A-Za-z0-9-]+)(?:, inputs ([a-f0-9]{12}))?\)/;
+
+/** The newest report Matrix posted for this head and QA run, with the inputs it was judged on. */
+export function latestAgentQaReport(
+  comments: readonly QaComment[],
   headSha: string,
   qaRun: string,
-): AgentQaVerdict | undefined {
-  let found: AgentQaVerdict | undefined;
+): { verdict: AgentQaVerdict; inputs?: string } | undefined {
+  let found: { verdict: AgentQaVerdict; inputs?: string } | undefined;
   for (const c of comments) {
     // A marker in the body is forgeable by any commenter: only Matrix's own comments count.
     if (!(c.authoredByMatrix ?? c.byMatrix)) continue;
-    const m = c.body.match(
-      /^Matrix agent QA (PASS|FAIL|BLOCKED) for ([a-f0-9]{40}) \(QA run ([A-Za-z0-9-]+)\)/,
-    );
+    const m = c.body.match(HEADING_RE);
     // The full head SHA: a short prefix could be matched by a crafted commit.
-    if (m && headSha === m[2] && m[3] === runTag(qaRun)) found = m[1] as AgentQaVerdict;
+    if (m && headSha === m[2] && m[3] === runTag(qaRun))
+      found = { verdict: m[1] as AgentQaVerdict, ...(m[4] ? { inputs: m[4] } : {}) };
   }
   return found;
+}
+
+/** The verdict of an earlier report comment for this head and QA run, if Matrix posted one. */
+export function priorAgentQaVerdict(
+  comments: readonly QaComment[],
+  headSha: string,
+  qaRun: string,
+): AgentQaVerdict | undefined {
+  return latestAgentQaReport(comments, headSha, qaRun)?.verdict;
+}
+
+/**
+ * True when a person (not Matrix, not an integration without a user) posted `/qa rerun` after
+ * Matrix's newest agent QA report on the ticket. Commenting needs access to the tracker team, so
+ * this is the owner or a team member.
+ */
+export function rerunCommentPending(comments: readonly QaComment[]): boolean {
+  let pending = false;
+  for (const c of comments) {
+    if (c.authoredByMatrix ?? c.byMatrix) {
+      if (c.body.startsWith(AGENT_QA_MARKER)) pending = false;
+      continue;
+    }
+    if (!c.byMatrix && c.author && /^\s*\/qa\s+rerun\b/i.test(c.body)) pending = true;
+  }
+  return pending;
+}
+
+/** What a device run produced, kept so a description-only change re-uses it (no rebuild). */
+export interface AgentQaDeviceRecord {
+  provenance: typeof AGENT_QA_DEVICE_PROVENANCE;
+  headSha: string;
+  /** The acceptance criteria the device run was given (its steps cite them by number). */
+  criteria: string[];
+  report: AgentQaReport;
+  screenshots: string[];
+  /** Screenshot name -> uploaded asset URL. */
+  images: Record<string, string>;
+  device: AgentQaDevice;
+  build: AgentQaBuild;
+  durationMs: number;
+}
+
+export function agentQaDeviceRecord(
+  outcome: Extract<AgentQaOutcome, { kind: "report" }>,
+  headSha: string,
+  images: ReadonlyMap<string, string>,
+  criteria: readonly string[],
+): AgentQaDeviceRecord {
+  return {
+    provenance: AGENT_QA_DEVICE_PROVENANCE,
+    headSha,
+    criteria: [...criteria],
+    report: outcome.report,
+    screenshots: outcome.screenshots.map((s) => s.name),
+    images: Object.fromEntries(images),
+    device: outcome.device,
+    build: outcome.build,
+    durationMs: outcome.durationMs,
+  };
+}
+
+/** The criteria a device checks, with their numbers (what a stored device result vouches for). */
+function deviceHalf(criteria: readonly string[]): string {
+  const sources = classifyCriteria(criteria);
+  return JSON.stringify(criteria.map((c, i) => (sources[i] === "github" ? null : c.trim())));
+}
+
+const recordSchema = z.object({
+  provenance: z.literal(AGENT_QA_DEVICE_PROVENANCE),
+  headSha: z.string().regex(/^[a-f0-9]{40}$/),
+  criteria: z.array(z.string().max(2_000)).max(60),
+  report: agentQaReportSchema,
+  screenshots: z.array(z.string().max(100)).max(40),
+  images: z.record(z.string().max(100), z.string().max(2_000)),
+  device: z.object({
+    serial: z.string().max(100),
+    model: z.string().max(100).optional(),
+    android: z.string().max(40).optional(),
+  }),
+  build: z.object({
+    appId: z.string().max(200),
+    version: z.string().max(80).optional(),
+    abi: z.string().max(40).optional(),
+    kind: z.string().max(40),
+  }),
+  durationMs: z.number().nonnegative(),
+});
+
+/**
+ * The device outcome a record holds for `headSha` (screenshots by name only), or undefined. With
+ * `criteria`, also undefined when a criterion the device checks differs (text, number or count)
+ * from those the record's run was given: its steps would vouch for a requirement nobody tested.
+ */
+export function deviceOutcomeFromRecord(
+  data: unknown,
+  headSha: string,
+  criteria?: readonly string[],
+):
+  | { outcome: Extract<AgentQaOutcome, { kind: "report" }>; images: Map<string, string> }
+  | undefined {
+  const parsed = recordSchema.safeParse(data);
+  if (!parsed.success || parsed.data.headSha !== headSha) return undefined;
+  const r = parsed.data;
+  if (criteria && deviceHalf(criteria) !== deviceHalf(r.criteria)) return undefined;
+  return {
+    outcome: {
+      kind: "report",
+      report: r.report,
+      screenshots: r.screenshots.map((name) => ({ name, bytes: new Uint8Array() })),
+      device: {
+        serial: r.device.serial,
+        ...(r.device.model ? { model: r.device.model } : {}),
+        ...(r.device.android ? { android: r.device.android } : {}),
+      },
+      build: {
+        appId: r.build.appId,
+        kind: r.build.kind,
+        ...(r.build.version ? { version: r.build.version } : {}),
+        ...(r.build.abi ? { abi: r.build.abi } : {}),
+      },
+      durationMs: r.durationMs,
+    },
+    images: new Map(Object.entries(r.images)),
+  };
 }
 
 export interface RenderedReport {
@@ -416,6 +570,8 @@ export function renderAgentQaReport(
   ctx: {
     headSha: string;
     qaRun: string;
+    /** `agentQaInputs` of the description and criteria the code/CI half was judged on. */
+    inputs?: string;
     pullRequestUrl: string;
     images: ReadonlyMap<string, string>;
     /** Number of acceptance criteria the agent was asked to check. */
@@ -441,7 +597,7 @@ export function renderAgentQaReport(
     return {
       verdict: "BLOCKED",
       body: [
-        `${agentQaHeading("BLOCKED", ctx.headSha, ctx.qaRun)} (${prLink})`,
+        `${agentQaHeading("BLOCKED", ctx.headSha, ctx.qaRun, ctx.inputs)} (${prLink})`,
         `Device: ${device} · Build: ${build}`,
         `The agent QA lane could not test this change: ${md(outcome.reason, 400)}`,
         "Nothing passed. Fix the cause, then remove the `needs-human` label to re-run agent QA on the same commit (or test it yourself and approve the merge in Matrix).",
@@ -463,7 +619,7 @@ export function renderAgentQaReport(
       : ` (screenshot ${md(name, 80)})`;
   };
   const lines = [
-    `${agentQaHeading(verdict, ctx.headSha, ctx.qaRun)} (${prLink})`,
+    `${agentQaHeading(verdict, ctx.headSha, ctx.qaRun, ctx.inputs)} (${prLink})`,
     `Device: ${device} · Build: ${build} · ${Math.max(1, Math.round(outcome.durationMs / 60_000))} min`,
     `Summary: ${md(report.summary, 600)}`,
   ];

@@ -544,3 +544,137 @@ test("code/CI criteria are verified on GitHub; the agent gets the device ones; p
   expect(filed[0]?.labels).toContain("Bug");
   expect(body).toContain(`Filed as ${filed[0]?.id}`);
 });
+
+/** PR facts whose description the test can edit (the harness's git port reports this head). */
+function editableFacts(initial: string) {
+  const pr = { body: initial };
+  const facts: PullRequestPort["facts"] = async () => ({
+    headSha: "a".repeat(40),
+    body: pr.body,
+    files: [
+      { path: "src/export.ts", status: "modified", additions: 3 },
+      {
+        path: "src/export.test.ts",
+        status: "modified",
+        additions: 20,
+        patch: '+test("export opens the sheet", () => {\n+  expect(open()).toBe(true);\n+});',
+      },
+    ],
+    checks: [{ name: "ci", state: "success" }],
+    baseFailing: [],
+  });
+  return { pr, facts };
+}
+
+const ROOT_CAUSE_BODY =
+  "## Root cause\n\nThe export handler was never bound; export.test.ts fails before the fix.";
+
+async function tickUntil(h: ReturnType<typeof createHarness>, done: () => boolean, max = 50) {
+  for (let i = 0; i < max && !done(); i++) {
+    await h.reconciler.tick();
+    await h.reconciler.idle();
+    await h.reconciler.agentQaIdle();
+    h.advanceClock(60_000);
+  }
+}
+
+test("a re-armed FAIL whose PR description was fixed re-checks the GitHub criteria, no rebuild", async () => {
+  const { pr, facts } = editableFacts("Fixes the export.");
+  const pass = () => reportOutcome(report());
+  const { h, requests } = agentHarness(Array.from({ length: 10 }, pass), true, 0, facts);
+  await h.setup();
+  const t = h.tickets.add("Trip PDF export");
+  h.tickets.tickets.set(t.id, {
+    ...t,
+    body: `${BODY}\n- Root cause written in the PR description`,
+  });
+  await h.drain(200);
+  // Device passes, but criterion 2 (root cause in the description) fails on GitHub: FAIL until
+  // the loop cap blocks the ticket at merge.
+  expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("blocked");
+  expect(reports(h).at(-1)).toMatch(
+    /^Matrix agent QA FAIL for [a-f0-9]{40} \(QA run [\w-]+, inputs [a-f0-9]{12}\)/,
+  );
+  const runs = requests.length;
+  const before = reports(h).length;
+
+  // The PR description is fixed (no new commit) and a human re-arms the ticket.
+  pr.body = ROOT_CAUSE_BODY;
+  await h.tickets.update(t.id, { status: "ready" });
+  await h.drain(50);
+  expect(requests).toHaveLength(runs);
+  const fresh = reports(h).slice(before);
+  expect(fresh).toHaveLength(1);
+  expect(fresh[0]).toMatch(/^Matrix agent QA PASS for/);
+  expect(fresh[0]).toMatch(/- #2 PASS \(github\)/);
+  // Re-uses the device evidence of the same head.
+  expect(fresh[0]).toContain("![s1.png](https://uploads.linear.app/x/s1.png)");
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:passed");
+  expect(await h.store.getWorkflow("pilot", t.id)).toMatchObject({
+    phase: "merge",
+    status: "waiting_approval",
+  });
+  // Settled: later ticks change nothing.
+  h.advanceClock(5 * 60_000);
+  await h.drain();
+  expect(reports(h).slice(before)).toHaveLength(1);
+  expect(requests).toHaveLength(runs);
+});
+
+test("a PASS whose PR description changed is re-evaluated without a device run", async () => {
+  const { pr, facts } = editableFacts(ROOT_CAUSE_BODY);
+  const { h, requests } = agentHarness([reportOutcome(report())], true, 0, facts);
+  await h.setup();
+  const t = h.tickets.add("Trip PDF export");
+  h.tickets.tickets.set(t.id, {
+    ...t,
+    body: `${BODY}\n- Root cause written in the PR description`,
+  });
+  await h.drain();
+  expect(reports(h)).toHaveLength(1);
+  expect(reports(h)[0]).toMatch(/^Matrix agent QA PASS/);
+  // Unchanged description: nothing is redone.
+  h.advanceClock(5 * 60_000);
+  await h.drain();
+  expect(reports(h)).toHaveLength(1);
+
+  pr.body = "Fixes the export.";
+  h.advanceClock(5 * 60_000);
+  await tickUntil(h, () => reports(h).length > 1);
+  expect(requests).toHaveLength(1);
+  expect(reports(h)[1]).toMatch(/^Matrix agent QA FAIL/);
+  expect(reports(h)[1]).toMatch(/- #2 FAIL \(github\)/);
+});
+
+test("qa:rerun re-runs the device lane on the same head and is removed when the run starts", async () => {
+  const { h, requests } = agentHarness([reportOutcome(report()), reportOutcome(report())]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.drain();
+  expect(requests).toHaveLength(1);
+  await h.tickets.addLabel(t.id, "qa:rerun");
+  h.advanceClock(5 * 60_000);
+  await tickUntil(h, () => reports(h).length > 1);
+  expect(requests).toHaveLength(2);
+  expect(h.tickets.tickets.get(t.id)?.labels).not.toContain("qa:rerun");
+  expect(reports(h)[1]).toMatch(/^Matrix agent QA PASS/);
+  h.advanceClock(5 * 60_000);
+  await h.drain();
+  expect(requests).toHaveLength(2);
+});
+
+test("a /qa rerun comment from a person re-runs once; Matrix's own text never triggers it", async () => {
+  const { h, requests } = agentHarness([reportOutcome(report()), reportOutcome(report())]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.drain();
+  await h.tickets.comment(t.id, "/qa rerun");
+  await h.drain();
+  expect(requests).toHaveLength(1);
+  h.tickets.addHumanComment(t.id, "/qa rerun please, fixtures were reseeded");
+  await tickUntil(h, () => reports(h).length > 1);
+  expect(requests).toHaveLength(2);
+  h.advanceClock(5 * 60_000);
+  await h.drain();
+  expect(requests).toHaveLength(2);
+});
