@@ -10,6 +10,7 @@ export async function requiredStackTools(
   const tools = new Set(["git", "node", ...declared]);
   for (const [file, needed] of [
     ["package.json", ["bun", "node"]],
+    ["pnpm-lock.yaml", ["pnpm"]],
     ["go.mod", ["go"]],
     ["sqlc.yaml", ["go", "sqlc"]],
     ["sqlc.yml", ["go", "sqlc"]],
@@ -62,7 +63,7 @@ export async function validateImageCapabilities(
         "sh",
         "-eu",
         "-c",
-        'for tool do command -v "$tool" >/dev/null || { echo "Missing required stack tool: $tool"; exit 127; }; case "$tool" in go|sqlc) "$tool" version;; bun) test "$(bun --version)" = 1.3.9 || { echo "Bun 1.3.9 required"; exit 1; };; git|node|codex|cargo|rustc|python3) "$tool" --version;; *) echo "Required executable present: $tool";; esac; done',
+        'for tool do command -v "$tool" >/dev/null || { echo "Missing required stack tool: $tool"; exit 127; }; case "$tool" in go|sqlc) "$tool" version;; bun) test "$(bun --version)" = 1.3.9 || { echo "Bun 1.3.9 required"; exit 1; };; git|node|codex|cargo|rustc|python3|pnpm|yarn) "$tool" --version;; *) echo "Required executable present: $tool";; esac; done',
         "matrix-preflight",
         ...tools,
       ],

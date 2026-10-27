@@ -29,6 +29,13 @@ describe("runner stack capabilities", () => {
     expect(await requiredStackTools(workdir)).toContain("sqlc");
   });
 
+  test("a pnpm lockfile requires pnpm (corepack in the runner image)", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "matrix-capabilities-"));
+    await writeFile(join(workdir, "package.json"), "{}");
+    await writeFile(join(workdir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    expect(await requiredStackTools(workdir)).toContain("pnpm");
+  });
+
   test("missing selected tools fail closed in a read-only network-none preflight", async () => {
     let command: ProcessSpec | undefined;
     const sandbox: Pick<PodmanSandbox, "lineExecutor"> = {
