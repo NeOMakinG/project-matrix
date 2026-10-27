@@ -204,9 +204,9 @@ export async function runViaOrca(
       await sleep(opts.pollMs ?? 3_000);
     }
   } finally {
-    if (terminal)
+    if (terminal && worktree)
       await cli
-        .call(["terminal", "close", "--terminal", terminal, "--json"])
+        .call(["terminal", "close", "--worktree", `path:${worktree}`, "--all", "--json"])
         .then(() => trace.push(`${route.environment}: terminal closed`))
         .catch((e: Error) => trace.push(`terminal close failed: ${e.message.slice(0, 120)}`));
     if (worktree)
