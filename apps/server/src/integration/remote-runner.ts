@@ -306,10 +306,11 @@ export const REPORT_PLACEHOLDER = "@@MATRIX_REPORT_DIR@@";
  */
 export const REPORT_WRAPPER = [
   'r="$PWD/.matrix-report"; mkdir -p "$r" || exit 97',
-  `sub() { printf '%s' "$1" | sed "s|${REPORT_PLACEHOLDER}|$r|g"; }`,
+  // Literal replacement with parameter expansion: no sed metacharacters, no trailing-newline loss.
+  `sub() { s="$1"; o=""; while :; do case "$s" in *${REPORT_PLACEHOLDER}*) o="$o\${s%%${REPORT_PLACEHOLDER}*}$r"; s="\${s#*${REPORT_PLACEHOLDER}}";; *) break;; esac; done; w="$o$s"; }`,
   'n="$1"; shift',
-  'while [ "$n" -gt 0 ]; do k="$1"; shift; case "$k" in *[!A-Za-z0-9_]*|[0-9]*|"") exit 96;; esac; eval "v=\\${$k-}" || exit 95; export "$k=$(sub "$v")"; n=$((n-1)); done',
-  'for a; do shift; set -- "$@" "$(sub "$a")"; done',
+  'while [ "$n" -gt 0 ]; do k="$1"; shift; case "$k" in *[!A-Za-z0-9_]*|[0-9]*|"") exit 96;; esac; eval "v=\\${$k-}" || exit 95; sub "$v"; export "$k=$w"; n=$((n-1)); done',
+  `for a; do shift; case "$a" in *${REPORT_PLACEHOLDER}*) sub "$a"; a="$w";; esac; set -- "$@" "$a"; done`,
   'exec "$@"',
 ].join("\n");
 
