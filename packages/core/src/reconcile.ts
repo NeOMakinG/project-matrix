@@ -643,8 +643,11 @@ export class Reconciler {
     }
     const ticket = await tickets.get(w.ticketId).catch(() => null);
     if (!ticket) return;
-    if (!rerun && ticket.labels.includes(QA_RERUN_LABEL))
-      rerun = { device: true, reason: `the ${QA_RERUN_LABEL} label`, label: true };
+    if (ticket.labels.includes(QA_RERUN_LABEL)) {
+      // Any device rerun consumes the label too, so it never triggers a second run.
+      if (!rerun) rerun = { device: true, reason: `the ${QA_RERUN_LABEL} label`, label: true };
+      else if (rerun.device) rerun.label = true;
+    }
     if (rerun?.label) {
       // Removed when the run starts; a failed removal waits for a later tick (no double run).
       if (!tickets.removeLabel) return;
@@ -678,7 +681,9 @@ export class Reconciler {
     const criteria = qaCriteria(ticket.body, manual.criteria);
     // GitHub-only re-evaluation: the device result for this head is re-used, nothing is rebuilt.
     const stored =
-      rerun && !rerun.device ? await this.storedDeviceOutcome(qaRun.id, headSha) : undefined;
+      rerun && !rerun.device
+        ? await this.storedDeviceOutcome(qaRun.id, headSha, criteria)
+        : undefined;
     const pr = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)$/);
     const sources = classifyCriteria(criteria);
     const numbered = (...source: string[]) =>
@@ -815,12 +820,12 @@ export class Reconciler {
   }
 
   /** The device result kept for this head on the QA run, if any. */
-  private async storedDeviceOutcome(qaRunId: string, headSha: string) {
+  private async storedDeviceOutcome(qaRunId: string, headSha: string, criteria: string[]) {
     const receipts = await this.o.store.listReceipts(qaRunId).catch(() => []);
     for (const r of [...receipts].reverse()) {
       const data = r.data as { provenance?: unknown } | undefined;
       if (r.kind !== "log" || data?.provenance !== AGENT_QA_DEVICE_PROVENANCE) continue;
-      const found = deviceOutcomeFromRecord(data, headSha);
+      const found = deviceOutcomeFromRecord(data, headSha, criteria);
       if (found) return found;
     }
     return undefined;
@@ -873,7 +878,7 @@ export class Reconciler {
             kind: "log",
             ok: true,
             summary: `agent QA device result for ${headSha.slice(0, 12)}`,
-            data: agentQaDeviceRecord(outcome, headSha, images),
+            data: agentQaDeviceRecord(outcome, headSha, images, criteria),
           },
         ])
         .catch((error) => this.trackerFailed(project.id, id, "agent-qa-record", error));

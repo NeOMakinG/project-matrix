@@ -79,8 +79,12 @@ redoes a posted verdict when:
 
 - The device result of every device run is kept as a `log` receipt on the QA run (provenance
   `matrix:agent-qa-device:v1`: report, screenshot names and uploaded URLs, device, build). A
-  GitHub-only re-evaluation re-renders the report from it with fresh PR facts and CI; when no record
-  exists for the head, it falls back to a device run.
+  GitHub-only re-evaluation re-renders the report from it with fresh PR facts and CI. The record
+  also keeps the criteria the run was given: when a criterion the device checks changed (text,
+  number or count), its old steps would vouch for an untested requirement, so Matrix runs the device
+  lane instead. Same when no record exists for the head.
+- A device rerun also consumes a `qa:rerun` label present at the same time as a `/qa rerun`
+  comment, so the two never cause two runs.
 - A PASS is re-checked at most every 2 minutes (one Linear read, one GitHub read). A FAIL is only
   at merge again after a human re-armed it, so it is checked before the FAIL is applied again.
 - A report posted before fingerprints existed has no `inputs`: it is redone only on an explicit

@@ -197,7 +197,7 @@ test("/qa rerun counts only from a person, after Matrix's latest report", () => 
   const ask = { body: "/qa rerun", byMatrix: false, author: "valentin" };
   expect(rerunCommentPending([report, ask])).toBe(true);
   expect(rerunCommentPending([ask, report])).toBe(false);
-  expect(rerunCommentPending([report, { ...ask, author: undefined }])).toBe(false);
+  expect(rerunCommentPending([report, { body: "/qa rerun", byMatrix: false }])).toBe(false);
   expect(rerunCommentPending([report, { body: "/qa rerun", byMatrix: true }])).toBe(false);
   expect(rerunCommentPending([report, { ...ask, body: "please /qa rerun" }])).toBe(false);
   expect(rerunCommentPending([report, { ...ask, body: "  /QA  rerun now" }])).toBe(true);
@@ -218,7 +218,12 @@ test("a device record round-trips for its head only and rejects tampered data", 
     durationMs: 60_000,
   };
   const record = JSON.parse(
-    JSON.stringify(agentQaDeviceRecord(outcome, SHA, new Map([["s1.png", "https://u/s1.png"]]))),
+    JSON.stringify(
+      agentQaDeviceRecord(outcome, SHA, new Map([["s1.png", "https://u/s1.png"]]), [
+        "Tap Export opens the share sheet",
+        "Root cause written in the PR description",
+      ]),
+    ),
   );
   const back = deviceOutcomeFromRecord(record, SHA);
   expect(back?.outcome.screenshots.map((s) => s.name)).toEqual(["s1.png"]);
@@ -226,4 +231,12 @@ test("a device record round-trips for its head only and rejects tampered data", 
   expect(back?.images.get("s1.png")).toBe("https://u/s1.png");
   expect(deviceOutcomeFromRecord(record, "b".repeat(40))).toBeUndefined();
   expect(deviceOutcomeFromRecord({ ...record, provenance: "x" }, SHA)).toBeUndefined();
+  // A changed GitHub criterion keeps the device evidence; a changed or moved device one does not.
+  const device = "Tap Export opens the share sheet";
+  const github = "Root cause in the PR description, with a log";
+  expect(deviceOutcomeFromRecord(record, SHA, [device, github])).toBeDefined();
+  expect(
+    deviceOutcomeFromRecord(record, SHA, ["Tap Share opens the sheet", github]),
+  ).toBeUndefined();
+  expect(deviceOutcomeFromRecord(record, SHA, [github, device])).toBeUndefined();
 });

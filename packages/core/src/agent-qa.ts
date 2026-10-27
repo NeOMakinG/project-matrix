@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { CodeCriterionResult } from "./qa-criteria.js";
+import { type CodeCriterionResult, classifyCriteria } from "./qa-criteria.js";
 import type { ProjectConfig, QaSurface } from "./types.js";
 
 export const QA_PASSED_LABEL = "qa:passed";
@@ -459,6 +459,8 @@ export function rerunCommentPending(comments: readonly QaComment[]): boolean {
 export interface AgentQaDeviceRecord {
   provenance: typeof AGENT_QA_DEVICE_PROVENANCE;
   headSha: string;
+  /** The acceptance criteria the device run was given (its steps cite them by number). */
+  criteria: string[];
   report: AgentQaReport;
   screenshots: string[];
   /** Screenshot name -> uploaded asset URL. */
@@ -472,10 +474,12 @@ export function agentQaDeviceRecord(
   outcome: Extract<AgentQaOutcome, { kind: "report" }>,
   headSha: string,
   images: ReadonlyMap<string, string>,
+  criteria: readonly string[],
 ): AgentQaDeviceRecord {
   return {
     provenance: AGENT_QA_DEVICE_PROVENANCE,
     headSha,
+    criteria: [...criteria],
     report: outcome.report,
     screenshots: outcome.screenshots.map((s) => s.name),
     images: Object.fromEntries(images),
@@ -485,9 +489,16 @@ export function agentQaDeviceRecord(
   };
 }
 
+/** The criteria a device checks, with their numbers (what a stored device result vouches for). */
+function deviceHalf(criteria: readonly string[]): string {
+  const sources = classifyCriteria(criteria);
+  return JSON.stringify(criteria.map((c, i) => (sources[i] === "github" ? null : c.trim())));
+}
+
 const recordSchema = z.object({
   provenance: z.literal(AGENT_QA_DEVICE_PROVENANCE),
   headSha: z.string().regex(/^[a-f0-9]{40}$/),
+  criteria: z.array(z.string().max(2_000)).max(60),
   report: agentQaReportSchema,
   screenshots: z.array(z.string().max(100)).max(40),
   images: z.record(z.string().max(100), z.string().max(2_000)),
@@ -505,16 +516,22 @@ const recordSchema = z.object({
   durationMs: z.number().nonnegative(),
 });
 
-/** The device outcome a record holds for `headSha` (screenshots by name only), or undefined. */
+/**
+ * The device outcome a record holds for `headSha` (screenshots by name only), or undefined. With
+ * `criteria`, also undefined when a criterion the device checks differs (text, number or count)
+ * from those the record's run was given: its steps would vouch for a requirement nobody tested.
+ */
 export function deviceOutcomeFromRecord(
   data: unknown,
   headSha: string,
+  criteria?: readonly string[],
 ):
   | { outcome: Extract<AgentQaOutcome, { kind: "report" }>; images: Map<string, string> }
   | undefined {
   const parsed = recordSchema.safeParse(data);
   if (!parsed.success || parsed.data.headSha !== headSha) return undefined;
   const r = parsed.data;
+  if (criteria && deviceHalf(criteria) !== deviceHalf(r.criteria)) return undefined;
   return {
     outcome: {
       kind: "report",
