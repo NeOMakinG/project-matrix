@@ -39,7 +39,7 @@ draft PR, a checklist from the public acceptance criteria. So:
 
 | Verdict | Ticket | GitHub PR | Workflow |
 | --- | --- | --- | --- |
-| PASS | report comment, `qa:passed` (removes `qa:failed`, `needs-human`) | `qa:passed` | stays at Awaiting merge, human merges |
+| PASS | report comment, `qa:passed` (removes `qa:failed`, `needs-human`) | `qa:passed` | auto-merge gate: Matrix rebases if needed and squash-merges (ticket → Done) |
 | FAIL | report comment, `qa:failed` | `qa:failed` | `reject()` → loops back to implement (column Implement), report reaches the implementer as a ticket comment; counted against `maxLoops`; exhausted → blocked + `needs-human` (existing block effect) |
 | BLOCKED | report comment with the reason, `needs-human` | none | stays at Awaiting merge; removing `needs-human` re-runs agent QA on the same head |
 
