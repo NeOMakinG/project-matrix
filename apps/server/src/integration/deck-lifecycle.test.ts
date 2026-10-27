@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { EventBus } from "@matrix/core";
 import type { Store } from "@matrix/core";
+import { EventBus } from "@matrix/core";
 import type { Ticket } from "@matrix/tickets";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { type DeckConfig, DeckLifecycle } from "./deck-lifecycle.js";
 import type { StoredProject } from "./mapping.js";
-import { DeckLifecycle, type DeckConfig } from "./deck-lifecycle.js";
 
 // Minimal Store mock
 function makeStore(github?: string, ticket?: Partial<Ticket>): Store {

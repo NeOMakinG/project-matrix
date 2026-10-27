@@ -1,5 +1,4 @@
-import type { BusEvent, EventBus } from "@matrix/core";
-import type { Store } from "@matrix/core";
+import type { BusEvent, EventBus, Store } from "@matrix/core";
 import type { Ticket } from "@matrix/tickets";
 import type { StoredProject } from "./mapping.js";
 
@@ -253,11 +252,7 @@ export class DeckLifecycle {
     );
   }
 
-  async #onWorkflowBlocked(
-    projectId: string,
-    ticketId: string,
-    reason: string,
-  ): Promise<void> {
+  async #onWorkflowBlocked(projectId: string, ticketId: string, reason: string): Promise<void> {
     const cached = this.#taskCache.get(`${projectId}:${ticketId}`);
     if (!cached) return;
     const deck = this.#o.decks.get(cached.deckName);
