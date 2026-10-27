@@ -50,6 +50,8 @@ export function routeScript(input: {
   const run = [...steps, input.argv.map(q).join(" ")].join(" && ");
   return [
     "set -u",
+    // A missing credential must fail fast, never wait on a prompt nobody answers.
+    "export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never",
     'd="$(mktemp -d)"',
     `( ${run} ) >"$d/out" 2>"$d/err" </dev/null`,
     "rc=$?",
