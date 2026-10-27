@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createCompoundHandler } from "@matrix/compound";
 import type { QuotaConfig } from "@matrix/config";
@@ -580,8 +581,11 @@ async function createOwnedFactory(
         ...(options.runnerHosts ?? []).map((h) => h.orca),
         ...(options.deployHosts ?? []).flatMap((h) => (h.orca ? [h.orca] : [])),
       ];
-      // One state owner per data dir: the node name identifies this server's route worktrees.
-      setRouteOwner(options.host);
+      // The state-owner lease is exclusive per data dir, so host + data dir names exactly one
+      // live server: only its own route worktrees are ever reaped.
+      setRouteOwner(
+        `${options.host}:${createHash("sha256").update(resolve(options.dataDir)).digest("hex").slice(0, 12)}`,
+      );
       if (routes.length && options.runtime !== "fake") {
         const reap = guarded("orca-reaper", async () => {
           const r = await reapRouteWorktrees({
