@@ -6,12 +6,18 @@ import { type DeckConfig, DeckLifecycle } from "./deck-lifecycle.js";
 import type { StoredProject } from "./mapping.js";
 
 // Minimal Store mock
-function makeStore(github?: string, ticket?: Partial<Ticket>): Store {
-  const project = (
-    github
-      ? { id: "proj1", matrix: { repo: { github } } as StoredProject["matrix"] }
-      : { id: "proj1" }
-  ) as Partial<StoredProject>;
+function makeStore(label?: string, ticket?: Partial<Ticket>): Store {
+  const project = (label
+    ? {
+        id: "proj1",
+        matrix: {
+          tickets: { kind: "linear", linear: { teamKey: "NEO", projectLabel: label } },
+          description: "",
+          workspace: "orca",
+          createdAt: "",
+        },
+      }
+    : { id: "proj1" }) as unknown as StoredProject;
   return {
     getProject: vi.fn().mockResolvedValue(project),
     getIndexedTicket: vi.fn().mockResolvedValue(
@@ -39,8 +45,8 @@ function makeDecks(): { decks: Map<string, DeckConfig>; repoToDeck: Map<string, 
     ["delta", { name: "delta", url: "https://deck.example.com/v1", key: "test-key-delta" }],
   ]);
   const repoToDeck = new Map<string, string>([
-    ["NeOMakinG/wayline", "tj"],
-    ["NeOMakinG/ai-company", "delta"],
+    ["project:travel-journal", "tj"],
+    ["project:eagleray", "delta"],
   ]);
   return { decks, repoToDeck };
 }
@@ -49,7 +55,7 @@ describe("DeckLifecycle", () => {
   test("ticket pickup creates deck task when no existing task", async () => {
     const fetchMock = vi.fn();
     const bus = new EventBus();
-    const store = makeStore("NeOMakinG/wayline", {
+    const store = makeStore("project:travel-journal", {
       title: "Add dark mode",
       url: "https://linear.app/issue/1",
     });
@@ -108,7 +114,7 @@ describe("DeckLifecycle", () => {
   test("ticket pickup dedupes: posts note if existing open task found", async () => {
     const fetchMock = vi.fn();
     const bus = new EventBus();
-    const store = makeStore("NeOMakinG/wayline", { title: "Add dark mode" });
+    const store = makeStore("project:travel-journal", { title: "Add dark mode" });
     const { decks, repoToDeck } = makeDecks();
     const logs: string[] = [];
 
@@ -157,7 +163,7 @@ describe("DeckLifecycle", () => {
   test("PR opened posts activity note", async () => {
     const fetchMock = vi.fn();
     const bus = new EventBus();
-    const store = makeStore("NeOMakinG/wayline", { title: "PR test" });
+    const store = makeStore("project:travel-journal", { title: "PR test" });
     const { decks, repoToDeck } = makeDecks();
 
     // Spike pickup: search + create
@@ -213,7 +219,7 @@ describe("DeckLifecycle", () => {
   test("workflow done patches task status to done", async () => {
     const fetchMock = vi.fn();
     const bus = new EventBus();
-    const store = makeStore("NeOMakinG/wayline", { title: "Done test" });
+    const store = makeStore("project:travel-journal", { title: "Done test" });
     const { decks, repoToDeck } = makeDecks();
 
     // Spike: search + create
@@ -274,7 +280,7 @@ describe("DeckLifecycle", () => {
   test("429 retry with backoff", async () => {
     const fetchMock = vi.fn();
     const bus = new EventBus();
-    const store = makeStore("NeOMakinG/wayline", { title: "Retry test" });
+    const store = makeStore("project:travel-journal", { title: "Retry test" });
     const { decks, repoToDeck } = makeDecks();
 
     // Search → 429 twice, then 200 empty

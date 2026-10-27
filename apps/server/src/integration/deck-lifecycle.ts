@@ -101,17 +101,17 @@ export class DeckLifecycle {
     throw lastErr;
   }
 
-  async #getProjectGithub(projectId: string): Promise<string | undefined> {
+  async #getProjectLabel(projectId: string): Promise<string | undefined> {
     try {
       const project = (await this.#o.store.getProject(projectId)) as StoredProject | null;
-      return project?.matrix?.repo?.github ?? undefined;
+      return project?.matrix?.tickets?.linear?.projectLabel ?? undefined;
     } catch {
       return undefined;
     }
   }
 
-  #getDeckConfig(github: string): DeckConfig | undefined {
-    const deckName = this.#o.repoToDeck.get(github);
+  #getDeckConfig(label: string): DeckConfig | undefined {
+    const deckName = this.#o.repoToDeck.get(label);
     if (!deckName) return undefined;
     return this.#o.decks.get(deckName);
   }
@@ -144,9 +144,9 @@ export class DeckLifecycle {
   }
 
   async #onTicketPickup(projectId: string, ticketId: string): Promise<void> {
-    const github = await this.#getProjectGithub(projectId);
-    if (!github) return;
-    const deck = this.#getDeckConfig(github);
+    const label = await this.#getProjectLabel(projectId);
+    if (!label) return;
+    const deck = this.#getDeckConfig(label);
     if (!deck) return;
 
     let ticket: Ticket | null = null;
@@ -194,7 +194,7 @@ export class DeckLifecycle {
     const description = [
       linearUrl ? `Linear: ${linearUrl}` : null,
       `linearId:${linearId}`,
-      `repo:${github}`,
+      `label:${label}`,
       `Picked up by Matrix factory.`,
     ]
       .filter(Boolean)
