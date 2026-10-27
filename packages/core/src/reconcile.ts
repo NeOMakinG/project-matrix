@@ -646,7 +646,8 @@ export class Reconciler {
     if (ticket.labels.includes(QA_RERUN_LABEL)) {
       // Any device rerun consumes the label too, so it never triggers a second run.
       if (!rerun) rerun = { device: true, reason: `the ${QA_RERUN_LABEL} label`, label: true };
-      else if (rerun.device) rerun.label = true;
+      // The label always asks for a device run, even beside a description change.
+      else rerun = { ...rerun, device: true, label: true };
     }
     if (rerun?.label) {
       // Removed when the run starts; a failed removal waits for a later tick (no double run).
@@ -797,7 +798,9 @@ export class Reconciler {
     if (rerunCommentPending(comments)) return { device: true, reason: "a /qa rerun comment" };
     const now = this.clock().getTime();
     const last = this.agentQaTriggerAt.get(key);
-    if (prior === "PASS" && last !== undefined && now - last < 2 * 60_000) return undefined;
+    // A FAIL whose effects are not applied yet is checked at once (else it loops straight back).
+    const settled = prior === "PASS" || this.agentQaVerdicts.has(key);
+    if (settled && last !== undefined && now - last < 2 * 60_000) return undefined;
     if (this.agentQaTriggerAt.size > 5_000) this.agentQaTriggerAt.clear();
     this.agentQaTriggerAt.set(key, now);
     const ticket = await this.o

@@ -401,7 +401,9 @@ function runTag(qaRun: string): string {
 /** Fingerprint of a verdict's non-code inputs: the PR description and the acceptance criteria. */
 export function agentQaInputs(pullRequestBody: string, criteria: readonly string[]): string {
   return createHash("sha256")
-    .update(JSON.stringify([pullRequestBody.replace(/\r/g, "").trim(), criteria]))
+    .update(
+      JSON.stringify([pullRequestBody.replace(/\r/g, "").trim(), criteria.map((c) => c.trim())]),
+    )
     .digest("hex")
     .slice(0, 12);
 }
