@@ -23,6 +23,7 @@ import { OrcaWorkspace } from "@matrix/workspace";
 import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
 import { createSurfaceLanes } from "./agent-qa-surfaces.js";
+import { setRouteOwner } from "./deploy-orca.js";
 import type { DeployHost } from "./deploy-plan.js";
 import { deployPort, verifyPort } from "./deploy-stage.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
@@ -579,6 +580,8 @@ async function createOwnedFactory(
         ...(options.runnerHosts ?? []).map((h) => h.orca),
         ...(options.deployHosts ?? []).flatMap((h) => (h.orca ? [h.orca] : [])),
       ];
+      // One state owner per data dir: the node name identifies this server's route worktrees.
+      setRouteOwner(options.host);
       if (routes.length && options.runtime !== "fake") {
         const reap = guarded("orca-reaper", async () => {
           const r = await reapRouteWorktrees({

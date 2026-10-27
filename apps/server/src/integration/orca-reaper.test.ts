@@ -23,6 +23,7 @@ describe("orca route reaper", () => {
       path,
       displayName: path.split("/").at(-1),
       createdAt: NOW - ageMin * MIN,
+      comment: "matrix-route:bosgame",
       ...extra,
     });
     const f = fake([
@@ -31,13 +32,16 @@ describe("orca route reaper", () => {
       w("/ws/aicompany/mx-deploy-7459602e-a1b2c3", 90),
       w("/ws/wayline/feature-login", 900),
       w("/ws/wayline/mx-notes", 900),
+      w("/ws/wayline/mx-run-cccccccc-abcdef", 900, { comment: "matrix-route:other" }),
+      w("/ws/wayline/mx-run-dddddddd-abcdef", 900, { comment: "" }),
       w("/ws/wayline", 900, { isMainWorktree: true }),
     ]);
     const r = await reapRouteWorktrees({
       routes: [{ environment: "macbook-pro", repos: { "o/r": "/x/aicompany" } }],
       cli: () => f.cli,
       now: () => NOW,
-      live: new Set(["/ws/aicompany/mx-deploy-7459602e-a1b2c3"]),
+      live: new Set(["macbook-pro\u0000/ws/aicompany/mx-deploy-7459602e-a1b2c3"]),
+      owner: "matrix-route:bosgame",
     });
     expect(r.removed).toEqual(["macbook-pro:/ws/wayline/mx-run-91c13da1-cfa872"]);
     expect(r.kept).toBe(2);
@@ -55,7 +59,9 @@ describe("orca route reaper", () => {
         throw new Error("unreachable");
       },
     };
-    const good = fake([{ path: "/w/r/mx-run-aaaaaaaa-abcdef", createdAt: NOW - 60 * MIN }]);
+    const good = fake([
+      { path: "/w/r/mx-run-aaaaaaaa-abcdef", createdAt: NOW - 60 * MIN, comment: "matrix-route:x" },
+    ]);
     const r = await reapRouteWorktrees({
       routes: [
         { environment: "a", repos: { "o/r": "/r" } },
@@ -64,6 +70,7 @@ describe("orca route reaper", () => {
       cli: (env) => (env === "a" ? bad : good.cli),
       now: () => NOW,
       live: new Set(),
+      owner: "matrix-route:x",
     });
     expect(r.errors[0]).toContain("a: worktree list failed");
     expect(r.removed).toEqual(["b:/w/r/mx-run-aaaaaaaa-abcdef"]);

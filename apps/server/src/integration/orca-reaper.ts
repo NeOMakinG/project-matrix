@@ -1,6 +1,6 @@
 import { OrcaCli, record, str } from "@matrix/workspace";
 import type { OrcaCaller, OrcaRoute } from "./deploy-orca.js";
-import { liveRouteWorktrees } from "./deploy-orca.js";
+import { liveKey, liveRouteWorktrees, routeComment } from "./deploy-orca.js";
 
 /** Throwaway route worktrees are named `mx-<label>-...` (deploy, run, probe, ...). */
 export const ROUTE_NAME = /^mx-[a-z]{1,12}-[0-9a-z]{1,8}-[0-9a-f]{6}$/;
@@ -23,6 +23,8 @@ export async function reapRouteWorktrees(o: {
   now?: () => number;
   maxAgeMs?: number;
   live?: ReadonlySet<string>;
+  /** Expected Orca comment (default: this server's routeComment()). */
+  owner?: string;
 }): Promise<ReapResult> {
   const now = (o.now ?? Date.now)();
   const maxAge = o.maxAgeMs ?? 30 * 60_000;
@@ -48,8 +50,10 @@ export async function reapRouteWorktrees(o: {
       const path = str(w.path);
       const name = str(w.displayName) ?? path?.split("/").at(-1);
       if (!path || !name || !ROUTE_NAME.test(name) || w.isMainWorktree === true) continue;
+      // Only worktrees this Matrix server created (another server's runs are not ours to judge).
+      if (str(w.comment) !== (o.owner ?? routeComment())) continue;
       const created = Number(w.createdAt ?? w.lastActivityAt ?? 0);
-      if (live.has(path) || !created || now - created < maxAge) {
+      if (live.has(liveKey(environment, path)) || !created || now - created < maxAge) {
         result.kept += 1;
         continue;
       }
