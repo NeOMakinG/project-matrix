@@ -7,13 +7,24 @@
 
 /** "both": a code/CI criterion that also names device behaviour; each side checks its part. */
 export type CriterionSource = "device" | "github" | "both";
-export type CodeCriterionKind = "root-cause" | "test" | "ci";
+export type CodeCriterionKind = "root-cause" | "test" | "ci" | "diff";
 
 const ROOT_CAUSE = /\broot[- ]cause\b|\b(pr|pull request)('s)? (description|body|text)\b/i;
 const TEST =
   /\b(regression|unit|integration|automated|failing|jest|vitest)[- ]tests?\b|\btests? (that|which) (fails?|reproduces?|covers?)\b|\bfails? before\b.*\bpass(es)? after\b|\btests? (is|are|was|were) (added|written|updated)\b|\badds? (a )?tests?\b/i;
 const CI =
   /\btype-?check(s|ing)?\b|\btsc\b|\blint(s|ing|er)?\b|\b(existing|all|unit) tests (still )?pass\b|\btests? (still )?pass(es)?\b|\btest suite\b|\bci\b|\bchecks? (are )?(green|pass(es)?)\b|\bbuild (still )?(passes|succeeds)\b/i;
+
+/** A repository file named in a criterion (`README.md`, `apps/api/src/x.ts`). */
+const FILE_PATH =
+  /(?<![\w/.-])(?:[\w.-]+\/)*[\w-]+\.(?:md|mdx|txt|json|ya?ml|toml|[cm]?[jt]sx?|py|go|rs|sql|css|html|sh)(?![\w.-])/gi;
+/** "README.md ... contains `x`", "no file other than README.md changes", "only X changes". */
+const DIFF =
+  /\b(contains?|no (other )?files?( other than| besides| except)?|only\b.*\b(changes?|changed|modified|touched))\b/i;
+
+function namedFiles(text: string): string[] {
+  return [...new Set((text.match(FILE_PATH) ?? []).filter((f) => !/^https?:/i.test(f)))];
+}
 
 /** Every code/CI fact a criterion asks about (empty for a device criterion). */
 export function codeCriterionKinds(text: string): CodeCriterionKind[] {
@@ -25,6 +36,7 @@ export function codeCriterionKinds(text: string): CodeCriterionKind[] {
       ? (["test"] as const)
       : []),
     ...(CI.test(text) ? (["ci"] as const) : []),
+    ...(namedFiles(text).length && DIFF.test(text) ? (["diff"] as const) : []),
   ];
 }
 
@@ -288,7 +300,9 @@ export function verifyCodeCriteria(
         ? rootCause(facts)
         : kind === "test"
           ? regressionTest(facts, matrixChecks)
-          : ci(facts, matrixChecks),
+          : kind === "diff"
+            ? diffFacts(criteria[criterion - 1] ?? "", facts)
+            : ci(facts, matrixChecks),
     );
     const status: CodeCriterionStatus = parts.some(([s]) => s === "fail")
       ? "fail"
@@ -297,4 +311,30 @@ export function verifyCodeCriteria(
         : "pass";
     return { criterion, status, detail: parts.map(([, d]) => d).join("; ") };
   });
+}
+
+/**
+ * Repository-file criteria from the PR diff: "no file other than X changes" holds when every
+ * changed path is named; "X contains `s`" holds when `s` is on an added or context line of X's
+ * patch (absent from the patch = unverified, never a guess either way).
+ */
+function diffFacts(text: string, facts: PullRequestFacts): [CodeCriterionStatus, string] {
+  const named = namedFiles(text);
+  const changed = facts.files.map((f) => f.path);
+  if (/\b(no (other )?files?|only)\b/i.test(text) && /\bchang|modif|touch/i.test(text)) {
+    const extra = changed.filter((p) => !named.some((n) => p === n || p.endsWith(`/${n}`)));
+    if (extra.length) return ["fail", `the PR also changes ${extra.slice(0, 5).join(", ")}`];
+    if (!/\bcontains?\b/i.test(text)) return ["pass", `the PR changes only ${changed.join(", ")}`];
+  }
+  const needles = [...text.matchAll(/`([^`]{3,200})`/g)]
+    .map((m) => m[1] as string)
+    .filter((n) => !named.includes(n) && !/^#+\s/.test(n));
+  if (!needles.length) return ["pass", `the PR changes ${changed.join(", ") || "nothing"}`];
+  const file = facts.files.find((f) => named.some((n) => f.path === n || f.path.endsWith(`/${n}`)));
+  if (!file?.patch) return ["unverified", `no diff of ${named.join(", ")} to read`];
+  const lines = file.patch.split("\n").filter((l) => !l.startsWith("-"));
+  const missing = needles.filter((n) => !lines.some((l) => l.includes(n)));
+  return missing.length
+    ? ["unverified", `${file.path} diff does not show ${missing.join(", ")}`]
+    : ["pass", `${file.path} diff contains ${needles.join(", ")}`];
 }
