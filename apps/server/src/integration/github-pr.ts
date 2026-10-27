@@ -1,11 +1,13 @@
 import { tmpdir } from "node:os";
 import { sep } from "node:path";
-import type {
-  MergePort,
-  PullRequestFacts,
-  PullRequestPort,
-  PullRequestRequest,
-  Receipt,
+import {
+  type BaseState,
+  type MergePort,
+  mergeBlockingChecks,
+  type PullRequestFacts,
+  type PullRequestPort,
+  type PullRequestRequest,
+  type Receipt,
 } from "@matrix/core";
 import { redact } from "@matrix/monitor";
 import {
@@ -70,8 +72,9 @@ export function externalRepo(project: PullRequestRequest["project"]) {
 /**
  * Pushes a validated run head to `matrix-<ticket>-<slug>` on the project's GitHub remote and opens
  * a DRAFT pull request with `gh` (host-side, argv only, never in a sandbox). Idempotent: an
- * existing open (or merged) PR for the branch is reused. Never merges, never force-pushes, never
- * pushes the base branch.
+ * existing open (or merged) PR for the branch is reused. Force-pushes only with a lease on the head
+ * Matrix itself published (a rebased head); never pushes the base branch. Merges only through
+ * `autoMerge` (deploy.merge: "auto").
  */
 export class GitHubPullRequests implements PullRequestPort {
   readonly #o: GitHubPullRequestsOptions;
@@ -273,7 +276,7 @@ export class GitHubPullRequests implements PullRequestPort {
     const failed = this.#failedAt.get(key);
     if (failed !== undefined && now - failed < (this.#o.retryMs ?? 5 * 60_000)) return undefined;
     try {
-      const result = await this.#open(request, repo, known?.branch);
+      const result = await this.#open(request, repo, known?.branch, known?.headSha);
       this.#failedAt.delete(key);
       const record: PullRequestRecord = {
         projectId: request.project.id,
@@ -296,6 +299,7 @@ export class GitHubPullRequests implements PullRequestPort {
     request: PullRequestRequest,
     repo: NonNullable<ReturnType<typeof externalRepo>>,
     knownBranch: string | undefined,
+    knownHead?: string,
   ): Promise<{ url: string; branch: string }> {
     const { project, ticket, headSha } = request;
     if (!SHA.test(headSha)) throw new Error("refusing to push: head is not a full commit SHA");
@@ -321,7 +325,16 @@ export class GitHubPullRequests implements PullRequestPort {
       // A merged or closed PR on this branch belongs to earlier work: use a fresh branch.
       if (!open && pulls.length > 0) continue;
       // Plain refspec, no `+`: a diverged remote branch is never overwritten.
-      const pushed = await this.#push(gitDir, target, `${headSha}:refs/heads/${branch}`);
+      let pushed = await this.#push(gitDir, target, `${headSha}:refs/heads/${branch}`);
+      // A head Matrix rebased (or re-applied after a conflict) replaces the head Matrix itself
+      // published, and only that: the lease fails if anyone else pushed to the branch since.
+      if (!pushed && open && knownBranch === branch && knownHead && SHA.test(knownHead))
+        pushed = await this.#push(
+          gitDir,
+          target,
+          `${headSha}:refs/heads/${branch}`,
+          `--force-with-lease=refs/heads/${branch}:${knownHead}`,
+        );
       if (!pushed) {
         if (open) throw new Error(`branch ${branch} diverged from its open PR; not force-pushing`);
         continue;
@@ -396,12 +409,20 @@ export class GitHubPullRequests implements PullRequestPort {
   }
 
   /** True when pushed; false when the remote rejected it as non-fast-forward. */
-  async #push(gitDir: string, target: string, refspec: string): Promise<boolean> {
+  async #push(gitDir: string, target: string, refspec: string, lease?: string): Promise<boolean> {
     try {
-      await this.#git(gitDir, ["push", "--porcelain", "--no-follow-tags", "--", target, refspec]);
+      await this.#git(gitDir, [
+        "push",
+        "--porcelain",
+        "--no-follow-tags",
+        ...(lease ? [lease] : []),
+        "--",
+        target,
+        refspec,
+      ]);
       return true;
     } catch (error) {
-      if (/non-fast-forward|fetch first|\[rejected\]/.test(String(error))) return false;
+      if (/non-fast-forward|fetch first|stale info|\[rejected\]/.test(String(error))) return false;
       throw error;
     }
   }
@@ -506,14 +527,17 @@ export class GitHubPullRequests implements PullRequestPort {
         reason: `GitHub reports head ${facts.headSha.slice(0, 12)}, not the validated ${headSha.slice(0, 12)}`,
         url: known.url,
       };
-    const failing = facts.checks.filter((c) => c.state === "failure").map((c) => c.name);
+    // Relevant CI only (same rule as the QA "CI" criterion): deploy previews and failures the
+    // base branch shares are pre-existing and never block.
+    const blocking = mergeBlockingChecks(facts);
+    const failing = blocking.failing;
     if (failing.length)
       return {
         kind: "refused",
         reason: `checks failing on ${headSha.slice(0, 12)}: ${failing.join(", ").slice(0, 200)}`,
         url: known.url,
       };
-    const pending = facts.checks.filter((c) => c.state === "pending").map((c) => c.name);
+    const pending = blocking.pending;
     if (!facts.checks.length || pending.length)
       return {
         kind: "pending",
@@ -548,6 +572,87 @@ export class GitHubPullRequests implements PullRequestPort {
     return { kind: "merged", url: known.url, mergeCommit: after.mergeCommit };
   }
 
+  /**
+   * Whether the published PR of `headSha` merges into its base as is. Conflicting (`dirty`) or
+   * `behind` a base the repo requires up to date: the base tip is fetched host-side (remote-tracking
+   * ref, and the local base branch fast-forwarded when that is safe) and returned for a rebase.
+   */
+  async baseState(
+    project: PullRequestRequest["project"],
+    ticketId: string,
+    headSha: string,
+  ): Promise<BaseState> {
+    const repo = externalRepo(project);
+    const known = this.record(project.id, ticketId);
+    if (!repo?.github || !known) return { kind: "wait", reason: "no PR published yet" };
+    if (known.headSha !== headSha)
+      return { kind: "wait", reason: `the PR head is not ${headSha.slice(0, 12)} yet` };
+    const { repo: slug, number } = prNumber(known.url);
+    const pr = await this.#pull(slug, number);
+    if (pr.merged || pr.state !== "open") return { kind: "current" };
+    if (pr.headSha !== headSha)
+      return { kind: "wait", reason: `GitHub reports head ${pr.headSha.slice(0, 12)}` };
+    const conflict = pr.mergeable === false || pr.mergeableState === "dirty";
+    const behind = pr.mergeableState === "behind";
+    if (pr.mergeable === null && !behind)
+      return { kind: "wait", reason: "GitHub is still computing mergeability" };
+    if (!conflict && !behind) return { kind: "current" };
+    const base = pr.baseRef || project.baseBranch;
+    if (base !== project.baseBranch || !validBranch(base))
+      throw new Error(`PR base ${JSON.stringify(base)} is not the project's base branch`);
+    const gitDir = `${project.repoPath}${sep}.git`;
+    await this.#assertNoUrlRewrites(gitDir);
+    const target = `https://github.com/${repo.github}.git`;
+    await this.#git(gitDir, [
+      "fetch",
+      "--no-tags",
+      "--no-recurse-submodules",
+      "--",
+      target,
+      `+refs/heads/${base}:refs/remotes/origin/${base}`,
+    ]);
+    const baseSha = await this.#git(gitDir, [
+      "rev-parse",
+      "--verify",
+      `refs/remotes/origin/${base}^{commit}`,
+    ]);
+    if (!SHA.test(baseSha)) throw new Error("fetched base is not a commit");
+    await this.#fastForwardBase(project.repoPath, gitDir, base, baseSha);
+    return {
+      kind: "outdated",
+      reason: conflict ? `GitHub reports conflicts with ${base}` : `behind ${base}`,
+      base,
+      baseSha,
+    };
+  }
+
+  /**
+   * Review context and check baselines diff against the local base branch: keep it on the fetched
+   * tip. Fast-forward only; a checked-out base is advanced only with a clean tracked tree.
+   */
+  async #fastForwardBase(repoPath: string, gitDir: string, base: string, tip: string) {
+    const local = await this.#git(
+      gitDir,
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${base}`],
+      true,
+    );
+    if (!SHA.test(local) || local === tip) return;
+    // Fast-forward only: the local tip must be the merge-base of itself and the fetched tip.
+    if ((await this.#git(gitDir, ["merge-base", local, tip], true)) !== local) return;
+    const checkedOut = await this.#git(gitDir, ["symbolic-ref", "--quiet", "HEAD"], true);
+    if (checkedOut !== `refs/heads/${base}`) {
+      await this.#git(gitDir, ["update-ref", `refs/heads/${base}`, tip, local], true);
+      return;
+    }
+    const tracked = await this.#git(
+      gitDir,
+      ["--work-tree", repoPath, "status", "--porcelain", "--untracked-files=no"],
+      true,
+    );
+    if (tracked.trim()) return;
+    await this.#git(gitDir, ["--work-tree", repoPath, "merge", "--ff-only", "--quiet", tip], true);
+  }
+
   /** The merged PR of a ticket: merge commit on the base branch and the files it changed. */
   async mergedInfo(
     project: PullRequestRequest["project"],
@@ -576,6 +681,10 @@ export class GitHubPullRequests implements PullRequestPort {
     merged: boolean;
     mergeCommit: string;
     headSha: string;
+    baseRef: string;
+    /** GitHub's answer; null while it is still computing. */
+    mergeable: boolean | null;
+    mergeableState: string;
   }> {
     const pr = JSON.parse(await this.#gh(["api", `repos/${repo}/pulls/${number}`])) as {
       state?: string;
@@ -583,8 +692,14 @@ export class GitHubPullRequests implements PullRequestPort {
       merged?: boolean;
       merge_commit_sha?: string | null;
       head?: { sha?: string };
+      base?: { ref?: string };
+      mergeable?: boolean | null;
+      mergeable_state?: string;
     };
     return {
+      baseRef: String(pr.base?.ref ?? ""),
+      mergeable: typeof pr.mergeable === "boolean" ? pr.mergeable : null,
+      mergeableState: String(pr.mergeable_state ?? ""),
       state: String(pr.state ?? ""),
       draft: pr.draft === true,
       merged: pr.merged === true,
@@ -646,9 +761,9 @@ export class GitHubPullRequests implements PullRequestPort {
 }
 
 /**
- * Merge for existing-repo projects: Matrix never merges. The phase (re)opens the draft PR if
- * needed and succeeds only once a human merged it on GitHub; until then it asks for approval
- * again. Greenfield projects keep the local merge port.
+ * Merge for existing-repo projects. With `deploy.merge: "auto"` Matrix squash-merges the PR itself
+ * once the gate holds; otherwise the phase (re)opens the draft PR and succeeds once the PR was
+ * merged on GitHub. Greenfield projects keep the local merge port.
  */
 export function externalAwareMerge(prs: GitHubPullRequests, local?: MergePort): MergePort {
   return {
@@ -687,7 +802,7 @@ export function externalAwareMerge(prs: GitHubPullRequests, local?: MergePort): 
         if (!state.merged)
           return {
             ok: true,
-            summary: `pull request squash-merged by Matrix: ${auto.url} (${auto.mergeCommit.slice(0, 12)})`,
+            summary: `pull request squash-merged by Matrix: ${auto.url} (merge commit ${auto.mergeCommit})`,
             url: auto.url,
             mergedSha: auto.mergeCommit,
           };
@@ -708,7 +823,7 @@ export function externalAwareMerge(prs: GitHubPullRequests, local?: MergePort): 
       return {
         ok: false,
         pending: true,
-        summary: `draft PR ${state.url ?? "(not opened yet)"} is not merged: merge it on GitHub, then approve the merge again`,
+        summary: `draft PR ${state.url ?? "(not opened yet)"} is not merged yet (the project's merge policy is not auto)`,
         ...(state.url ? { url: state.url } : {}),
       };
     },

@@ -71,7 +71,7 @@ export function renderStatus(
     lines.push(
       manualQa
         ? `- Draft PR: [${pullRequest.label}](${pullRequest.url}) (${code(singleLine(redact(manualQa), 120))}; checklist in the PR)`
-        : `- Draft PR: [${pullRequest.label}](${pullRequest.url}) (awaiting a human merge)`,
+        : `- Draft PR: [${pullRequest.label}](${pullRequest.url}) (Matrix merges it once QA passes on this head)`,
     );
   if (links.length) lines.push(`- Links: ${links.map((l) => `[${l.label}](${l.url})`).join(", ")}`);
   return lines.join("\n");

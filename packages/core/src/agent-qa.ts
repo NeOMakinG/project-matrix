@@ -796,7 +796,7 @@ export function renderAgentQaReport(
   }
   lines.push(
     verdict === "PASS"
-      ? "Merge stays with a human: review the draft PR, merge it on GitHub and approve the merge in Matrix."
+      ? "Matrix merges this PR on its own once the gate holds on this head (0 open P1, green CI): it rebases first when the base moved, and re-runs checks and QA if that changes the code."
       : verdict === "FAIL"
         ? "Matrix sends the ticket back to Implement with this report as input."
         : "Nothing passed. Remove the `needs-human` label to re-run agent QA on the same commit.",

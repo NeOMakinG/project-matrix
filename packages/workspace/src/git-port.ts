@@ -15,7 +15,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { GitPort, Receipt } from "@matrix/core";
+import type { BaseSyncResult, GitPort, Receipt } from "@matrix/core";
 import {
   findNestedGitEntries,
   gitLocation,
@@ -630,6 +630,110 @@ export class WorktreeGitPort implements GitPort {
       };
     } finally {
       await rm(temporary, { recursive: true, force: true });
+    }
+  }
+
+  /**
+   * Moves the clean run branch onto `onto` host-side (hooks, filters and network disabled). A clean
+   * rebase keeps the ticket's commits; on a conflict the rebase is aborted, the branch is reset to
+   * `onto` and its squashed change is re-applied with `--3way`, leaving the conflict markers
+   * uncommitted for the implementer (the commit gate commits the resolution). The trusted BASE
+   * moves to `onto`, so only the ticket's own commits stay "agent work" for later inspection.
+   */
+  async syncOnto(workdir: string, onto: string): Promise<BaseSyncResult> {
+    if (!/^[0-9a-f]{40,64}$/.test(onto)) throw new Error("syncOnto needs a full commit SHA");
+    if (!(await this.isClean(workdir)))
+      throw new Error("worktree has uncommitted changes; not rebasing");
+    const entry = await this.#trusted.lookup(workdir);
+    const { gitdir } = entry;
+    const head = await this.headSha(workdir);
+    const branch = (await this.#git(workdir, ["symbolic-ref", "HEAD"])).trim();
+    if (!branch.startsWith("refs/heads/")) throw new Error("run branch is detached; not rebasing");
+    await this.#git(workdir, ["cat-file", "-e", `${onto}^{commit}`]);
+    const ancestor = await this.#run(gitdir, [
+      "--git-dir",
+      gitdir,
+      "merge-base",
+      "--is-ancestor",
+      onto,
+      head,
+    ]);
+    if (ancestor.exitCode === 0) return { kind: "current" };
+    const filters = await this.#filterOverrides(gitdir);
+    const env = {
+      GIT_COMMITTER_NAME: "Matrix",
+      GIT_COMMITTER_EMAIL: "matrix@localhost",
+      GIT_EDITOR: "true",
+      GIT_SEQUENCE_EDITOR: "true",
+    };
+    const at = gitLocation(gitdir, workdir);
+    const rebased = await this.#run(
+      gitdir,
+      [...at, "rebase", "--no-autosquash", "--no-autostash", "--no-update-refs", onto],
+      [...filters, ["rerere.enabled", "false"], ["rebase.instructionFormat", "%s"]],
+      env,
+    );
+    if (rebased.exitCode === 0) {
+      const next = await this.headSha(workdir);
+      await this.#trusted.record(workdir, { ...entry, baseSha: onto });
+      return { kind: "rebased", headSha: next };
+    }
+    await this.#run(gitdir, [...at, "rebase", "--abort"], filters, env);
+    if ((await this.headSha(workdir)) !== head || !(await this.isClean(workdir)))
+      throw new Error("rebase --abort did not restore the run branch");
+    // Squashed change of the branch since it forked from the old base, re-applied on `onto`.
+    const fork = (await this.#git(workdir, ["merge-base", onto, head])).trim();
+    const patch = await this.#run(gitdir, [
+      "--git-dir",
+      gitdir,
+      "diff",
+      "--binary",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-renames",
+      fork,
+      head,
+    ]);
+    if (patch.exitCode !== 0) throw new Error("could not diff the run branch");
+    const dir = await mkdtemp(join(tmpdir(), "matrix-sync-"));
+    try {
+      const file = join(dir, "change.patch");
+      await writeFile(file, `${patch.stdout}\n`, { mode: 0o600 });
+      await this.#git(workdir, [
+        "update-ref",
+        "-m",
+        "matrix: re-apply on base",
+        branch,
+        onto,
+        head,
+      ]);
+      await this.#git(workdir, ["reset", "--hard", "--quiet", onto], true);
+      await this.#trusted.record(workdir, { ...entry, baseSha: onto });
+      const applied = await this.#run(
+        gitdir,
+        // git apply resolves patch paths against the current directory: run it from the worktree.
+        ["-C", workdir, ...at, "apply", "--3way", "--binary", file],
+        filters,
+        env,
+      );
+      const unmerged = (
+        await this.#git(workdir, ["diff", "--name-only", "--diff-filter=U", "-z"], true)
+      )
+        .split("\0")
+        .filter(Boolean);
+      if (applied.exitCode !== 0 && unmerged.length === 0) {
+        // Not a conflict git can mark: put the branch back exactly as it was.
+        await this.#git(workdir, ["reset", "--hard", "--quiet", head], true);
+        await this.#trusted.record(workdir, entry);
+        throw new Error(
+          `could not re-apply the change on ${onto.slice(0, 12)}: ${applied.stderrTail.trim().slice(-300)}`,
+        );
+      }
+      // Unstage so no unmerged index entries remain; files keep their markers, new files stay.
+      await this.#git(workdir, ["reset", "--quiet"], true);
+      return { kind: "conflict", files: unmerged.length ? unmerged : ["(see git status)"] };
+    } finally {
+      await rm(dir, { recursive: true, force: true });
     }
   }
 

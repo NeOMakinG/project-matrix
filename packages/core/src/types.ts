@@ -126,7 +126,7 @@ export interface ProjectConfig {
   implementGuidance?: string;
   /**
    * Last phase of the loop; the workflow is done once it passes. Existing-repo projects end at
-   * `merge` (the human merges the draft PR on GitHub); unset runs every phase.
+   * `merge` (Matrix merges the PR when the merge policy is auto); unset runs every phase.
    */
   lastPhase?: Phase;
   dailyBudgetUsd?: number;

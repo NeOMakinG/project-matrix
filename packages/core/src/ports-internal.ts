@@ -52,6 +52,12 @@ export interface GitPort {
    * tracked files, and returns the exact HEAD SHA the checks will run against.
    */
   cleanForChecks?(workdir: string): Promise<string>;
+  /**
+   * Optional (feature-detected): moves the clean run branch onto `onto` (a commit already in the
+   * repository). A clean rebase keeps the commits; a conflicting one re-applies the branch's
+   * squashed change on `onto` and leaves the conflict markers uncommitted for the implementer.
+   */
+  syncOnto?(workdir: string, onto: string): Promise<BaseSyncResult>;
 }
 
 export interface QaDriver {
@@ -117,7 +123,25 @@ export interface PullRequestPort {
   label?(project: ProjectConfig, url: string, add: string[], remove: string[]): Promise<void>;
   /** Optional: what GitHub says about a published PR now (body, changed files, head checks). */
   facts?(project: ProjectConfig, url: string): Promise<PullRequestFacts>;
+  /**
+   * Optional: whether the published PR of `headSha` can merge into its base as is. `outdated`
+   * (conflicts, or behind a base that must be up to date) fetches the base tip host-side and
+   * returns its SHA so the run branch can be rebased onto it before the auto-merge.
+   */
+  baseState?(project: ProjectConfig, ticketId: string, headSha: string): Promise<BaseState>;
 }
+
+export type BaseState =
+  | { kind: "current" }
+  | { kind: "wait"; reason: string }
+  | { kind: "outdated"; reason: string; base: string; baseSha: string };
+
+/** Outcome of moving a run branch onto a newer base tip (host-side, never pushes). */
+export type BaseSyncResult =
+  | { kind: "current" }
+  | { kind: "rebased"; headSha: string }
+  /** The ticket's change is re-applied on the base with conflict markers left uncommitted. */
+  | { kind: "conflict"; files: string[] };
 
 export interface DeployPort {
   deploy(

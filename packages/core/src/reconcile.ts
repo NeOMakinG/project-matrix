@@ -928,12 +928,76 @@ export class Reconciler {
     if (this.autoMergeTriedAt.size > 5_000) this.autoMergeTriedAt.clear();
     this.autoMergeTriedAt.set(key, now);
     if (await this.gateProblems(fresh, w, "merge")) return;
+    if ((await this.syncWithBase(fresh, w, headSha)) !== "current") return;
     try {
       const saved = await this.o.store.saveWorkflow({ ...w, status: "pending" });
       this.o.bus.publish({ type: "workflow.changed", workflow: saved });
     } catch (error) {
       if (!(error instanceof VersionConflictError)) throw error;
     }
+  }
+
+  /**
+   * Before an auto-merge: a PR that conflicts with its base (or is behind a base that must be up to
+   * date) is moved onto the base tip first. A clean rebase changes the code, so checks, review and
+   * QA run again on the new head; a conflict goes back to Implement with the markers to resolve.
+   * Neither counts as a review loop: nothing was wrong with the change itself.
+   */
+  private async syncWithBase(
+    project: ProjectConfig,
+    w: WorkflowState,
+    headSha: string,
+  ): Promise<"current" | "wait" | "requeued"> {
+    const port = this.o.pullRequests;
+    if (!port?.baseState || !this.o.git.syncOnto || !w.workdir) return "current";
+    let state: Awaited<ReturnType<NonNullable<typeof port.baseState>>>;
+    try {
+      state = await port.baseState(project, w.ticketId, headSha);
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "base-state", error);
+      return "wait";
+    }
+    if (state.kind !== "outdated") return state.kind;
+    let result: Awaited<ReturnType<NonNullable<GitPort["syncOnto"]>>>;
+    try {
+      result = await this.o.git.syncOnto(w.workdir, state.baseSha);
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "rebase", error);
+      return "wait";
+    }
+    // GitHub still reports the old head as outdated while the branch already sits on the base tip.
+    if (result.kind === "current") return "wait";
+    const onto = `${state.base} ${state.baseSha.slice(0, 12)}`;
+    const reason =
+      result.kind === "rebased"
+        ? `rebased onto ${onto} before the merge (${state.reason}); the code changed, so checks, review and QA run again on ${result.headSha.slice(0, 12)}`
+        : `the branch conflicts with ${onto} (${state.reason}) in: ${result.files.slice(0, 20).join(", ")}. Matrix re-applied this ticket's change on the new base and left git conflict markers in those files. Resolve every conflict marker, keeping ${state.base}'s newer behaviour plus this ticket's change, and keep the tests passing`;
+    for (const a of await this.o.store.listApprovals(w.projectId, w.ticketId, "merge"))
+      if (a.status === "pending")
+        await this.o.store
+          .decideApproval(
+            a.id,
+            "rejected",
+            { id: this.ownerId, kind: "agent" },
+            `superseded: ${reason}`,
+          )
+          .catch(() => undefined);
+    const next: WorkflowState = {
+      ...w,
+      phase: result.kind === "rebased" ? "checks" : "implement",
+      attempt: 0,
+      status: "pending",
+      lastError: reason,
+    };
+    delete next.reviewedTree;
+    try {
+      const saved = await this.o.store.saveWorkflow(next);
+      this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+      await this.applyEffects(project, saved, { state: saved, effects: [] });
+    } catch (error) {
+      if (!(error instanceof VersionConflictError)) throw error;
+    }
+    return "requeued";
   }
 
   private async agentQaRerun(
@@ -1371,7 +1435,7 @@ export class Reconciler {
         w.ticketId,
         [
           `Matrix needs a human: ${reason}: ${link}`,
-          "Checks and review passed; no driver for this surface runs on the Matrix host. Test the draft PR on a device with the checklist in its description, then merge it on GitHub and approve the merge in Matrix. To request changes instead, comment here and move the ticket back to Ready: the next run treats your comments as review feedback.",
+          "Checks and review passed; no driver for this surface runs on the Matrix host. Test the draft PR on a device with the checklist in its description, then approve the merge in Matrix. To request changes instead, comment here and move the ticket back to Ready: the next run treats your comments as review feedback.",
         ].join("\n\n"),
       ),
     );
@@ -1939,7 +2003,7 @@ export class Reconciler {
     const problems = await this.gateProblems(fresh, w, phase);
     if (problems) return { ok: false, reason: problems, kind: "gates" };
 
-    // A manual QA handoff always needs a human merge approval, whatever the autonomy setting,
+    // A manual QA handoff always needs a merge approval, whatever the autonomy setting,
     // except the auto-merge gate: the agent QA lane passed exactly this head (ADR 0007).
     const manual =
       phase === "merge" &&
@@ -2726,6 +2790,13 @@ export class Reconciler {
     }
     const saved = await this.o.store.saveWorkflow(next);
     await this.applyEffects(project, saved, { ...t, state: saved });
+    // The merge itself is reported on the ticket (PR link and merge commit), not only the status.
+    if (w.phase === "merge" && outcome.ok && outcome.summary)
+      await this.trackerWrite(project.id, w.ticketId, "comment", () =>
+        this.o
+          .tickets(project.id)
+          .comment(w.ticketId, `Matrix merged this ticket: ${outcome.summary}`),
+      );
   }
 
   /**

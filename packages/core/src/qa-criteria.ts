@@ -202,6 +202,31 @@ const CI_CHECK =
 const DEPLOY_CHECK =
   /netlify|vercel|deploy|preview|header rules|redirect rules|pages changed|cloudflare pages/i;
 
+/**
+ * GitHub checks that block a merge, by the same rule as the agent QA "CI" criterion: a lint,
+ * typecheck, test or build check failing on the head and not on the base branch, or a check
+ * Matrix cannot place (neither CI nor deploy preview) failing or still running. Deploy-preview
+ * checks and failures the base branch shares are pre-existing and do not block.
+ */
+export function mergeBlockingChecks(facts: Pick<PullRequestFacts, "checks" | "baseFailing">): {
+  failing: string[];
+  pending: string[];
+} {
+  const base = new Set(facts.baseFailing);
+  const relevant = (name: string) => CI_CHECK.test(name);
+  const placed = (name: string) => relevant(name) || DEPLOY_CHECK.test(name);
+  return {
+    failing: facts.checks
+      .filter(
+        (c) => c.state === "failure" && !base.has(c.name) && (relevant(c.name) || !placed(c.name)),
+      )
+      .map((c) => c.name),
+    pending: facts.checks
+      .filter((c) => c.state === "pending" && (relevant(c.name) || !placed(c.name)))
+      .map((c) => c.name),
+  };
+}
+
 function ci(
   facts: PullRequestFacts,
   matrixChecks?: { ok: boolean; summary: string },
