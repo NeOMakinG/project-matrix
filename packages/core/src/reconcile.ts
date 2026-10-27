@@ -16,6 +16,7 @@ import {
   agentQaDeviceRecord,
   agentQaInputs,
   deviceOutcomeFromRecord,
+  infraFailure,
   isPreExisting,
   latestAgentQaReport,
   NO_CRITERIA,
@@ -27,6 +28,7 @@ import {
   renderAgentQaReport,
   rerunCommentPending,
   sameIssueTitle,
+  standingAgentQaVerdict,
 } from "./agent-qa.js";
 import type { EventBus } from "./bus.js";
 import {
@@ -142,6 +144,15 @@ export interface ReconcilerOptions {
   pullRequests?: PullRequestPort;
   /** Agent QA lane for projects with `qa.driver: "agent"`: tests the published draft PR. */
   agentQa?: AgentQaPort;
+  /**
+   * Waits between agent QA attempts that failed on infrastructure (DNS, network, registry 5xx,
+   * disk, device offline) before any verdict is given. Default 5 then 10 minutes (3 tries).
+   */
+  agentQaInfraRetryDelaysMs?: readonly number[];
+  /** When a re-run of a settled PASS/FAIL keeps failing on infra, try again this much later. */
+  agentQaInfraRecheckMs?: number;
+  /** Test hook for those waits (default: a real timer). */
+  sleep?: (ms: number) => Promise<void>;
   clock?: () => Date;
   ids?: () => string;
 }
@@ -295,6 +306,8 @@ export class Reconciler {
   private readonly agentQaUnposted = new Map<string, { body: string; verdict: AgentQaVerdict }>();
   /** BLOCKED keys whose needs-human label was seen on the ticket (removal then means retry). */
   private readonly agentQaBlockedSeen = new Set<string>();
+  /** QA keys whose re-run failed on infra while a PASS/FAIL stood: when to try again, how often. */
+  private readonly agentQaInfraRetry = new Map<string, { at: number; count: number }>();
   /** Last rerun-trigger check (label, PR description, criteria) per QA key: at most every 2 min. */
   private readonly agentQaTriggerAt = new Map<string, number>();
   /**
@@ -637,9 +650,26 @@ export class Reconciler {
     }
     const applied = this.agentQaVerdicts.get(key);
     const latest = latestAgentQaReport(comments, headSha, qaRun.id);
+    // An infra BLOCKED (e.g. posted before this guard existed) never replaces the PASS/FAIL posted
+    // before it for the same inputs: that verdict and its labels stand again.
+    const standing = applied ? undefined : standingAgentQaVerdict(comments, headSha, qaRun.id);
+    if (standing) {
+      console.error(
+        `[agent-qa] ${w.ticketId} ${headSha.slice(0, 12)}: newest report is an infra BLOCKED (${standing.infra}); the earlier ${standing.verdict} stands`,
+      );
+      await this.keepAgentQaVerdict(project, w, key, url, standing.verdict);
+      return;
+    }
     let prior = applied ?? latest?.verdict;
     let rerun: AgentQaRerun | undefined;
-    if (prior === "PASS" || prior === "FAIL") {
+    const infraRetry = this.agentQaInfraRetry.get(key);
+    if (
+      (prior === "PASS" || prior === "FAIL") &&
+      infraRetry &&
+      this.clock().getTime() >= infraRetry.at
+    ) {
+      rerun = { device: true, reason: "a retry after an infrastructure failure" };
+    } else if (prior === "PASS" || prior === "FAIL") {
       rerun = await this.agentQaRerun(
         project,
         w,
@@ -676,6 +706,11 @@ export class Reconciler {
         return;
       }
     }
+    // What a re-run may only replace with a real result: an infra failure keeps it (see below).
+    const settled =
+      rerun && (prior === "PASS" || prior === "FAIL")
+        ? { verdict: prior, ...(latest?.inputs ? { inputs: latest.inputs } : {}) }
+        : undefined;
     if (rerun) {
       // A fresh verdict replaces the old one; the old BLOCKED wait no longer applies.
       this.agentQaVerdicts.delete(key);
@@ -763,7 +798,8 @@ export class Reconciler {
           throw new Error("no agent QA lane is configured for this project on the Matrix host");
         [, facts] = await verifyCode();
         const surfaces = laneRunSurfaces(project, ticket, manual.surfaces, facts);
-        outcome = await this.o.agentQa.run({
+        const lane = this.o.agentQa;
+        const request = {
           project,
           ticket: {
             id: ticket.id,
@@ -780,11 +816,46 @@ export class Reconciler {
           criteria,
           deviceCriteria: numbered("device", "both"),
           ...(facts ? { pullRequestBody: facts.body.slice(0, 8_000) } : {}),
-          signal: AbortSignal.timeout(2 * 60 * 60_000),
-        });
+        };
+        // Infra failures (DNS, network, registry 5xx, disk, device offline) are retried with
+        // backoff before any verdict: they say nothing about the change.
+        const delays = this.o.agentQaInfraRetryDelaysMs ?? [5 * 60_000, 10 * 60_000];
+        for (let attempt = 0; ; attempt++) {
+          try {
+            outcome = await lane.run({ ...request, signal: AbortSignal.timeout(2 * 60 * 60_000) });
+          } catch (error) {
+            // A lane that throws (SSH, network) is classified and retried like a blocked outcome.
+            outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
+          }
+          const infra = outcome.kind === "blocked" ? infraFailure(outcome.reason) : undefined;
+          const wait = delays[attempt];
+          if (!infra || wait === undefined || outcome.kind !== "blocked") break;
+          console.error(
+            `[agent-qa] ${w.ticketId} ${headSha.slice(0, 12)}: ${infra} failure (try ${attempt + 1}/${delays.length + 1}), retrying in ${Math.round(wait / 60_000)} min: ${outcome.reason.slice(0, 160)}`,
+          );
+          await (this.o.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms))))(wait);
+        }
       } catch (error) {
         outcome = { kind: "blocked", reason: (error as Error).message.slice(0, 300) };
       }
+      const infra = outcome.kind === "blocked" ? infraFailure(outcome.reason) : undefined;
+      if (infra && settled && outcome.kind === "blocked") {
+        const now = facts ? agentQaInputs(facts.body, criteria) : undefined;
+        // Same head, same inputs: an infra failure never replaces the PASS/FAIL that stands.
+        if (!now || !settled.inputs || now === settled.inputs) {
+          const count = (this.agentQaInfraRetry.get(key)?.count ?? 0) + 1;
+          const later = this.o.agentQaInfraRecheckMs ?? 30 * 60_000;
+          if (count <= 3)
+            this.agentQaInfraRetry.set(key, { at: this.clock().getTime() + later, count });
+          else this.agentQaInfraRetry.delete(key);
+          console.error(
+            `[agent-qa] ${w.ticketId} ${headSha.slice(0, 12)}: re-run failed on ${infra}; keeping ${settled.verdict}${count <= 3 ? `, retry ${count}/3 in ${Math.round(later / 60_000)} min` : ", no more retries"}: ${outcome.reason.slice(0, 160)}`,
+          );
+          await this.keepAgentQaVerdict(project, w, key, url, settled.verdict);
+          return;
+        }
+      }
+      this.agentQaInfraRetry.delete(key);
       if (outcome.kind === "report") [code, facts] = await verifyCode();
       await this.finishAgentQa(project, w, key, headSha, qaRun.id, url, outcome, criteria, code, {
         inputs: facts ? agentQaInputs(facts.body, criteria) : undefined,
@@ -1000,6 +1071,38 @@ export class Reconciler {
       this.agentQaVerdicts.set(key, verdict);
     } catch (error) {
       this.trackerFailed(project.id, now.ticketId, "agent-qa-verdict", error);
+    }
+  }
+
+  /**
+   * Re-asserts a PASS/FAIL that an infra failure must not replace, recorded as applied. A kept
+   * PASS is applied as usual (labels only); a kept FAIL only gets its labels back, since its loop
+   * back to implement happened when it was first applied.
+   */
+  private async keepAgentQaVerdict(
+    project: ProjectConfig,
+    w: WorkflowState,
+    key: string,
+    url: string,
+    verdict: "PASS" | "FAIL",
+  ): Promise<void> {
+    if (verdict === "PASS") {
+      await this.applyAgentQaVerdict(project, w, key, url, verdict);
+      return;
+    }
+    try {
+      await this.writeAgentQaLabels(project, {
+        id: this.ids(),
+        projectId: project.id,
+        ticketId: w.ticketId,
+        url,
+        ticket: { add: [QA_FAILED_LABEL], remove: [QA_PASSED_LABEL] },
+        pr: { add: [QA_FAILED_LABEL], remove: [QA_PASSED_LABEL] },
+        tries: 0,
+      });
+      this.agentQaVerdicts.set(key, verdict);
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "agent-qa-verdict", error);
     }
   }
 

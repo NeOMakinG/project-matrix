@@ -678,3 +678,104 @@ test("a /qa rerun comment from a person re-runs once; Matrix's own text never tr
   await h.drain();
   expect(requests).toHaveLength(2);
 });
+
+const dnsFailure: AgentQaOutcome = {
+  kind: "blocked",
+  reason:
+    "build failed: npm error llama.rn: getaddrinfo EAI_AGAIN release-assets.githubusercontent.com",
+};
+
+test("an infra failure is retried with backoff before any verdict", async () => {
+  const { h, requests } = agentHarness([dnsFailure, dnsFailure, reportOutcome(report())]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.drain();
+  expect(requests).toHaveLength(3);
+  expect(reports(h)).toHaveLength(1);
+  expect(reports(h)[0]).toMatch(/^Matrix agent QA PASS/);
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:passed");
+});
+
+test("infra failing every try on a first run is BLOCKED with the cause", async () => {
+  const { h, requests } = agentHarness([dnsFailure, dnsFailure, dnsFailure]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.drain();
+  expect(requests).toHaveLength(3);
+  expect(reports(h)).toHaveLength(1);
+  expect(reports(h)[0]).toContain("EAI");
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("needs-human");
+});
+
+test("a re-run that only hits infra keeps the PASS and its labels, then retries later", async () => {
+  const { h, requests } = agentHarness([
+    reportOutcome(report()),
+    dnsFailure,
+    dnsFailure,
+    dnsFailure,
+    reportOutcome(report()),
+  ]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.drain();
+  expect(requests).toHaveLength(1);
+  await h.tickets.addLabel(t.id, "qa:rerun");
+  h.advanceClock(5 * 60_000);
+  await tickUntil(h, () => requests.length >= 4, 10);
+  expect(requests).toHaveLength(4);
+  // No BLOCKED replaced the PASS; its labels stand.
+  expect(reports(h)).toHaveLength(1);
+  const labels = h.tickets.tickets.get(t.id)?.labels ?? [];
+  expect(labels).toContain("qa:passed");
+  expect(labels).not.toContain("needs-human");
+  expect(labels).not.toContain("qa:rerun");
+  // Retried later on its own: a real result replaces the PASS as usual.
+  await tickUntil(h, () => reports(h).length > 1, 60);
+  expect(requests).toHaveLength(5);
+  expect(reports(h)[1]).toMatch(/^Matrix agent QA PASS/);
+  h.advanceClock(60 * 60_000);
+  await h.drain();
+  expect(requests).toHaveLength(5);
+});
+
+test("an infra BLOCKED posted over a PASS is undone after a restart, without a re-run", async () => {
+  const { h, requests } = agentHarness([reportOutcome(report())]);
+  await h.setup();
+  const t = await addTicket(h);
+  await h.drain();
+  const [pass] = reports(h);
+  const heading = (pass as string).split("\n")[0] as string;
+  // What the old Matrix posted at 03:21: same head, run and inputs, an infra cause.
+  await h.tickets.comment(
+    t.id,
+    `${heading.replace(" PASS ", " BLOCKED ")}\n\nThe agent QA lane could not test this change: build failed: npm error getaddrinfo EAI\\_AGAIN release-assets.githubusercontent.com\n\nNothing passed.`,
+  );
+  await h.tickets.addLabel(t.id, "needs-human");
+  await h.tickets.removeLabel(t.id, "qa:passed");
+  const next = h.makeReconciler("reconciler:restarted");
+  await h.drain(50, next);
+  expect(requests).toHaveLength(1);
+  const labels = h.tickets.tickets.get(t.id)?.labels ?? [];
+  expect(labels).toContain("qa:passed");
+  expect(labels).not.toContain("needs-human");
+});
+
+test("a lane that throws a network error is retried like an infra outcome", async () => {
+  const requests: number[] = [];
+  let calls = 0;
+  const { h } = agentHarness([]);
+  (h.reconciler as unknown as { o: { agentQa: unknown } }).o.agentQa = {
+    handles: () => true,
+    run: async () => {
+      requests.push(++calls);
+      if (calls === 1)
+        throw new Error("device host unreachable over SSH: Connection reset by peer");
+      return reportOutcome(report());
+    },
+  };
+  await h.setup();
+  await addTicket(h);
+  await h.drain();
+  expect(requests).toHaveLength(2);
+  expect(reports(h)[0]).toMatch(/^Matrix agent QA PASS/);
+});
