@@ -145,20 +145,28 @@ describe("deploy stage", () => {
       executor,
       fetch: okFetch(SHA, 503),
     };
-    const shared = await verifyPort(o).verify(ctx([]));
+    const deck = vi.fn(async () => undefined);
+    const shared = await verifyPort({ ...o, deckNote: deck }).verify(ctx([]));
     expect(
       (Array.isArray(shared) ? shared : shared.receipts).some((r) =>
-        r.summary.includes("a human decides"),
+        r.summary.includes("rolled back app to v9"),
       ),
     ).toBe(true);
-    expect(ran.some((c) => c.includes("registry.fly.io/app:old"))).toBe(false);
-    const solo = structuredClone(profile);
-    delete solo.targets[1]!.coordinate;
-    const c = ctx([]);
-    (c.project as { deploy: DeployProfile }).deploy = solo;
-    const v = await verifyPort(o).verify(c);
+    expect(deck).toHaveBeenCalledWith(expect.stringContaining("rolling back app to v9"));
+    // A newer foreign release on top of ours: never rolled back.
+    const foreign = shell([
+      {
+        Version: 11,
+        Status: "complete",
+        CreatedAt: "2026-01-01T00:00:00Z",
+        ImageRef: "registry.fly.io/app:deployment-x",
+        User: { Email: "contact@0xgom.es" },
+      },
+      { Version: 10, Status: "complete", CreatedAt: "2026-01-01T00:00:00Z", ImageRef: tag },
+    ]);
+    const v = await verifyPort({ ...o, executor: foreign.executor }).verify(ctx([]));
     const receipts = Array.isArray(v) ? v : v.receipts;
-    expect(receipts.some((r) => r.summary.includes("rolled back app to v9"))).toBe(true);
-    expect(ran.some((c) => c.includes("registry.fly.io/app:old"))).toBe(true);
+    expect(receipts.some((r) => r.summary.includes("rolled back"))).toBe(false);
+    expect(foreign.ran.some((c) => c.includes("'deploy'"))).toBe(false);
   });
 });
