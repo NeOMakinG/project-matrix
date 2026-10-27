@@ -386,3 +386,35 @@ test("checks take a parser and baseline mode via PATCH; unknown values are rejec
     expect((await patch(bad)).status, JSON.stringify(bad)).toBe(400);
   await factory.stop();
 });
+
+test("deploy profile: PATCHed through the REST route, validated, removed with null", async () => {
+  const { repo, factory, call } = await boot();
+  const created = await call("POST", "/v1/projects", {
+    name: "Deploys",
+    repo: { path: repo, baseBranch: "main" },
+    tickets: { kind: "linear", linear },
+  });
+  const id = String(created.body.id);
+  const patch = (body: unknown) => call("PATCH", `/v1/projects/${id}`, body);
+  const target = {
+    name: "web",
+    kind: "git-integration",
+    paths: ["**"],
+    version: { url: "https://example.com/version.json", field: "commit" },
+    health: { url: "https://example.com/", expect: 200 },
+  };
+  const ok = await patch({ deploy: { merge: "auto", targets: [target] } });
+  expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  expect(ok.body).toMatchObject({ autonomy: { merge: "autonomous" }, deploy: { merge: "auto" } });
+  const bad = await patch({
+    deploy: {
+      merge: "auto",
+      targets: [{ ...target, health: { url: "https://10.0.0.1/", expect: 200 } }],
+    },
+  });
+  expect(bad.status).toBe(400);
+  const cleared = await patch({ deploy: null });
+  expect(cleared.body.deploy).toBeUndefined();
+  expect(((await factory.store.getProject(id)) as StoredProject).deploy).toBeUndefined();
+  await factory.stop();
+});

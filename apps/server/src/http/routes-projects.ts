@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import type { DeployProfile } from "@matrix/core";
 import { HttpError } from "../auth/guard.js";
 import type { Operations } from "../ops.js";
 import { autonomyEtag } from "../settings-etag.js";
@@ -109,6 +110,7 @@ export function projectRoutes(app: App, ops: Operations) {
             ? { implementGuidance: body.implementGuidance }
             : {}),
           ...(body.qa !== undefined ? { qa: body.qa } : {}),
+          ...(body.deploy !== undefined ? { deploy: body.deploy as DeployProfile | null } : {}),
         }),
       );
     },
