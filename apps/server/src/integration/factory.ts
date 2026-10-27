@@ -32,6 +32,7 @@ import type { StoredProject } from "./mapping.js";
 import { gatewayModels } from "./model-plan.js";
 import { fakeTriageLlm, ServerMonitor } from "./monitor.js";
 import type { NativeRuntimeOptions } from "./native-runtime.js";
+import { reapRouteWorktrees } from "./orca-reaper.js";
 import { publishOwnedFile } from "./owned-files.js";
 import { OwnedHoldoutStore } from "./owned-holdout.js";
 import { ownedExternalTickets } from "./owned-tickets.js";
@@ -572,6 +573,26 @@ async function createOwnedFactory(
         // One-shot sweep for tickets whose PR was merged/closed while the server was down.
         const first = setTimeout(sweep, 60_000);
         first.unref?.();
+      }
+      // Orca route leftovers (restart or crash mid-run): removed after 30 min with no live run.
+      const routes = [
+        ...(options.runnerHosts ?? []).map((h) => h.orca),
+        ...(options.deployHosts ?? []).flatMap((h) => (h.orca ? [h.orca] : [])),
+      ];
+      if (routes.length && options.runtime !== "fake") {
+        const reap = guarded("orca-reaper", async () => {
+          const r = await reapRouteWorktrees({
+            routes,
+            ...(options.native?.orcaBinary ? { binary: options.native.orcaBinary } : {}),
+          });
+          if (r.removed.length || r.errors.length)
+            log(
+              `orca-reaper: removed ${r.removed.join(", ") || "none"}${r.errors.length ? `; errors: ${r.errors.join("; ")}` : ""}`,
+            );
+        });
+        timers.push(setInterval(reap, 10 * 60_000));
+        const firstReap = setTimeout(reap, 60_000);
+        firstReap.unref?.();
       }
       for (const t of timers) t.unref?.();
     },
