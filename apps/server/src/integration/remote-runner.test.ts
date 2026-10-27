@@ -229,6 +229,28 @@ describe("runner hosts", () => {
 });
 
 describe("runner host safety", () => {
+  test("the scratch-push scan runs in the canonical repo, never the ticket worktree", async () => {
+    const g = git();
+    const seen: string[] = [];
+    const r: RemoteRunners = {
+      hosts,
+      project: async () => project,
+      executor: g.executor,
+      orcaCli: () => orca("done\n", 0).cli,
+      pollMs: 0,
+      scan: async (repo) => {
+        seen.push(repo);
+        return { ok: false, summary: "stop" };
+      },
+    };
+    const c = await remoteContext(r, "miniforum", "p", "/wt", "run-9");
+    await expect(
+      runRemote(c!, { argv: ["x"], env: {}, timeoutMs: 1, collect: true }),
+    ).rejects.toThrow("secret gate");
+    expect(seen).toEqual([project.repoPath]);
+    expect(seen).not.toContain("/wt");
+  });
+
   test("a failing secret scan stops the scratch push; a missing patch fails the run", async () => {
     const g = git();
     const o = orca("done\n", 0);

@@ -288,7 +288,11 @@ export async function remoteContext(
     ...(r.orcaCli ? { orcaCli: r.orcaCli(host.orca.environment) } : {}),
     ...(r.orcaBinary ? { orcaBinary: r.orcaBinary } : {}),
     ...(r.pollMs !== undefined ? { pollMs: r.pollMs } : {}),
-    ...(r.scan ? { scan: (w: string, sha: string) => r.scan!(w, sha, project) } : {}),
+    // The history scan needs the canonical repo: a ticket worktree's .git is a file, and the
+    // worktree shares the canonical object store, so the same base..sha range resolves there.
+    ...(r.scan
+      ? { scan: (_w: string, sha: string) => r.scan!(project.repoPath, sha, project) }
+      : {}),
   };
 }
 
