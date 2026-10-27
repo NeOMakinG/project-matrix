@@ -2077,6 +2077,8 @@ export class Reconciler {
       controller,
       promise,
     });
+    // stop() ran while this dispatch was being set up: abort it like the runs it already swept.
+    if (this.stopping) controller.abort(new ShutdownError("reconciler stopped"));
     return "dispatched";
   }
 
