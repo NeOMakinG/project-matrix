@@ -110,8 +110,9 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   acquire) acquire "$@" ;;
   beat)
-    udid_ok "${1:-}"; owned "$1" "${2:-}" || die 12 "not the holder of $1"
-    write_beat "$LOCKS/$1.lock"
+    udid_ok "${1:-}"; guard || die 12 "simulator lock guard busy"
+    owned "$1" "${2:-}" || { unguard; die 12 "not the holder of $1"; }
+    write_beat "$LOCKS/$1.lock"; unguard
     ;;
   release)
     udid_ok "${1:-}"; release "$1" "${2:-}"
@@ -130,22 +131,28 @@ case "$cmd" in
     [[ "${1:-}" == "--" ]] && shift
     (( $# > 0 )) || die 2 "no command"
     token=$(acquire "$udid" "$holder" "$wait_s")
-    beater="" child=""
+    beater="" pgid=""
     finish() {
-      # The command runs in its own process group: stop all of it before giving the lock back.
+      # The command runs in its own process group: stop all of it (leftover children included)
+      # before giving the lock back.
       set +e
-      [[ -n "$child" ]] && kill -TERM -- "-$child" 2>/dev/null
       [[ -n "$beater" ]] && kill "$beater" 2>/dev/null
-      [[ -n "$child" ]] && wait "$child" 2>/dev/null
+      [[ -n "$pgid" ]] && kill -TERM -- "-$pgid" 2>/dev/null && sleep 1 && kill -KILL -- "-$pgid" 2>/dev/null
+      [[ -n "$pgid" ]] && wait "$pgid" 2>/dev/null
       release "$udid" "$token"
       true
     }
     trap 'finish; exit 143' INT TERM HUP
-    ( while sleep 240; do owned "$udid" "$token" || exit 0; write_beat "$LOCKS/$udid.lock"; done ) </dev/null >/dev/null 2>&1 &
+    set -m; "$@" & pgid=$!; set +m
+    # Heartbeat; a lost lock stops the command (its group) at once and fails the run.
+    ( while sleep 60; do
+        guard || continue
+        if owned "$udid" "$token"; then write_beat "$LOCKS/$udid.lock"; unguard
+        else unguard; echo "sim-lock: lost the lock on $udid, stopping the command" >&2; kill -TERM -- "-$pgid" 2>/dev/null; exit 0; fi
+      done ) </dev/null >/dev/null 2>&1 &
     beater=$!
-    set -m; "$@" & child=$!; set +m
-    rc=0; wait "$child" || rc=$?
-    child=""
+    rc=0; wait "$pgid" || rc=$?
+    owned "$udid" "$token" || rc=12
     finish
     exit "$rc"
     ;;

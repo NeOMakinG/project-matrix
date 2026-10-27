@@ -38,7 +38,13 @@ held_lock() {
   done
   return 0
 }
-beat() { local l; l=$(held_lock "$1"); [[ -n "$l" ]] && write_beat "$l"; true; }
+# Ownership check and heartbeat under the guard (a busy guard skips this beat; the next one counts).
+beat() {
+  local l
+  guard || return 0
+  l=$(held_lock "$1"); [[ -n "$l" ]] && write_beat "$l"
+  unguard
+}
 # Steps that touch the shared build dir or the simulator refuse to run without the lock.
 owns() { [[ -n "$(held_lock "$1")" ]] || die 12 "simulator busy: this job no longer holds its lock"; beat "$1"; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s; }
@@ -208,7 +214,7 @@ case "$step" in
   build)
     # The build command (build.sh, operator-trusted, from the lane config) runs in the PR checkout
     # with a cleared environment; it must leave the simulator .app at the configured path.
-    dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" timeout_s="$5" app_id="$6" sandbox="${7:-1}"
+    job="$1" dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" timeout_s="$5" app_id="$6" sandbox="${7:-1}"
     need sandbox "$sandbox" '^[01]$'
 
     need repo "$repo" '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'; need pr "$pr" '^[0-9]{1,9}$'
@@ -272,8 +278,16 @@ SB
       ${sb[@]+"${sb[@]}"} env -i HOME="$bhome" PATH="$BASE_PATH" LANG=en_US.UTF-8 TMPDIR="$bhome/tmp" \
         APP_ID="$app_id" BUILD_NUMBER="$(( $(date +%s) / 60 ))" CP_HOME_DIR="$bhome/.cocoapods" \
         perl -e '$t = shift; $pid = fork // die; if (!$pid) { setpgrp(0, 0); exec @ARGV or exit 127 }
-          $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 }; alarm $t; waitpid($pid, 0);
-          kill "KILL", -$pid; exit($? >> 8)' "$timeout_s" nice bash "$dir/build.sh" </dev/null
+          $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 }; $SIG{TERM} = sub { kill "KILL", -$pid; exit 143 };
+          alarm $t; waitpid($pid, 0); kill "KILL", -$pid; exit($? >> 8)' "$timeout_s" nice bash "$dir/build.sh" </dev/null &
+      bpid=$!
+      # Fence: the build beats the lock itself, and is killed if the lock is ever lost (reclaimed
+      # by another tenant), so it never writes the shared build dir without owning it.
+      ( while kill -0 "$bpid" 2>/dev/null; do
+          if [[ -z "$(held_lock "$job")" ]]; then echo "lock lost: stopping the build"; kill -TERM "$bpid"; exit 0; fi
+          beat "$job"; sleep 30
+        done ) </dev/null &
+      wait "$bpid"
     ) >"$dir/build.log" 2>&1
     rc=$?
     set -e
