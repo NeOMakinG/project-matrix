@@ -37,6 +37,8 @@ export function routeScript(input: {
   nonce: string;
   argv: string[];
   checkout?: { sha: string };
+  /** Keep the END of an oversized stdout (runner logs: the result line is last). */
+  keepTail?: boolean;
 }): string {
   const steps = input.checkout
     ? [
@@ -51,7 +53,8 @@ export function routeScript(input: {
     'd="$(mktemp -d)"',
     `( ${run} ) >"$d/out" 2>"$d/err" </dev/null`,
     "rc=$?",
-    'pack() { head -c "$1" "$d/out" >"$d/o"; { printf "rc=%s out=%s full=%s\\n" "$rc" "$(wc -c <"$d/o" | tr -d " ")" "$(wc -c <"$d/out" | tr -d " ")"; cat "$d/o"; tail -c 16000 "$d/err"; } | gzip -c | base64 | fold -w 120 >"$d/p"; }',
+    `pack() { ${input.keepTail ? "tail" : "head"} -c "$1" "$d/out" >"$d/o";` +
+      '  { printf "rc=%s out=%s full=%s\\n" "$rc" "$(wc -c <"$d/o" | tr -d " ")" "$(wc -c <"$d/out" | tr -d " ")"; cat "$d/o"; tail -c 16000 "$d/err"; } | gzip -c | base64 | fold -w 120 >"$d/p"; }',
     "pack 2000000",
     `[ "$(wc -l <"$d/p")" -gt ${PAYLOAD_LINES} ] && pack 60000`,
     `printf '__MX%s_%s__\\n' B ${input.nonce}`,
@@ -65,6 +68,8 @@ export function routeScript(input: {
 export function decodePayload(
   lines: string[],
   nonce: string,
+  /** Runner output keeps its tail (the final result line); a truncated stdout is still a pass. */
+  allowTruncated = false,
 ): { exitCode: number; stdout: string; output: string } | undefined {
   const trimmed = lines.map((l) => l.trim());
   const begin = trimmed.lastIndexOf(`__MXB_${nonce}__`);
@@ -102,7 +107,7 @@ export function decodePayload(
   const stderr = raw.subarray(nl + 1 + outLen).toString("utf8");
   return {
     // Truncated stdout never passes as a success: callers parse it (e.g. release JSON).
-    exitCode: Number(m[1]) === 0 && Number(m[3]) > outLen ? 125 : Number(m[1]),
+    exitCode: Number(m[1]) === 0 && Number(m[3]) > outLen && !allowTruncated ? 125 : Number(m[1]),
     stdout,
     output: `${stdout.slice(-16_000)}\n${stderr}`,
   };
@@ -128,6 +133,8 @@ export async function runViaOrca(
     pollMs?: number;
     sleep?: (ms: number) => Promise<void>;
     label?: string;
+    /** Accept a truncated stdout tail as success (runner logs; never for parsed output). */
+    allowTruncated?: boolean;
   },
 ): Promise<OrcaRunResult> {
   const repoPath = route.repos[opts.repo];
@@ -178,6 +185,7 @@ export async function runViaOrca(
       nonce,
       argv,
       ...(opts.checkout ? { checkout: opts.checkout } : {}),
+      ...(opts.allowTruncated ? { keepTail: true } : {}),
     });
     const command = `/bin/sh -c "$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d)"`;
     const made = record(
@@ -227,7 +235,7 @@ export async function runViaOrca(
       else lines.splice(0, lines.length, ...tail);
       if (lines.length > 6_000) lines.splice(0, lines.length - 6_000);
       cursor = next ?? cursor;
-      const got = decodePayload(lines, nonce);
+      const got = decodePayload(lines, nonce, opts.allowTruncated);
       if (got) return { ...got, trace };
       if (Date.now() >= deadline) {
         // Stop the command before the terminal is closed, so a timed-out deploy is not left

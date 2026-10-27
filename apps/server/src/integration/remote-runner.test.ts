@@ -72,7 +72,9 @@ function orca(stdout: string, rc = 0) {
       }
       if (args[1] === "read") {
         const body = Buffer.concat([
-          Buffer.from(`rc=${rc} out=${Buffer.byteLength(stdout)}\n${stdout}`),
+          Buffer.from(
+            `rc=${rc} out=${Buffer.byteLength(stdout)} full=${Buffer.byteLength(stdout)}\n${stdout}`,
+          ),
           Buffer.from("err\n"),
         ]);
         return {

@@ -140,3 +140,14 @@ describe("orca deploy route", () => {
     ).toThrow("orca needs");
   });
 });
+
+describe("orca route tail mode", () => {
+  test("keepTail keeps the end of an oversized stdout and still passes", () => {
+    const script = routeScript({ nonce: "t1", argv: ["sh", "-c", "seq 1 400000; echo LAST"], keepTail: true });
+    const out = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", maxBuffer: 64 << 20 });
+    const got = decodePayload(out.split("\n"), "t1", true)!;
+    expect(got.exitCode).toBe(0);
+    expect(got.stdout.trimEnd().endsWith("LAST")).toBe(true);
+    expect(decodePayload(out.split("\n"), "t1")!.exitCode).toBe(125);
+  });
+});

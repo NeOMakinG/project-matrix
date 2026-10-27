@@ -140,6 +140,7 @@ export interface RemoteSpec {
   collect?: boolean;
   report?: string;
   signal?: AbortSignal;
+  allowTruncated?: boolean;
 }
 
 /**
@@ -185,6 +186,7 @@ export async function runRemote(
         checkout: { sha },
         timeoutMs: spec.timeoutMs,
         label: "run",
+        allowTruncated: spec.allowTruncated === true,
         pollMs: c.pollMs ?? 10_000,
         ...(spec.signal ? { signal: spec.signal } : {}),
         ...(c.orcaCli ? { cli: c.orcaCli } : {}),
@@ -273,6 +275,7 @@ export function remoteLineExecutor(
       placeholder: o.placeholder,
       timeoutMs: spec.timeoutMs,
       collect: o.collect,
+      allowTruncated: true,
       signal,
     });
     for (const line of r.stdout.split("\n")) if (line) onLine(line);
@@ -312,6 +315,8 @@ export function remoteAwareSandbox(local: Sandbox, r: RemoteRunners | undefined)
         argv: rel ? ["sh", "-c", 'mkdir -p .matrix-report && exec "$@"', "sh", ...argv] : argv,
         env,
         timeoutMs: spec.timeoutMs,
+        // Like the local sandbox's output cap: a long log is cut, never a false failure.
+        allowTruncated: true,
         ...(rel ? { report: rel } : {}),
         ...(signal ? { signal } : {}),
       });
