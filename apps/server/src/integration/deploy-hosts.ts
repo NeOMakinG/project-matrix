@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import { isPrivateAddress, publicHttpsProblem } from "@matrix/core";
 import { redact } from "@matrix/monitor";
 import { hostExecutor, type LineExecutor, runToCompletion } from "@matrix/sandbox";
+import { type OrcaCaller, runViaOrca } from "./deploy-orca.js";
 import type { DeployHost } from "./deploy-plan.js";
 
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -10,6 +11,16 @@ export interface HostRun {
   exitCode: number;
   stdout: string;
   tail: string;
+  /** Orca route steps (worktree, terminal, cleanup), when the host is an Orca environment. */
+  trace?: string[];
+}
+
+/** Test seams and settings for Orca-routed hosts. */
+export interface OrcaRouteOptions {
+  cli?: (environment: string) => OrcaCaller;
+  binary?: string;
+  pollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Runs an argv on a deploy host (local, or ssh BatchMode with a fixed script on stdin). */
@@ -21,8 +32,33 @@ export async function runOnHost(
     timeoutMs?: number;
     signal?: AbortSignal;
     checkout?: { repo: string; sha: string };
+    /** Repo whose checkout an Orca host runs in when there is no `checkout` (default: its first). */
+    repo?: string;
+    orca?: OrcaRouteOptions;
   } = {},
 ): Promise<HostRun> {
+  if (host.transport === "orca") {
+    const route = host.orca!;
+    const repo = opts.checkout?.repo ?? opts.repo ?? Object.keys(route.repos)[0]!;
+    const r = await runViaOrca(route, argv, {
+      repo,
+      ...(opts.checkout ? { checkout: { sha: opts.checkout.sha } } : {}),
+      timeoutMs: opts.timeoutMs ?? 120_000,
+      ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.orca?.cli ? { cli: opts.orca.cli(route.environment) } : {}),
+      ...(opts.orca?.binary ? { binary: opts.orca.binary } : {}),
+      ...(opts.orca?.pollMs !== undefined ? { pollMs: opts.orca.pollMs } : {}),
+      ...(opts.orca?.sleep ? { sleep: opts.orca.sleep } : {}),
+      label:
+        argv[1] === "deploy" ? "deploy" : (argv[1] ?? "run").replace(/[^a-z]/g, "").slice(0, 12),
+    });
+    return {
+      exitCode: r.exitCode,
+      stdout: r.stdout,
+      tail: redactTail(`${r.output}\n${r.trace.join("\n")}`, 20),
+      trace: r.trace,
+    };
+  }
   const body = opts.checkout
     ? [
         "set -eu",
@@ -92,9 +128,12 @@ export async function flyReleases(
   host: DeployHost,
   app: string,
   executor?: LineExecutor,
+  route?: { repo?: string; orca?: OrcaRouteOptions },
 ): Promise<FlyRelease[]> {
   const r = await runOnHost(host, ["fly", "releases", "-a", app, "--json", "--image"], {
     ...(executor ? { executor } : {}),
+    ...(route?.repo ? { repo: route.repo } : {}),
+    ...(route?.orca ? { orca: route.orca } : {}),
   });
   if (r.exitCode !== 0) throw new Error(`fly releases failed: ${r.tail.slice(-300)}`);
   const list = JSON.parse(r.stdout || "[]") as {
@@ -115,8 +154,16 @@ export async function flyReleases(
     .sort((a, b) => b.version - a.version);
 }
 
-export async function flyWhoami(host: DeployHost, executor?: LineExecutor): Promise<string> {
-  const r = await runOnHost(host, ["fly", "auth", "whoami"], { ...(executor ? { executor } : {}) });
+export async function flyWhoami(
+  host: DeployHost,
+  executor?: LineExecutor,
+  route?: { repo?: string; orca?: OrcaRouteOptions },
+): Promise<string> {
+  const r = await runOnHost(host, ["fly", "auth", "whoami"], {
+    ...(executor ? { executor } : {}),
+    ...(route?.repo ? { repo: route.repo } : {}),
+    ...(route?.orca ? { orca: route.orca } : {}),
+  });
   if (r.exitCode !== 0) throw new Error("fly auth whoami failed on the deploy host");
   return r.stdout.trim().split("\n").at(-1)?.trim() ?? "";
 }

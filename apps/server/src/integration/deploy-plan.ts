@@ -14,11 +14,28 @@ import { z } from "zod";
 export const deployHostsSchema = z.array(
   z.object({
     name: z.string().regex(/^[A-Za-z0-9_.-]{1,40}$/),
-    transport: z.enum(["local", "ssh"]),
+    transport: z.enum(["local", "ssh", "orca"]),
     /** `user@host` for ssh (BatchMode, no agent forwarding). */
     ssh: z
       .string()
       .regex(/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.:-]+$/)
+      .optional(),
+    /**
+     * Paired Orca runtime (no SSH): a throwaway worktree + terminal on that machine runs the
+     * command with the machine's own CLI auth. `repos` maps GitHub `owner/name` to the absolute
+     * path of the Orca-registered checkout there.
+     */
+    orca: z
+      .object({
+        environment: z.string().regex(/^[A-Za-z0-9_.-]{1,60}$/),
+        repos: z
+          .record(
+            z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+            z.string().regex(/^\/[^\0\n]{1,300}$/),
+          )
+          .refine((r) => Object.keys(r).length > 0, "orca.repos needs at least one repo"),
+      })
+      .strict()
       .optional(),
     capabilities: z.array(z.enum(DEPLOY_CAPABILITIES)).min(1),
   }),
@@ -31,7 +48,14 @@ export function parseDeployHosts(raw: string | undefined): DeployHost[] {
   for (const h of hosts)
     if (h.transport === "ssh" && !h.ssh)
       throw new Error(`MATRIX_DEPLOY_HOSTS ${h.name}: ssh needs user@host`);
+    else if (h.transport === "orca" && !h.orca)
+      throw new Error(`MATRIX_DEPLOY_HOSTS ${h.name}: orca needs { environment, repos }`);
   return hosts;
+}
+
+/** An Orca host only serves the repos it has a checkout of; local/ssh hosts clone any repo. */
+export function reaches(host: DeployHost, repo: string): boolean {
+  return host.transport !== "orca" || Boolean(host.orca?.repos[repo]);
 }
 
 export type StepAction = "provider" | "run" | "dry-run" | "hold" | "block" | "skip";
@@ -103,7 +127,7 @@ export function planDeploy(input: {
     }
     const cap = target.capability as DeployCapability;
     if (target.dryRun || input.dryRun) {
-      const dry = input.hosts.find((h) => h.capabilities.includes(cap));
+      const dry = input.hosts.find((h) => h.capabilities.includes(cap) && reaches(h, input.repo));
       steps.push({
         ...base,
         action: "dry-run",
@@ -114,7 +138,7 @@ export function planDeploy(input: {
       });
       continue;
     }
-    const host = input.hosts.find((h) => h.capabilities.includes(cap));
+    const host = input.hosts.find((h) => h.capabilities.includes(cap) && reaches(h, input.repo));
     if (!host) {
       steps.push({ ...base, action: "block", capability: cap, reason: `no host has ${cap}` });
       continue;
@@ -162,9 +186,9 @@ export function renderPlan(plan: DeployPlan, profile: DeployProfile): string {
       lines.push(`  health: GET ${t.health.url} expect ${t.health.expect}`);
     if (acts && t?.rollback)
       lines.push(
-        t.coordinate
+        t.coordinate && !t.coordinate.autoRollback
           ? `  on failure: hold and post the failing receipt; a human rolls ${t.rollback.app} back (shared app)`
-          : `  rollback on failure: redeploy the previous ${t.rollback.app} image (if the current release is still ours)`,
+          : `  rollback on failure: redeploy the previous ${t.rollback.app} image (only while the newest release is still ours${t.coordinate?.deck ? "; deck note first" : ""})`,
       );
   }
   return lines.join("\n");

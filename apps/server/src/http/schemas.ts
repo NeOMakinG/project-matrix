@@ -218,7 +218,11 @@ const DeployTargetSchema = z
       .optional(),
     holdOn: z.array(z.string().min(1).max(200)).max(50).optional(),
     coordinate: z
-      .object({ deck: z.boolean(), recentForeignDeployMinutes: z.number().int().min(0).max(1440) })
+      .object({
+        deck: z.boolean(),
+        recentForeignDeployMinutes: z.number().int().min(0).max(1440),
+        autoRollback: z.boolean().optional(),
+      })
       .strict()
       .optional(),
     dryRun: z.boolean().optional(),

@@ -75,16 +75,28 @@ and publish deploy previews (`deploy-preview-{pr}--<site>.netlify.app`, commit s
    copied between hosts; a missing capability blocks the target with `no host has <cap>` and the
    ticket for a human, other targets continue.
 
+   The `orca` transport (2026-10-27) reaches a machine with no SSH (the MacBook, Remote Login
+   off) through its paired Orca runtime: `{ "transport": "orca", "orca": { "environment":
+   "macbook-pro", "repos": { "owner/name": "/abs/checkout" } } }`. Each call creates a throwaway
+   Orca worktree of that checkout, a terminal running a fixed script (fetch + detached checkout of
+   the merged SHA, verified with `rev-parse`, then the argv with the machine's own CLI auth),
+   reads back one framed gzip+base64 payload (exit code, stdout, stderr tail; bounded so the
+   terminal scrollback of ~2000 lines always holds it), and always closes the terminal and removes
+   the worktree. An Orca host only serves repos listed in `repos`. Dry-run targets rehearse on the
+   same route (checkout, `fly auth whoami`, foreign-release check) and list every command.
+
 4. **Verify + rollback**: verify first proves the merged SHA reached production (a production
    deploy receipt naming that SHA: the provider's release for `command` targets, the site's
    production deploy for `git-integration`, never a preview status), then polls the health URL
    (bounded retries). Deploy, verify and rollback share one per-target lock. Immediately before
    issuing the rollback it re-reads the provider's current release and aborts unless it is still
    this attempt's (the remaining check-then-act window is seconds; the coordination note in 5
-   narrows it further). On a `coordinate: true` target, which another fleet also deploys, no
-   writer lock covers everyone, so rollback is not automatic: Matrix posts the failing health
-   receipt, holds and asks a human, unless the provider offers a conditional rollback; a newer release (human or
-   another fleet) holds for a human instead. On failure it rolls back (`fly releases rollback <previous>` via the same host;
+   narrows it further). On a `coordinate` target, which another fleet also deploys, Fly has no
+   conditional deploy, so automatic rollback is an explicit operator opt-in
+   (`coordinate.autoRollback`, off by default; EagleRay turns it on per the owner's 2026-10-26
+   instruction). When on, the newest release is re-read in the same shell as the `fly deploy
+   --image <previous>` (the residual window is that one command), only after the deck note is
+   posted (a failed note holds); a newer release (human or another fleet) is never rolled back. On failure it rolls back (`fly releases rollback <previous>` via the same host;
    git-integration targets: redeploy the previous production deploy or revert-PR, human) and
    fails the phase. Every outcome posts one Linear comment with the deploy receipt (target,
    release id, health result, rollback if any).

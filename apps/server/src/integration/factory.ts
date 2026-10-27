@@ -240,6 +240,7 @@ async function createOwnedFactory(
     prs: pullRequests,
     hosts: options.deployHosts ?? [],
     ...(options.deckNote ? { deckNote: options.deckNote } : {}),
+    ...(options.native?.orcaBinary ? { orca: { binary: options.native.orcaBinary } } : {}),
   };
   const deploy = deployPort(deployStage);
   const verify = verifyPort(deployStage);

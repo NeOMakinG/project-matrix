@@ -4528,6 +4528,7 @@ export interface components {
           coordinate?: {
             deck: boolean;
             recentForeignDeployMinutes: number;
+            autoRollback?: boolean;
           };
           dryRun?: boolean;
         }[];

@@ -986,6 +986,9 @@
                           "type": "integer",
                           "minimum": 0,
                           "maximum": 1440
+                        },
+                        "autoRollback": {
+                          "type": "boolean"
                         }
                       },
                       "required": ["deck", "recentForeignDeployMinutes"],

@@ -53,7 +53,16 @@ export interface DeployTarget {
   /** Globs that merge but hold this target's deploy for a human (migrations, release config). */
   holdOn?: string[];
   /** Shared infra another fleet deploys too: deck note + recent foreign release check first. */
-  coordinate?: { deck: boolean; recentForeignDeployMinutes: number };
+  coordinate?: {
+    deck: boolean;
+    recentForeignDeployMinutes: number;
+    /**
+     * Shared app: roll back automatically on a failed health check (operator opt-in). Off by
+     * default because Fly has no conditional deploy: the guard re-reads the newest release in the
+     * same shell, but another fleet can still release in that window.
+     */
+    autoRollback?: boolean;
+  };
   /** Plan only: print what would run, run nothing (operator dry run). */
   dryRun?: boolean;
 }

@@ -1,6 +1,12 @@
 import type { DeployPort, PhaseContext, Receipt, VerifyPort } from "@matrix/core";
 import type { LineExecutor } from "@matrix/sandbox";
-import { assertPublicUrl, flyReleases, runOnHost } from "./deploy-hosts.js";
+import {
+  assertPublicUrl,
+  flyReleases,
+  flyWhoami,
+  type OrcaRouteOptions,
+  runOnHost,
+} from "./deploy-hosts.js";
 import { type DeployHost, type DeployPlan, planDeploy, renderPlan } from "./deploy-plan.js";
 import { externalRepo, type GitHubPullRequests } from "./github-pr.js";
 
@@ -10,6 +16,8 @@ export interface DeployStageOptions {
   /** Deck note before a coordinated deploy (best effort is NOT enough: a failure holds). */
   deckNote?: (summary: string) => Promise<void>;
   executor?: LineExecutor;
+  /** Orca-routed hosts (paired environment, no SSH): CLI binary and test seams. */
+  orca?: OrcaRouteOptions;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   clock?: () => Date;
@@ -54,6 +62,11 @@ export async function ticketPlan(
 
 const MIN = 60_000;
 
+const route = (o: DeployStageOptions, repo: string) => ({
+  repo,
+  ...(o.orca ? { orca: o.orca } : {}),
+});
+
 /** Runs `command` targets on a capable host; git-integration targets deploy themselves. */
 export function deployPort(o: DeployStageOptions): DeployPort {
   return {
@@ -74,6 +87,26 @@ export function deployPort(o: DeployStageOptions): DeployPort {
         return { ok: true, summary: `dry run: ${renderPlan(plan, profile)}`, receipts };
       const held: string[] = [];
       for (const step of plan.steps) {
+        if (step.action === "dry-run" && step.host) {
+          const r = await rehearse(o, plan, step, profile, ctx.signal).catch(
+            (e: Error): Receipt[] => [
+              {
+                kind: "log",
+                ok: false,
+                summary: `${step.target}: dry run on ${step.host} failed: ${e.message.slice(0, 300)}`,
+              },
+            ],
+          );
+          receipts.push(...r);
+          if (r.some((x) => !x.ok))
+            return {
+              ok: false,
+              blocked: true,
+              summary: `dry run failed on ${step.host}`,
+              receipts,
+            };
+          continue;
+        }
         if (step.action === "hold" || step.action === "block") {
           held.push(`${step.target}: ${step.reason}`);
           continue;
@@ -86,9 +119,9 @@ export function deployPort(o: DeployStageOptions): DeployPort {
             const since =
               (o.clock?.() ?? new Date()).getTime() -
               target.coordinate.recentForeignDeployMinutes * MIN;
-            const recent = (await flyReleases(host, target.rollback.app, o.executor)).filter(
-              (r) => Date.parse(r.createdAt) >= since && !r.image.includes(":matrix-"),
-            );
+            const recent = (
+              await flyReleases(host, target.rollback.app, o.executor, route(o, plan.repo))
+            ).filter((r) => Date.parse(r.createdAt) >= since && !r.image.includes(":matrix-"));
             if (recent.length)
               return `held: ${recent[0]?.user || "another actor"} released ${target.rollback.app} v${recent[0]?.version} within ${target.coordinate.recentForeignDeployMinutes} min`;
             if (target.coordinate.deck) {
@@ -103,6 +136,7 @@ export function deployPort(o: DeployStageOptions): DeployPort {
             timeoutMs: 30 * MIN,
             signal: ctx.signal,
             ...(o.executor ? { executor: o.executor } : {}),
+            ...(o.orca ? { orca: o.orca } : {}),
           });
           receipts.push({
             kind: "log",
@@ -125,6 +159,77 @@ export function deployPort(o: DeployStageOptions): DeployPort {
       return { ok: true, summary: `deployed ${plan.mergeCommit.slice(0, 12)}`, receipts };
     },
   };
+}
+
+/**
+ * Dry run through the real route: the same host, transport and clean checkout of the merge
+ * commit, the same foreign-release check, but `fly auth whoami` runs instead of the deploy.
+ * Every command that a real deploy would run is listed in the receipts; nothing deploys.
+ */
+export async function rehearse(
+  o: DeployStageOptions,
+  plan: DeployPlan,
+  step: DeployPlan["steps"][number],
+  profile: NonNullable<PhaseContext["project"]["deploy"]>,
+  signal?: AbortSignal,
+): Promise<Receipt[]> {
+  const target = profile.targets.find((t) => t.name === step.target)!;
+  const host = o.hosts.find((h) => h.name === step.host)!;
+  const sha = plan.mergeCommit;
+  const receipts: Receipt[] = [];
+  const via =
+    host.transport === "orca" ? `orca --environment ${host.orca?.environment}` : host.transport;
+  const probeArgv =
+    target.capability === "fly" ? ["fly", "auth", "whoami"] : ["git", "rev-parse", "HEAD"];
+  const probe = await runOnHost(host, probeArgv, {
+    checkout: { repo: plan.repo, sha },
+    timeoutMs: 10 * MIN,
+    ...(signal ? { signal } : {}),
+    ...(o.executor ? { executor: o.executor } : {}),
+    ...(o.orca ? { orca: o.orca } : {}),
+  });
+  receipts.push({
+    kind: "log",
+    ok: probe.exitCode === 0,
+    summary: `${target.name}: route ${host.name} (${via}) checkout ${sha.slice(0, 12)} + ${probeArgv.join(" ")} exit ${probe.exitCode}`,
+    data: { tail: probe.tail },
+  });
+  if (probe.exitCode !== 0) return receipts;
+  if (target.coordinate && target.rollback) {
+    const since =
+      (o.clock?.() ?? new Date()).getTime() - target.coordinate.recentForeignDeployMinutes * MIN;
+    const releases = await flyReleases(host, target.rollback.app, o.executor, route(o, plan.repo));
+    const recent = releases.filter(
+      (r) => Date.parse(r.createdAt) >= since && !r.image.includes(":matrix-"),
+    );
+    receipts.push({
+      kind: "log",
+      ok: true,
+      summary: recent.length
+        ? `${target.name}: would HOLD: ${recent[0]?.user || "another actor"} released v${recent[0]?.version} within ${target.coordinate.recentForeignDeployMinutes} min`
+        : `${target.name}: no foreign release in ${target.coordinate.recentForeignDeployMinutes} min (newest v${releases[0]?.version ?? "?"} by ${releases[0]?.user || "?"})`,
+    });
+  }
+  const would = [
+    ...(target.coordinate?.deck
+      ? [`deck note: Matrix deploying ${target.name} ${sha.slice(0, 12)} on ${host.name}`]
+      : []),
+    `on ${host.name} via ${via}: worktree at ${sha.slice(0, 12)}, run ${step.argv?.join(" ")}`,
+    `prove: newest ${target.rollback?.app ?? ""} release image ends :matrix-${sha.slice(0, 12)}`,
+    ...(target.health ? [`health: GET ${target.health.url} expect ${target.health.expect}`] : []),
+    ...(target.rollback
+      ? [
+          `on failure (release still ours): fly deploy -a ${target.rollback.app} --image <previous> --now`,
+        ]
+      : []),
+    "Linear receipt comment on the ticket",
+  ];
+  receipts.push({
+    kind: "log",
+    ok: true,
+    summary: `${target.name}: DRY RUN, not executed:\n${would.map((w) => `  - ${w}`).join("\n")}`,
+  });
+  return receipts;
 }
 
 async function poll(
@@ -212,7 +317,9 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
           } else {
             const host = o.hosts.find((h) => h.name === step.host)!;
             const app = t.rollback?.app ?? "";
-            const top = app ? (await flyReleases(host, app, o.executor))[0] : undefined;
+            const top = app
+              ? (await flyReleases(host, app, o.executor, route(o, plan.repo)))[0]
+              : undefined;
             proof = top?.image.endsWith(`:matrix-${sha.slice(0, 12)}`)
               ? null
               : `newest release is not ours (${top?.image ?? "none"})`;
@@ -235,17 +342,24 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
               ok: bad === null,
               summary: `${t.name}: ${bad ?? `GET ${h.url} ${h.expect}`}`,
             });
-            // A shared app (another fleet deploys it) has no writer lock covering everyone: no
-            // automatic rollback there, the failing receipt asks a human (ADR 0007 section 4).
+            // Rolled back only while the newest release is still ours (re-read right before acting):
+            // a newer release by a human or the other fleet on a shared app is never touched.
             if (bad && t.kind === "command")
               receipts.push(
-                t.coordinate
+                t.coordinate && !t.coordinate.autoRollback
                   ? {
                       kind: "log",
                       ok: false,
-                      summary: `${t.name}: health failed on a shared app; not rolled back automatically, a human decides (fly deploy -a ${t.rollback?.app} --image <previous>)`,
+                      summary: `${t.name}: health failed on a shared app; not rolled back automatically (coordinate.autoRollback off), a human decides (fly deploy -a ${t.rollback?.app} --image <previous>)`,
                     }
-                  : await rollback(o, step.host!, t.rollback?.app, sha),
+                  : await rollback(
+                      o,
+                      step.host!,
+                      t.rollback?.app,
+                      sha,
+                      plan.repo,
+                      t.coordinate?.deck,
+                    ),
               );
           }
         });
@@ -266,16 +380,28 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
   };
 }
 
+/**
+ * `$1` app, `$2` image that must still be newest, `$3` image to roll back to. Needs python3 on
+ * the host (macOS and the Linux hosts ship it); without it the guard exits 4 and nothing deploys.
+ */
+export const GUARDED_ROLLBACK = [
+  'cur="$(fly releases -a "$1" --json --image | python3 -c \'import json,sys; r=json.load(sys.stdin); print(max(r, key=lambda x: x.get("Version", 0)).get("ImageRef", ""))\')" || exit 4',
+  '[ "$cur" = "$2" ] || { echo "rollback refused: newest release is now $cur" >&2; exit 3; }',
+  'exec fly deploy -a "$1" --image "$3" --now',
+].join("\n");
+
 async function rollback(
   o: DeployStageOptions,
   hostName: string,
   app: string | undefined,
   sha: string,
+  repo: string,
+  deck?: boolean,
 ): Promise<Receipt> {
   const host = o.hosts.find((h) => h.name === hostName);
   if (!host || !app)
     return { kind: "log", ok: false, summary: "rollback: no host or app; needs a human" };
-  const releases = await flyReleases(host, app, o.executor);
+  const releases = await flyReleases(host, app, o.executor, route(o, repo));
   const [current, previous] = [
     releases[0],
     releases.find((r, i) => i > 0 && r.status === "complete"),
@@ -287,12 +413,31 @@ async function rollback(
       ok: false,
       summary: `rollback skipped: current ${app} release is not ours; needs a human`,
     };
+  // A shared app is only touched after the coordination note is really posted.
+  if (deck) {
+    const noted = await (o.deckNote
+      ? o
+          .deckNote(
+            `Matrix rolling back ${app} to v${previous.version} (health failed on ${sha.slice(0, 12)})`,
+          )
+          .then(
+            () => true,
+            () => false,
+          )
+      : Promise.resolve(false));
+    if (!noted)
+      return { kind: "log", ok: false, summary: "rollback held: deck note failed; needs a human" };
+  }
   const run = await runOnHost(
     host,
-    ["fly", "deploy", "-a", app, "--image", previous.image, "--now"],
+    // Re-checked inside the same shell right before the deploy: the check-then-act window is
+    // one command, not the Orca round trips between the read above and this run.
+    ["sh", "-c", GUARDED_ROLLBACK, "sh", app, current.image, previous.image],
     {
       timeoutMs: 20 * MIN,
+      repo,
       ...(o.executor ? { executor: o.executor } : {}),
+      ...(o.orca ? { orca: o.orca } : {}),
     },
   );
   return {
