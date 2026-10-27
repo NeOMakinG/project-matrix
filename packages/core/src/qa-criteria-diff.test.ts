@@ -35,4 +35,13 @@ describe("repository-file criteria", () => {
     const other = facts([{ ...readme, patch: "@@\n+- Dashboard: https://x.example" }]);
     expect(verifyCodeCriteria(criteria, [1], other, "h")[0]?.status).toBe("unverified");
   });
+  test("nested files are not the named root file; unquoted content is unverified", () => {
+    const nested = facts([
+      readme,
+      { path: "apps/api/README.md", status: "modified", additions: 1 },
+    ]);
+    expect(verifyCodeCriteria(criteria, [2], nested, "h")[0]?.status).toBe("fail");
+    const plain = ["README.md contains the new domain."];
+    expect(verifyCodeCriteria(plain, [1], facts([readme]), "h")[0]?.status).toBe("unverified");
+  });
 });

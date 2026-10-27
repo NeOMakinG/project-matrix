@@ -322,15 +322,17 @@ function diffFacts(text: string, facts: PullRequestFacts): [CodeCriterionStatus,
   const named = namedFiles(text);
   const changed = facts.files.map((f) => f.path);
   if (/\b(no (other )?files?|only)\b/i.test(text) && /\bchang|modif|touch/i.test(text)) {
-    const extra = changed.filter((p) => !named.some((n) => p === n || p.endsWith(`/${n}`)));
+    const extra = changed.filter((p) => !named.includes(p));
     if (extra.length) return ["fail", `the PR also changes ${extra.slice(0, 5).join(", ")}`];
     if (!/\bcontains?\b/i.test(text)) return ["pass", `the PR changes only ${changed.join(", ")}`];
   }
   const needles = [...text.matchAll(/`([^`]{3,200})`/g)]
     .map((m) => m[1] as string)
     .filter((n) => !named.includes(n) && !/^#+\s/.test(n));
-  if (!needles.length) return ["pass", `the PR changes ${changed.join(", ") || "nothing"}`];
-  const file = facts.files.find((f) => named.some((n) => f.path === n || f.path.endsWith(`/${n}`)));
+  if (!needles.length) return ["unverified", "no `quoted` text to look for in the diff"];
+  // One content assertion per criterion: several named files cannot be attributed reliably.
+  if (named.length !== 1) return ["unverified", `content of several files (${named.join(", ")})`];
+  const file = facts.files.find((f) => f.path === named[0]);
   if (!file?.patch) return ["unverified", `no diff of ${named.join(", ")} to read`];
   const lines = file.patch.split("\n").filter((l) => !l.startsWith("-"));
   const missing = needles.filter((n) => !lines.some((l) => l.includes(n)));
