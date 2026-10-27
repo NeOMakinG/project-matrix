@@ -1,16 +1,24 @@
 #!/usr/bin/env bash
 # Matrix agent QA lane, iOS simulator host side (the Mac mini that runs the tapflow relay + agent).
 # Streamed by the Matrix host: `ssh mini@host bash -s -- <step> ...`. Every argument is validated by
-# the caller AND here. Exit codes: 10 host overloaded, 11 simulator unavailable, 12 lane busy,
-# 20 build failed, 21 install failed, 2 bad arguments.
+# the caller AND here. Exit codes: 10 host overloaded, 11 simulator unavailable, 12 simulator busy
+# (another tenant holds its lock or its tapflow session), 20 build failed, 21 install failed,
+# 2 bad arguments.
 # The QA agent does not run here: it runs on the Matrix host and drives the simulator through the
 # tapflow relay (taps, typing, UI tree); this script builds, installs, seeds and takes screenshots.
 set -euo pipefail
 
 # Never probe /Volumes/External by default: a sleeping external disk hangs every step.
 ROOT="${MATRIX_QA_ROOT:-$HOME/matrix-qa.noindex}"
-LOCK=/tmp/matrix-qa-ios.lock
-STALE_S=7200
+# The simulator lock is SHARED with every other tenant of the mini (agents, scripts): one directory
+# per simulator UDID, same protocol as ops/qa-lane/sim-lock.sh (installed on the mini as `sim-lock`).
+# A holder beats at least every 5 minutes; a lock silent for STALE_S is reclaimed. A live tapflow
+# session on the simulator (a person in the dashboard, tapflow-mcp, a flow run) also counts as busy.
+LOCKS="${MATRIX_SIM_LOCK_DIR:-/Users/Shared/sim-lock}"
+LEGACY_LOCK=/tmp/matrix-qa-ios.lock
+STALE_S=1200
+TENANT=matrix-qa
+RELAY_WS="${MATRIX_QA_RELAY_WS:-ws://127.0.0.1:4000}"
 NODE_BIN="${MATRIX_QA_NODE_BIN:-$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | tail -1)}"
 # Never an empty PATH entry (it would put the PR checkout's own binaries first).
 [[ -n "$NODE_BIN" && -d "$NODE_BIN" ]] || { echo "no node found (set MATRIX_QA_NODE_BIN)" >&2; exit 2; }
@@ -21,7 +29,64 @@ die() { echo "$2" >&2; exit "$1"; }
 need() { [[ "$2" =~ $3 ]] || die 2 "invalid $1"; }
 job_dir() { need job "$1" '^[a-z0-9-]{8,64}$'; echo "$ROOT/jobs/$1"; }
 udid_ok() { need udid "$1" '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'; }
-beat() { [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$1" ]] && date +%s >"$LOCK/beat"; true; }
+# The lock (if any) this job holds; steps after `lock` only know the job id.
+held_lock() {
+  local l
+  for l in "$LOCKS"/*.lock; do
+    [[ -d "$l" && "$(cat "$l/owner" 2>/dev/null || true)" == "$1" ]] && { echo "$l"; return 0; }
+  done
+  return 0
+}
+beat() { local l; l=$(held_lock "$1"); [[ -n "$l" ]] && date +%s >"$l/beat"; true; }
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s; }
+# A stale lock is moved aside atomically, and only if it is still the one judged stale.
+reclaim_stale() {
+  local l="$1" owner last tomb
+  owner=$(cat "$l/owner" 2>/dev/null || true)
+  last=$(cat "$l/beat" 2>/dev/null || mtime "$l")
+  (( $(date +%s) - last > STALE_S )) || return 1
+  tomb="$l.stale.$$.$RANDOM"
+  mv "$l" "$tomb" 2>/dev/null || return 0
+  if [[ "$(cat "$tomb/owner" 2>/dev/null || true)" != "$owner" ]]; then mv "$tomb" "$l" 2>/dev/null || true; return 0; fi
+  echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
+  rm -rf "$tomb"
+}
+# tapflow's own occupancy: free | busy | absent | error. The relay answers local sockets without a
+# token. MATRIX_QA_TAPFLOW_STATE_FILE replaces the query (tests only).
+tapflow_state() {
+  if [[ -n "${MATRIX_QA_TAPFLOW_STATE_FILE:-}" ]]; then cat "$MATRIX_QA_TAPFLOW_STATE_FILE"; return 0; fi
+  node -e '
+    const [url, udid] = process.argv.slice(1);
+    const done = (s) => { console.log(s); process.exit(0); };
+    setTimeout(() => done("error"), 8000);
+    let ws; try { ws = new WebSocket(url); } catch { done("error"); }
+    ws.onerror = () => done("error");
+    ws.onopen = () => ws.send(JSON.stringify({ type: "agents:list" }));
+    ws.onmessage = (e) => {
+      const m = JSON.parse(String(e.data));
+      if (m.type !== "agents:listed") return;
+      const d = (m.sessions ?? []).flatMap((s) => s.devices ?? []).find((x) => x.id === udid);
+      done(!d ? "absent" : d.busy ? "busy" : "free");
+    };' "$RELAY_WS" "$1" 2>/dev/null || echo error
+}
+# Wait (up to $2 s) until nobody holds the simulator's tapflow session.
+wait_tapflow_free() {
+  local udid="$1" deadline=$(( $(date +%s) + $2 )) st
+  while :; do
+    st=$(tapflow_state "$udid")
+    case "$st" in
+      free|absent) return 0 ;;
+      error) die 11 "tapflow relay unreachable on the simulator host" ;;
+    esac
+    (( $(date +%s) < deadline )) || die 12 "simulator busy: someone holds its tapflow session"
+    sleep 15
+  done
+}
+lane_running() {
+  local l
+  for l in "$LOCKS"/*.lock; do [[ "$(cat "$l/tenant" 2>/dev/null || true)" == "$TENANT" ]] && return 0; done
+  return 1
+}
 booted() { xcrun simctl list devices booted | grep -q "($1) (Booted)"; }
 
 step="${1:-}"; shift || true
@@ -37,7 +102,7 @@ case "$step" in
     mkdir -p "$ROOT"
     free_gb=$(df -g "$ROOT" | awk 'NR==2 {print $4}')
     # Leftover build output of an interrupted job is ours to drop (never while a job holds the lock).
-    if (( free_gb < min_free_gb )) && [[ ! -d "$LOCK" ]]; then
+    if (( free_gb < min_free_gb )) && ! lane_running; then
       for w in "$ROOT"/build/*; do [[ -d "$w/.git" ]] && git -C "$w" clean -qffdx; done
       free_gb=$(df -g "$ROOT" | awk 'NR==2 {print $4}')
     fi
@@ -55,30 +120,44 @@ case "$step" in
     echo "load=$load cores=$cores free_gb=$free_gb"
     ;;
   lock)
-    job="$1" wait_s="$2" holder="$3"
+    job="$1" wait_s="$2" holder="$3" udid="${4:-}"
     need job "$job" '^[a-z0-9-]{8,64}$'; need wait "$wait_s" '^[0-9]{1,5}$'
-    need holder "$holder" '^[A-Za-z0-9._@-]{1,64}$'
+    need holder "$holder" '^[A-Za-z0-9._@-]{1,64}$'; udid_ok "$udid"
+    (umask 000; mkdir -p "$LOCKS")
+    L="$LOCKS/$udid.lock"
     deadline=$(( $(date +%s) + wait_s ))
     while :; do
-      # mkdir is atomic; a lock without its beat yet is fresh (its directory time stands in).
-      if mkdir "$LOCK" 2>/dev/null; then
-        echo "$job" >"$LOCK/owner"; echo "$holder" >"$LOCK/holder"; date +%s >"$LOCK/beat"; exit 0
+      # tapflow first (a live tester or agent), then the shared lock; mkdir is atomic.
+      wait_tapflow_free "$udid" $(( deadline - $(date +%s) > 0 ? deadline - $(date +%s) : 0 ))
+      if mkdir "$L" 2>/dev/null; then
+        echo "$job" >"$L/owner"; echo "$holder" >"$L/holder"; echo "$TENANT" >"$L/tenant"
+        date +%s >"$L/beat"; date +%s >"$L/since"
+        # A tester may have joined between the check and the mkdir: give the lock back and wait.
+        if [[ "$(tapflow_state "$udid")" == busy ]]; then rm -rf "$L"
+        else exit 0; fi
+      else
+        reclaim_stale "$L" && continue
       fi
-      last=$(cat "$LOCK/beat" 2>/dev/null || stat -f %m "$LOCK" 2>/dev/null || date +%s)
-      if (( $(date +%s) - last > STALE_S )); then rm -rf "$LOCK"; continue; fi
-      (( $(date +%s) < deadline )) || die 12 "simulator lane busy (held by $(cat "$LOCK/holder" 2>/dev/null || echo unknown))"
+      (( $(date +%s) < deadline )) || die 12 "simulator busy (lock held by $(cat "$L/holder" 2>/dev/null || echo "a tapflow session"))"
       sleep 15
     done
     ;;
+  beat)
+    job="$1"; need job "$job" '^[a-z0-9-]{8,64}$'
+    [[ -n "$(held_lock "$job")" ]] || die 12 "this job no longer holds the simulator lock"
+    beat "$job"
+    ;;
   reclaim)
     holder="$1"; need holder "$holder" '^[A-Za-z0-9._@-]{1,64}$'
-    if [[ "$(cat "$LOCK/holder" 2>/dev/null || true)" == "$holder" ]]; then
-      rm -rf "$LOCK"; echo "reclaimed the iOS lane lock of a previous $holder"
-    fi
+    for l in "$LOCKS"/*.lock "$LEGACY_LOCK"; do
+      if [[ -d "$l" && "$(cat "$l/holder" 2>/dev/null || true)" == "$holder" ]]; then
+        rm -rf "$l"; echo "reclaimed the iOS lane lock of a previous $holder"
+      fi
+    done
     ;;
   unlock)
     job="$1"; need job "$job" '^[a-z0-9-]{8,64}$'
-    [[ "$(cat "$LOCK/owner" 2>/dev/null || true)" == "$job" ]] && rm -rf "$LOCK"
+    l=$(held_lock "$job"); [[ -n "$l" ]] && rm -rf "$l"
     true
     ;;
   write|append)
@@ -181,6 +260,10 @@ SB
     plist="$work/$app/Info.plist"
     got=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")
     [[ "$got" == "$app_id" ]] || die 21 "built bundle id $got, expected $app_id"
+    # The build ran for a while: a person or agent may have taken the simulator through tapflow
+    # since. Never install over a live session; wait for it (bounded), else report busy.
+    wait_tapflow_free "$udid" 600
+    beat "$1"
     # The shared simulator may have been shut down during the build: bring it back once.
     if ! booted "$udid"; then
       xcrun simctl boot "$udid" 2>/dev/null || true

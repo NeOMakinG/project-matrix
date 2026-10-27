@@ -48,8 +48,11 @@ timeout -k 30 $((timeout_s + 120)) "$SECRETS" run -- bash -c '
   extra=()
   # The PAT goes to a 0600 file outside the job dir (Read(./**) cannot reach it), read by ./qa-ios
   # alone: never in the agent environment, where `./qa-ios type $TAPFLOW_TOKEN` would leak it.
-  if [[ -n "${TAPFLOW_TOKEN:-}" && "$mode" == ios ]]; then
-    tok="$dir.tok"; (umask 077; printf %s "$TAPFLOW_TOKEN" >"$tok")
+  # The lane has its own revocable relay PAT (TAPFLOW_MATRIX_QA_TOKEN, view+builds:write); the
+  # shared host PAT is the fallback.
+  pat="${TAPFLOW_MATRIX_QA_TOKEN:-${TAPFLOW_TOKEN:-}}"
+  if [[ -n "$pat" && "$mode" == ios ]]; then
+    tok="$dir.tok"; (umask 077; printf %s "$pat" >"$tok")
     extra=(TAPFLOW_RELAY_WS="$TAPFLOW_RELAY_WS")
   fi
   exec env -i HOME="$dir/home" TMPDIR="$dir/home" PATH="$path:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 \

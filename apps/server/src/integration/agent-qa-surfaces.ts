@@ -28,7 +28,10 @@ export function createSurfaceLanes(path: string, holder: string): MultiSurfaceAg
       reclaimOnStart: true,
     });
   if (raw.ios !== undefined)
-    drivers.ios = new TapflowIosQaLane(iosLaneSchema.parse(raw.ios), { holder: `${holder}-ios` });
+    drivers.ios = new TapflowIosQaLane(iosLaneSchema.parse(raw.ios), {
+      holder: `${holder}-ios`,
+      reclaimOnStart: true,
+    });
   if (raw.web !== undefined) drivers.web = new ChromeWebQaLane(webLaneSchema.parse(raw.web));
   return new MultiSurfaceAgentQaLane(drivers);
 }

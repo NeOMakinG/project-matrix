@@ -88,7 +88,7 @@ export type IosLaneConfig = z.output<typeof iosLaneSchema>;
 const WHAT: Record<number, string> = {
   10: "simulator host overloaded",
   11: "simulator unavailable",
-  12: "simulator lane busy",
+  12: "simulator busy (another tenant holds it)",
   20: "iOS build failed",
   21: "iOS install failed",
   255: "simulator host unreachable over SSH",
@@ -98,7 +98,8 @@ const WHAT: Record<number, string> = {
  * iOS driver: builds the PR for the simulator on the Mac mini (`ops/qa-lane/ios-qa.sh` over SSH),
  * installs it on the shared tapflow simulator, then a QA agent on this host drives it through the
  * tapflow relay (MCP) and saves screenshots with `./qa-shot`. One job at a time per process; the
- * mini's lock keeps other tenants out.
+ * mini's shared per-simulator lock (`sim-lock` protocol) and tapflow's own session occupancy keep
+ * this lane and the simulator's other tenants apart. The lane beats the lock while it holds it.
  */
 export class TapflowIosQaLane implements AgentQaPort {
   #queue: Promise<unknown> = Promise.resolve();
@@ -106,15 +107,37 @@ export class TapflowIosQaLane implements AgentQaPort {
   readonly #local: CommandRunner;
   readonly #script: string;
   readonly holder: string;
+  readonly #beatMs: number;
 
   constructor(
     private readonly config: IosLaneConfig,
-    options: { remote?: CommandRunner; local?: CommandRunner; holder?: string } = {},
+    options: {
+      remote?: CommandRunner;
+      local?: CommandRunner;
+      /** Stable per Matrix server (default: unique per process, never reclaimed by another). */
+      holder?: string;
+      /** A restarted server drops the lock its predecessor (same holder) left on the mini. */
+      reclaimOnStart?: boolean;
+      /** Lock heartbeat period (the mini reclaims a lock silent for 20 minutes). */
+      beatMs?: number;
+    } = {},
   ) {
     this.#local = options.local ?? localRunner();
     this.#remote = options.remote ?? sshRunner(config.host, this.#local);
     this.#script = readFileSync(join(REPO_ROOT, "ops", "qa-lane", "ios-qa.sh"), "utf8");
     this.holder = laneHolder(options.holder ?? `${hostname()}-ios-${process.pid}`);
+    this.#beatMs = options.beatMs ?? 4 * 60_000;
+    if (options.reclaimOnStart) this.#queue = this.reclaim();
+  }
+
+  /** Releases a lock this holder left behind (a crash or restart mid-job). Never throws. */
+  async reclaim(): Promise<void> {
+    try {
+      const out = await this.#step(["reclaim", this.holder], 60_000);
+      if (out.trim()) console.error(`[ios-qa-lane] ${out.trim().slice(0, 200)}`);
+    } catch (error) {
+      console.error(`[ios-qa-lane] reclaim failed: ${(error as Error).message.slice(0, 200)}`);
+    }
   }
 
   handles(project: ProjectConfig): boolean {
@@ -160,6 +183,7 @@ export class TapflowIosQaLane implements AgentQaPort {
       kind: "release, simulator",
     };
     let locked = false;
+    let beater: ReturnType<typeof setInterval> | undefined;
     try {
       // Two rounds: the simulator host may be briefly overloaded or the sim mid-reboot.
       let info: string | undefined;
@@ -190,10 +214,17 @@ export class TapflowIosQaLane implements AgentQaPort {
       if (model) device.model = model;
       if (os) device.os = os;
       await this.#step(
-        ["lock", job.id, String(Math.round(c.waitMs / 1000)), this.holder],
+        ["lock", job.id, String(Math.round(c.waitMs / 1000)), this.holder, c.udid],
         c.waitMs + 60_000,
       );
       locked = true;
+      // Builds and agent runs outlast the stale window: beat from here, on its own SSH session.
+      beater = setInterval(() => {
+        this.#step(["beat", job.id], 60_000).catch((e: Error) =>
+          console.error(`[ios-qa-lane] lock beat failed: ${e.message.slice(0, 160)}`),
+        );
+      }, this.#beatMs);
+      beater.unref?.();
       const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
       await this.#step(
         ["write", job.id, "build.sh", b64(`set -euo pipefail\n${project.build}\n`)],
@@ -255,6 +286,7 @@ export class TapflowIosQaLane implements AgentQaPort {
     } catch (error) {
       return { kind: "blocked", reason: (error as Error).message.slice(0, 600), device, build };
     } finally {
+      if (beater) clearInterval(beater);
       // Cleanup touches the shared build dir: it runs while this job still holds the lock.
       await this.#step(["cleanup", job.id], 5 * 60_000).catch(() => undefined);
       if (locked) await this.#step(["unlock", job.id], 60_000).catch(() => undefined);
