@@ -199,10 +199,12 @@ async function createOwnedFactory(
                 remote: {
                   hosts: options.runnerHosts,
                   project: (projectId: string) => store.getProject(projectId),
-                  // Scratch pushes publish handed-over commits only; scanned again before.
-                  scan: (workdir: string, sha: string, project: ProjectConfig) =>
+                  // Scratch pushes publish handed-over commits only; scanned again before. The
+                  // scan needs the canonical repo (a ticket worktree's .git is a file); worktrees
+                  // share its object store, so the range resolves there.
+                  scan: (_workdir: string, sha: string, project: ProjectConfig) =>
                     scanCommittedHistory(
-                      workdir,
+                      project.repoPath,
                       `${project.baseBranch}..${sha}`,
                       options.native?.gitleaksBinary,
                     ),
