@@ -679,7 +679,12 @@ export class WorktreeGitPort implements GitPort {
     const rebased = await this.#run(
       gitdir,
       [...at, "rebase", "--no-autosquash", "--no-autostash", "--no-update-refs", onto],
-      [...filters, ["rerere.enabled", "false"], ["rebase.instructionFormat", "%s"]],
+      [
+        ...filters,
+        ["rerere.enabled", "false"],
+        ["commit.gpgsign", "false"],
+        ["rebase.instructionFormat", "%s"],
+      ],
       env,
     );
     if (rebased.exitCode === 0) {

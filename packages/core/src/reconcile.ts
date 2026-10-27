@@ -903,6 +903,60 @@ export class Reconciler {
     );
   }
 
+  /** Base syncs per ticket in the last day: a base that keeps moving under a ticket stops here. */
+  private readonly baseSyncs = new Map<string, number[]>();
+
+  /**
+   * Requeues a merge-waiting workflow after its branch moved onto a newer base (or its head moved
+   * after QA). Withdraws pending merge approvals. Retries once on a version race, so a worktree
+   * that already moved never stays behind a stale `merge` state; not counted as a review loop,
+   * but more than 5 base syncs a day block the ticket for a human.
+   */
+  private async requeueForBase(
+    project: ProjectConfig,
+    w: WorkflowState,
+    phase: "checks" | "implement",
+    reason: string,
+  ): Promise<void> {
+    const key = `${w.projectId}\u0000${w.ticketId}`;
+    const now = this.clock().getTime();
+    const recent = (this.baseSyncs.get(key) ?? []).filter((t) => now - t < 86_400_000);
+    recent.push(now);
+    if (this.baseSyncs.size > 5_000) this.baseSyncs.clear();
+    this.baseSyncs.set(key, recent);
+    for (const a of await this.o.store.listApprovals(w.projectId, w.ticketId, "merge"))
+      if (a.status === "pending")
+        await this.o.store
+          .decideApproval(
+            a.id,
+            "rejected",
+            { id: this.ownerId, kind: "agent" },
+            `superseded: ${reason}`,
+          )
+          .catch(() => undefined);
+    let current: WorkflowState | null = w;
+    for (let tries = 0; tries < 2 && current; tries++) {
+      if (current.phase !== "merge" || current.status !== "waiting_approval") return;
+      const blocked = recent.length > 5;
+      const next: WorkflowState = blocked
+        ? { ...current, status: "blocked", lastError: `base sync limit (6 in a day): ${reason}` }
+        : { ...current, phase, attempt: 0, status: "pending", lastError: reason };
+      delete next.reviewedTree;
+      try {
+        const saved = await this.o.store.saveWorkflow(next);
+        this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+        await this.applyEffects(project, saved, {
+          state: saved,
+          effects: blocked ? [{ type: "blocked", reason: saved.lastError ?? reason }] : [],
+        });
+        return;
+      } catch (error) {
+        if (!(error instanceof VersionConflictError)) throw error;
+        current = await this.o.store.getWorkflow(w.projectId, w.ticketId);
+      }
+    }
+  }
+
   /** Last auto-merge attempt per head (throttles retries while CI is still pending). */
   private readonly autoMergeTriedAt = new Map<string, number>();
 
@@ -918,6 +972,22 @@ export class Reconciler {
     try {
       headSha = await this.o.git.headSha(w.workdir);
     } catch {
+      return;
+    }
+    // A head moved after QA (a rebase whose requeue was lost to a crash or a version race) is
+    // never merged and never waited on: checks, review and QA run again on it.
+    const qa = await this.latestRun(w, "qa");
+    if (
+      qa?.headSha &&
+      qa.headSha !== headSha &&
+      (await this.o.git.isClean(w.workdir).catch(() => false))
+    ) {
+      await this.requeueForBase(
+        fresh,
+        w,
+        "checks",
+        `the branch head ${headSha.slice(0, 12)} differs from the QA-validated ${qa.headSha.slice(0, 12)}; checks, review and QA run again`,
+      );
       return;
     }
     if (!(await this.autoMergePassed(fresh, w, headSha))) return;
@@ -972,31 +1042,12 @@ export class Reconciler {
       result.kind === "rebased"
         ? `rebased onto ${onto} before the merge (${state.reason}); the code changed, so checks, review and QA run again on ${result.headSha.slice(0, 12)}`
         : `the branch conflicts with ${onto} (${state.reason}) in: ${result.files.slice(0, 20).join(", ")}. Matrix re-applied this ticket's change on the new base and left git conflict markers in those files. Resolve every conflict marker, keeping ${state.base}'s newer behaviour plus this ticket's change, and keep the tests passing`;
-    for (const a of await this.o.store.listApprovals(w.projectId, w.ticketId, "merge"))
-      if (a.status === "pending")
-        await this.o.store
-          .decideApproval(
-            a.id,
-            "rejected",
-            { id: this.ownerId, kind: "agent" },
-            `superseded: ${reason}`,
-          )
-          .catch(() => undefined);
-    const next: WorkflowState = {
-      ...w,
-      phase: result.kind === "rebased" ? "checks" : "implement",
-      attempt: 0,
-      status: "pending",
-      lastError: reason,
-    };
-    delete next.reviewedTree;
-    try {
-      const saved = await this.o.store.saveWorkflow(next);
-      this.o.bus.publish({ type: "workflow.changed", workflow: saved });
-      await this.applyEffects(project, saved, { state: saved, effects: [] });
-    } catch (error) {
-      if (!(error instanceof VersionConflictError)) throw error;
-    }
+    await this.requeueForBase(
+      project,
+      w,
+      result.kind === "rebased" ? "checks" : "implement",
+      reason,
+    );
     return "requeued";
   }
 
