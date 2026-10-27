@@ -180,7 +180,17 @@ export async function runRemote(
     const gate = await c.scan(c.workdir, sha);
     if (!gate.ok) throw new Error(`secret gate refused the scratch push: ${gate.summary}`);
   }
-  await g(["push", "--quiet", "--no-follow-tags", target, `${sha}:refs/heads/${inRef}`]);
+  // Transport only: the scratch branch carries the ticket's work-in-progress to the runner and
+  // is deleted after. The repo's own pre-push gates (e.g. a typecheck ratchet) judge delivery
+  // pushes, not this one: a ticket mid-implement may not pass them yet, which is why it runs.
+  await g([
+    "push",
+    "--quiet",
+    "--no-verify",
+    "--no-follow-tags",
+    target,
+    `${sha}:refs/heads/${inRef}`,
+  ]);
   try {
     const r = await runViaOrca(
       { environment: c.host.orca.environment, repos: c.host.orca.repos },
@@ -232,7 +242,9 @@ export async function runRemote(
     }
     return r;
   } finally {
-    await g(["push", "--quiet", target, `:refs/heads/${inRef}`]).catch(() => undefined);
+    await g(["push", "--quiet", "--no-verify", target, `:refs/heads/${inRef}`]).catch(
+      () => undefined,
+    );
   }
 }
 

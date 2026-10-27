@@ -147,8 +147,8 @@ describe("runner hosts", () => {
     expect(g.ran.some((x) => x.startsWith("fetch"))).toBe(false);
     expect(g.ran).toEqual(
       expect.arrayContaining([
-        `push --quiet --no-follow-tags https://github.com/o/r.git ${SHA}:refs/heads/matrix-run/run-1`,
-        "push --quiet https://github.com/o/r.git :refs/heads/matrix-run/run-1",
+        `push --quiet --no-verify --no-follow-tags https://github.com/o/r.git ${SHA}:refs/heads/matrix-run/run-1`,
+        "push --quiet --no-verify https://github.com/o/r.git :refs/heads/matrix-run/run-1",
       ]),
     );
     const cmd = o.calls.find((x) => x[1] === "create" && x[0] === "terminal")!.join(" ");
@@ -178,7 +178,9 @@ describe("runner hosts", () => {
     expect(g.ran.some((x) => x.startsWith("fetch"))).toBe(false);
     expect(
       g.ran.filter((x) =>
-        x.startsWith("push --quiet https://github.com/o/r.git :refs/heads/matrix-run/run-2"),
+        x.startsWith(
+          "push --quiet --no-verify https://github.com/o/r.git :refs/heads/matrix-run/run-2",
+        ),
       ).length,
     ).toBe(1);
   });
