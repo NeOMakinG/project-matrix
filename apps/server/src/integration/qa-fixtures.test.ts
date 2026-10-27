@@ -29,7 +29,10 @@ function orientation(jpeg: Buffer): number | undefined {
 
 test("faceless-trip photos are upright JPEGs with camera EXIF (no Rotate 180 tag)", () => {
   const files = loadFixtures(ROOT, "faceless-trip");
-  expect(files).toHaveLength(20);
+  // 20 Porto (Feb 2025) + 2 Seville (Mar 2024): a film-eligible trip and one too short for a film.
+  expect(files).toHaveLength(22);
+  expect(files.filter((f) => f.name.startsWith("img_202502"))).toHaveLength(20);
+  expect(files.filter((f) => f.name.startsWith("img_202403"))).toHaveLength(2);
   for (const { name, bytes } of files) {
     expect(bytes.subarray(0, 2).toString("hex"), name).toBe("ffd8");
     expect(orientation(bytes), name).toBe(1);
