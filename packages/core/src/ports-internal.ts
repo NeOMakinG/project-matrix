@@ -24,6 +24,8 @@ export interface PhaseContext {
   ticketComments?: TicketComment[];
   tickets: TicketStore;
   runId: string;
+  /** Runner machine for this run when it is not the project host (implement / checks). */
+  host?: string;
   workdir: string;
   branch: string;
   /** Stable per step; merge and deploy adapters must dedupe on it. */
