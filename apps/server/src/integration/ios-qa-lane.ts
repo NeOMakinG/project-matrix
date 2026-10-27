@@ -277,6 +277,11 @@ export class TapflowIosQaLane implements AgentQaPort {
         const [name, data] = line.split("\t");
         if (name && data && !files.has(name)) files.set(name, Buffer.from(data, "base64"));
       }
+      // Ownership is checked once more after collection: a beat may have found the lock gone.
+      if (lost)
+        throw new Error(
+          "simulator busy: the lane lost its simulator lock during the run (another tenant may have used it)",
+        );
       const report = parseAgentQaReport(files.get("report.json")?.toString("utf8") ?? "");
       if (!report)
         return { kind: "blocked", reason: "the QA agent's report.json is invalid", device, build };

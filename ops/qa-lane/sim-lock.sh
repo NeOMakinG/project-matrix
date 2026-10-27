@@ -27,28 +27,33 @@ mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s
 # Beats are published atomically; an unreadable beat falls back to the lock directory's age.
 beat_of() { local b; b=$(cat "$1/beat" 2>/dev/null || true); [[ "$b" =~ ^[0-9]+$ ]] && echo "$b" || mtime "$1"; }
 write_beat() { date +%s >"$1/beat.$$" && mv -f "$1/beat.$$" "$1/beat"; }
+# Every change of a lock's owner (acquire, release, stale reclaim) happens under one guard, so a
+# reclaimer never removes a lock that was released and re-acquired after it judged it stale.
+guard() {
+  local g="$LOCKS/.guard" n=0
+  until mkdir "$g" 2>/dev/null; do
+    (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g" && continue
+    (( ++n < 300 )) || return 1
+    sleep 0.2
+  done
+}
+unguard() { rm -rf "$LOCKS/.guard"; }
+# Under the guard: a lock silent for STALE_S is removed. Returns 0 when it was.
 reclaim_stale() {
-  # Reclaimers are serialized by a guard (itself reclaimed after 60 s); owner and staleness are
-  # re-read under it, and a lock moved aside that turns out to be someone else's is put back.
-  local l="$1" g="$LOCKS/.guard" owner tomb
-  (( $(date +%s) - $(beat_of "$l") > STALE_S )) || return 1
-  if ! mkdir "$g" 2>/dev/null; then
-    (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g"
-    return 0
-  fi
-  owner=$(cat "$l/owner" 2>/dev/null || true)
-  if [[ -d "$l" ]] && (( $(date +%s) - $(beat_of "$l") > STALE_S )); then
-    tomb="$l.stale.$$.$RANDOM"
-    if mv "$l" "$tomb" 2>/dev/null; then
-      if [[ "$(cat "$tomb/owner" 2>/dev/null || true)" == "$owner" ]] && (( $(date +%s) - $(beat_of "$tomb") > STALE_S )); then
-        echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
-      else
-        mv "$tomb" "$l" 2>/dev/null || true
-      fi
-      rm -rf "$tomb"
-    fi
-  fi
-  rm -rf "$g"
+  local l="$1"
+  [[ -d "$l" ]] && (( $(date +%s) - $(beat_of "$l") > STALE_S )) || return 1
+  echo "reclaimed a stale simulator lock (holder $(cat "$l/holder" 2>/dev/null || echo unknown))" >&2
+  rm -rf "$l"
+}
+# Under the guard: create the lock with all its fields, or fail if it exists (reclaiming a stale one).
+take() {
+  local l="$1" owner="$2" holder="$3" tenant="$4" tmp
+  reclaim_stale "$l" || true
+  [[ -d "$l" ]] && return 1
+  tmp="$l.new.$$"; rm -rf "$tmp"; mkdir "$tmp"
+  echo "$owner" >"$tmp/owner"; echo "$holder" >"$tmp/holder"; echo "$tenant" >"$tmp/tenant"
+  date +%s >"$tmp/beat"; date +%s >"$tmp/since"
+  mv "$tmp" "$l"
 }
 
 tapflow_state() {
@@ -80,17 +85,17 @@ acquire() {
     # An unreachable relay cannot report a tester: fail closed.
     [[ "$st" == error ]] && die 11 "tapflow relay unreachable: cannot tell whether $udid is in use"
     if [[ "$st" != busy ]]; then
-      if mkdir "$L" 2>/dev/null; then
-        echo "$token" >"$L/owner"; echo "$holder" >"$L/holder"; echo "$tenant" >"$L/tenant"
-        write_beat "$L"; date +%s >"$L/since"
+      guard || die 12 "simulator lock guard busy"
+      if take "$L" "$token" "$holder" "$tenant"; then
+        unguard
         st=$(tapflow_state "$udid")
         case "$st" in
           free|absent) echo "$token"; return 0 ;;
-          error) rm -rf "$L"; die 11 "tapflow relay unreachable: cannot tell whether $udid is in use" ;;
-          *) rm -rf "$L" ;;
+          error) release "$udid" "$token"; die 11 "tapflow relay unreachable: cannot tell whether $udid is in use" ;;
+          *) release "$udid" "$token" ;;
         esac
       else
-        reclaim_stale "$L" && continue
+        unguard
       fi
     fi
     (( $(date +%s) < deadline )) || die 12 "simulator $udid busy (lock: $(cat "$L/holder" 2>/dev/null || echo none), tapflow: $st)"
@@ -99,6 +104,7 @@ acquire() {
 }
 
 owned() { [[ "$(cat "$LOCKS/$1.lock/owner" 2>/dev/null || true)" == "$2" ]]; }
+release() { guard || true; owned "$1" "$2" && rm -rf "$LOCKS/$1.lock"; unguard; }
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -108,8 +114,7 @@ case "$cmd" in
     write_beat "$LOCKS/$1.lock"
     ;;
   release)
-    udid_ok "${1:-}"; owned "$1" "${2:-}" && rm -rf "$LOCKS/$1.lock"
-    true
+    udid_ok "${1:-}"; release "$1" "${2:-}"
     ;;
   status)
     for l in "$LOCKS"/*.lock; do
@@ -127,17 +132,16 @@ case "$cmd" in
     token=$(acquire "$udid" "$holder" "$wait_s")
     beater="" child=""
     finish() {
-      [[ -n "$child" ]] && kill "$child" 2>/dev/null
+      # The command runs in its own process group: stop all of it before giving the lock back.
+      [[ -n "$child" ]] && kill -TERM -- "-$child" 2>/dev/null
       [[ -n "$beater" ]] && kill "$beater" 2>/dev/null
       [[ -n "$child" ]] && wait "$child" 2>/dev/null
-      owned "$udid" "$token" && rm -rf "$LOCKS/$udid.lock"
-      true
+      release "$udid" "$token"
     }
     trap 'finish; exit 143' INT TERM HUP
     ( while sleep 240; do owned "$udid" "$token" || exit 0; write_beat "$LOCKS/$udid.lock"; done ) </dev/null >/dev/null 2>&1 &
     beater=$!
-    "$@" &
-    child=$!
+    set -m; "$@" & child=$!; set +m
     rc=0; wait "$child" || rc=$?
     child=""
     finish
