@@ -108,3 +108,14 @@ test("sim-lock run holds the lock for the command and releases it", () => {
   expect(r.status).toBe(0);
   expect(existsSync(lockDir)).toBe(false);
 });
+
+test("one Matrix job at a time across simulators; sim-lock beat needs the token", () => {
+  const e = env("free");
+  const other = "6DD49F59-3B8F-4F5C-909E-08BF102DB0C7";
+  expect(run(LANE, ["lock", "mx-job-aaaa1111", "0", "h", UDID], e.vars).status).toBe(0);
+  expect(run(LANE, ["lock", "mx-job-bbbb2222", "0", "h2", other], e.vars).status).toBe(12);
+  const t = run(SIMLOCK, ["acquire", other, "agent-d", "0"], e.vars);
+  expect(t.status).toBe(0);
+  expect(run(SIMLOCK, ["beat", other, "nope"], e.vars).status).toBe(12);
+  expect(run(SIMLOCK, ["beat", other, t.stdout.trim()], e.vars).status).toBe(0);
+});

@@ -38,26 +38,32 @@ held_lock() {
   done
   return 0
 }
-beat() { local l; l=$(held_lock "$1"); [[ -n "$l" ]] && date +%s >"$l/beat"; true; }
+beat() { local l; l=$(held_lock "$1"); [[ -n "$l" ]] && write_beat "$l"; true; }
 # Steps that touch the shared build dir or the simulator refuse to run without the lock.
 owns() { [[ -n "$(held_lock "$1")" ]] || die 12 "simulator busy: this job no longer holds its lock"; beat "$1"; }
 mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s; }
 # A stale lock is moved aside atomically, and only if it is still the one judged stale.
+# Beats are published atomically; an unreadable beat falls back to the lock directory's age.
+beat_of() { local b; b=$(cat "$1/beat" 2>/dev/null || true); [[ "$b" =~ ^[0-9]+$ ]] && echo "$b" || mtime "$1"; }
+write_beat() { date +%s >"$1/beat.$$" && mv -f "$1/beat.$$" "$1/beat"; }
 reclaim_stale() {
-  # Reclaimers are serialized by a guard (itself reclaimed after 60 s), and staleness is re-read
-  # under it: a holder that beat meanwhile keeps its lock; a second reclaimer sees the new lock.
-  local l="$1" g="$LOCKS/.guard" last tomb
-  last=$(cat "$l/beat" 2>/dev/null || mtime "$l")
-  (( $(date +%s) - last > STALE_S )) || return 1
+  # Reclaimers are serialized by a guard (itself reclaimed after 60 s); owner and staleness are
+  # re-read under it, and a lock moved aside that turns out to be someone else's is put back.
+  local l="$1" g="$LOCKS/.guard" owner tomb
+  (( $(date +%s) - $(beat_of "$l") > STALE_S )) || return 1
   if ! mkdir "$g" 2>/dev/null; then
     (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g"
     return 0
   fi
-  last=$(cat "$l/beat" 2>/dev/null || mtime "$l")
-  if [[ -d "$l" ]] && (( $(date +%s) - last > STALE_S )); then
+  owner=$(cat "$l/owner" 2>/dev/null || true)
+  if [[ -d "$l" ]] && (( $(date +%s) - $(beat_of "$l") > STALE_S )); then
     tomb="$l.stale.$$.$RANDOM"
     if mv "$l" "$tomb" 2>/dev/null; then
-      echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
+      if [[ "$(cat "$tomb/owner" 2>/dev/null || true)" == "$owner" ]] && (( $(date +%s) - $(beat_of "$tomb") > STALE_S )); then
+        echo "reclaimed a stale simulator lock (holder $(cat "$tomb/holder" 2>/dev/null || echo unknown))" >&2
+      else
+        mv "$tomb" "$l" 2>/dev/null || true
+      fi
       rm -rf "$tomb"
     fi
   fi
@@ -94,9 +100,14 @@ wait_tapflow_free() {
     sleep 15
   done
 }
+# Another Matrix job (any simulator) holds a lock: the build dir and build HOME are shared.
 lane_running() {
   local l
-  for l in "$LOCKS"/*.lock; do [[ "$(cat "$l/tenant" 2>/dev/null || true)" == "$TENANT" ]] && return 0; done
+  for l in "$LOCKS"/*.lock; do
+    [[ -d "$l" && "$(cat "$l/tenant" 2>/dev/null || true)" == "$TENANT" ]] || continue
+    [[ -n "${1:-}" && "$(cat "$l/owner" 2>/dev/null || true)" == "$1" ]] && continue
+    return 0
+  done
   return 1
 }
 booted() { xcrun simctl list devices booted | grep -q "($1) (Booted)"; }
@@ -143,9 +154,11 @@ case "$step" in
       wait_tapflow_free "$udid" $(( deadline - $(date +%s) > 0 ? deadline - $(date +%s) : 0 ))
       if mkdir "$L" 2>/dev/null; then
         echo "$job" >"$L/owner"; echo "$holder" >"$L/holder"; echo "$TENANT" >"$L/tenant"
-        date +%s >"$L/beat"; date +%s >"$L/since"
+        write_beat "$L"; date +%s >"$L/since"
         # A tester may have joined between the check and the mkdir: give the lock back and wait.
         st=$(tapflow_state "$udid")
+        # One Matrix job at a time across simulators: they share the checkout and build HOME.
+        lane_running "$job" && st=lane
         case "$st" in
           free|absent) exit 0 ;;
           error) rm -rf "$L"; die 11 "tapflow relay unreachable on the simulator host" ;;
