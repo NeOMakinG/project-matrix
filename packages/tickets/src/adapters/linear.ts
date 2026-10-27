@@ -64,7 +64,7 @@ const norm = (s: string) => s.trim().toLowerCase();
 
 /** Linear refused the actor the right to do this (retrying changes nothing until a human acts). */
 const isPermissionError = (e: LinearApiError) =>
-  e.code === "FORBIDDEN" || e.status === 403 || /not allowed|permission|forbidden/i.test(e.message);
+  e.code === "FORBIDDEN" || e.status === 403 || /\byou are not allowed to\b/i.test(e.message);
 /** Legacy comment markers, also as Linear renders them back (`-->` shown as `→`, or escaped). */
 const OPEN = String.raw`(?:<!--|&lt;!--)\s*`;
 const CLOSE = String.raw`\s*(?:-->|--&gt;|→)`;

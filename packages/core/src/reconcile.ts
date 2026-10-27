@@ -898,6 +898,9 @@ export class Reconciler {
       if (this.agentQaLabelsLatest.size > 5_000)
         for (const old of this.agentQaLabelsLatest.keys())
           if (!this.agentQaLabelsPending.has(old)) this.agentQaLabelsLatest.delete(old);
+      if (this.agentQaLabelsBackoff.size > 5_000)
+        for (const old of this.agentQaLabelsBackoff.keys())
+          if (!this.agentQaLabelsPending.has(old)) this.agentQaLabelsBackoff.delete(old);
       this.agentQaLabelsLatest.set(k, fix);
       // A new verdict is written now, whatever an older one's backoff said.
       this.agentQaLabelsBackoff.delete(k);
@@ -940,7 +943,8 @@ export class Reconciler {
       if (log) this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
       return;
     }
-    this.agentQaLabelsBackoff.delete(k);
+    // An older write landing late never clears the newer fix's backoff.
+    if (this.agentQaLabelsLatest.get(k) === fix) this.agentQaLabelsBackoff.delete(k);
     // Only this fix's row: a newer verdict's queued write stays. A leftover row only replays
     // idempotent label writes after a restart.
     await this.queueLabelRetryOp(fix, "dequeue", (st, f) =>
@@ -2626,9 +2630,8 @@ const LABEL_RETRY_PERMANENT_CAP_MS = HOUR_MS;
 function isPermissionFailure(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const e = error as Error & { code?: unknown; status?: unknown };
+  // Code/status first; the message test only matches Linear's own wording, never a network error.
   return (
-    e.code === "FORBIDDEN" ||
-    e.status === 403 ||
-    /not allowed|permission|forbidden/i.test(e.message)
+    e.code === "FORBIDDEN" || e.status === 403 || /\byou are not allowed to\b/i.test(e.message)
   );
 }
