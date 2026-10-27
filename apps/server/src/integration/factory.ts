@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { createCompoundHandler } from "@matrix/compound";
 import type { QuotaConfig } from "@matrix/config";
@@ -23,6 +24,7 @@ import { OrcaWorkspace } from "@matrix/workspace";
 import { PrivateState } from "../private-state.js";
 import { PrivateStateOwner } from "../state-owner.js";
 import { createSurfaceLanes } from "./agent-qa-surfaces.js";
+import { setRouteOwner } from "./deploy-orca.js";
 import type { DeployHost } from "./deploy-plan.js";
 import { deployPort, verifyPort } from "./deploy-stage.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
@@ -32,6 +34,7 @@ import type { StoredProject } from "./mapping.js";
 import { gatewayModels } from "./model-plan.js";
 import { fakeTriageLlm, ServerMonitor } from "./monitor.js";
 import type { NativeRuntimeOptions } from "./native-runtime.js";
+import { reapRouteWorktrees } from "./orca-reaper.js";
 import { publishOwnedFile } from "./owned-files.js";
 import { OwnedHoldoutStore } from "./owned-holdout.js";
 import { ownedExternalTickets } from "./owned-tickets.js";
@@ -572,6 +575,34 @@ async function createOwnedFactory(
         // One-shot sweep for tickets whose PR was merged/closed while the server was down.
         const first = setTimeout(sweep, 60_000);
         first.unref?.();
+      }
+      // Orca route leftovers (restart or crash mid-run): removed after 30 min with no live run.
+      const routes = [
+        ...(options.runnerHosts ?? []).map((h) => h.orca),
+        ...(options.deployHosts ?? []).flatMap((h) => (h.orca ? [h.orca] : [])),
+      ];
+      // The state-owner lease is exclusive per data dir, so host + data dir names exactly one
+      // live server: only its own route worktrees are ever reaped.
+      setRouteOwner(
+        `${options.host.slice(0, 40)}:${createHash("sha256")
+          .update(`${options.host}\u0000${resolve(options.dataDir)}`)
+          .digest("hex")
+          .slice(0, 16)}`,
+      );
+      if (routes.length && options.runtime !== "fake") {
+        const reap = guarded("orca-reaper", async () => {
+          const r = await reapRouteWorktrees({
+            routes,
+            ...(options.native?.orcaBinary ? { binary: options.native.orcaBinary } : {}),
+          });
+          if (r.removed.length || r.errors.length)
+            log(
+              `orca-reaper: removed ${r.removed.join(", ") || "none"}${r.errors.length ? `; errors: ${r.errors.join("; ")}` : ""}`,
+            );
+        });
+        timers.push(setInterval(reap, 10 * 60_000));
+        const firstReap = setTimeout(reap, 60_000);
+        firstReap.unref?.();
       }
       for (const t of timers) t.unref?.();
     },

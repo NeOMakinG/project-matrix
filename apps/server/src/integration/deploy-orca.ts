@@ -205,6 +205,17 @@ async function typeScript(
   );
 }
 
+/** Route worktrees in flight in this process, keyed `<environment>\u0000<path>`. */
+export const liveRouteWorktrees = new Set<string>();
+export const liveKey = (environment: string, path: string) => `${environment}\u0000${path}`;
+
+/** Owner tag stamped on every route worktree (Orca comment); the reaper only removes its own. */
+let routeOwner = "matrix";
+export function setRouteOwner(owner: string): void {
+  routeOwner = owner.replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 80) || "matrix";
+}
+export const routeComment = () => `matrix-route:${routeOwner}`;
+
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -264,6 +275,8 @@ export async function runViaOrca(
           `path:${repoPath}`,
           "--name",
           name,
+          "--comment",
+          routeComment(),
           "--setup",
           "skip",
           "--no-parent",
@@ -273,6 +286,7 @@ export async function runViaOrca(
       ),
     );
     worktree = str(record(created.worktree).path);
+    if (worktree) liveRouteWorktrees.add(liveKey(route.environment, worktree));
     if (!worktree) throw new Error("orca route: worktree create returned no path");
     trace.push(`${route.environment}: worktree ${worktree}`);
     const script = routeScript({
@@ -401,5 +415,6 @@ export async function runViaOrca(
         .call(["worktree", "rm", "--worktree", `path:${worktree}`, "--force", "--json"], 180_000)
         .then(() => trace.push(`${route.environment}: worktree removed`))
         .catch((e: Error) => trace.push(`worktree rm failed: ${e.message.slice(0, 120)}`));
+    if (worktree) liveRouteWorktrees.delete(liveKey(route.environment, worktree));
   }
 }
