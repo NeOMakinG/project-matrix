@@ -38,6 +38,7 @@ const hosts = parseRunnerHosts(
 const project = {
   id: "p",
   host: "bosgame",
+  repoPath: "/repos/r",
   matrix: { repo: { github: "o/r", setup: [{ run: ["pnpm", "i"] }] } },
 } as unknown as ProjectConfig;
 
@@ -247,7 +248,7 @@ describe("runner host safety", () => {
     await expect(
       runRemote(c!, { argv: ["x"], env: {}, timeoutMs: 1, collect: true }),
     ).rejects.toThrow("secret gate");
-    expect(seen).toEqual([project.repoPath]);
+    expect(seen).toEqual(["/repos/r"]);
     expect(seen).not.toContain("/wt");
   });
 
