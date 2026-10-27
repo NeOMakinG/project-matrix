@@ -4,8 +4,10 @@ import { serve } from "@hono/node-server";
 import { type CredentialSource, resolveCredential } from "@matrix/sandbox";
 import { hashToken, KeyStore } from "./auth/keys.js";
 import { createServer } from "./http/app.js";
+import { parseDeployHosts } from "./integration/deploy-plan.js";
 import { parseRepoRoots } from "./integration/existing-repo.js";
 import { createFactory } from "./integration/factory.js";
+import { parseLimitsEnv } from "./integration/host-limits.js";
 import { parseQuotaEnv } from "./integration/quota-config.js";
 import { parseRuntimeKind } from "./integration/runtime.js";
 import { PrivateStateOwner } from "./state-owner.js";
@@ -52,6 +54,23 @@ const gatewayKey: CredentialSource | undefined = env.MATRIX_GATEWAY_KEY_FILE
     : undefined;
 const gatewayKeyValue = gatewayKey ? await resolveCredential(gatewayKey) : undefined;
 
+// Deck note before coordinated deploys (EagleRay activity log); key read from a 0600 file.
+const deckKey = env.MATRIX_DECK_KEY_FILE
+  ? readFileSync(env.MATRIX_DECK_KEY_FILE, "utf8").trim()
+  : undefined;
+const deckNote =
+  env.MATRIX_DECK_URL && deckKey
+    ? async (summary: string) => {
+        const res = await fetch(`${env.MATRIX_DECK_URL?.replace(/\/$/, "")}/activities`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${deckKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ scope: "dev", action: "deploying", summary }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) throw new Error(`deck note failed: HTTP ${res.status}`);
+      }
+    : undefined;
+
 const factory = await createFactory({
   stateOwner,
   runtime,
@@ -77,6 +96,9 @@ const factory = await createFactory({
   ...(env.MATRIX_QA_LANE_CONFIG ? { agentQaLaneConfig: env.MATRIX_QA_LANE_CONFIG } : {}),
   dataDir,
   host: env.MATRIX_NODE_NAME ?? "localhost",
+  deployHosts: parseDeployHosts(env.MATRIX_DEPLOY_HOSTS),
+  ...(deckNote ? { deckNote } : {}),
+  ...(env.MATRIX_LIMITS ? { limits: parseLimitsEnv(env.MATRIX_LIMITS) ?? {} } : {}),
   ...(env.MATRIX_QUOTA ? { quota: parseQuotaEnv(env.MATRIX_QUOTA) } : {}),
   ...(env.MATRIX_GATEWAY_URL && gatewayKeyValue
     ? {

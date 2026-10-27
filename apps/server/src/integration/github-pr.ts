@@ -56,6 +56,12 @@ interface GhPull {
   headRefOid?: unknown;
 }
 
+function prNumber(url: string): { repo: string; number: number } {
+  const m = url.match(/^https:\/\/github\.com\/([A-Za-z0-9-]+\/[A-Za-z0-9._-]+)\/pull\/(\d{1,9})$/);
+  if (!m?.[1] || !m[2]) throw new Error("not a GitHub pull request URL");
+  return { repo: m[1], number: Number(m[2]) };
+}
+
 /** The external-repo settings of a project; undefined for greenfield projects. */
 export function externalRepo(project: PullRequestRequest["project"]) {
   return (project as StoredProject).matrix?.repo;
@@ -439,6 +445,122 @@ export class GitHubPullRequests implements PullRequestPort {
     return { merged: true, url, mergedHead: head };
   }
 
+  /**
+   * Auto-merge (ADR 0007, `deploy.merge: "auto"` only): re-reads the PR on GitHub, requires its
+   * head to be exactly the validated SHA and every check on it green, marks the draft ready and
+   * squash-merges with `--match-head-commit` (GitHub refuses if the head moved). Never pushes.
+   */
+  async autoMerge(
+    project: PullRequestRequest["project"],
+    ticketId: string,
+    headSha: string,
+  ): Promise<
+    | { kind: "merged"; url: string; mergeCommit: string }
+    | { kind: "pending"; reason: string; url?: string }
+    | { kind: "refused"; reason: string; url?: string }
+  > {
+    const known = this.record(project.id, ticketId);
+    if (!known) return { kind: "pending", reason: "no draft PR recorded yet" };
+    if (!SHA.test(headSha) || known.headSha !== headSha)
+      return {
+        kind: "refused",
+        reason: `the published PR head ${known.headSha.slice(0, 12)} is not the validated ${headSha.slice(0, 12)}`,
+        url: known.url,
+      };
+    const facts = await this.facts(project, known.url);
+    if (facts.headSha !== headSha)
+      return {
+        kind: "refused",
+        reason: `GitHub reports head ${facts.headSha.slice(0, 12)}, not the validated ${headSha.slice(0, 12)}`,
+        url: known.url,
+      };
+    const failing = facts.checks.filter((c) => c.state === "failure").map((c) => c.name);
+    if (failing.length)
+      return {
+        kind: "refused",
+        reason: `checks failing on ${headSha.slice(0, 12)}: ${failing.join(", ").slice(0, 200)}`,
+        url: known.url,
+      };
+    const pending = facts.checks.filter((c) => c.state === "pending").map((c) => c.name);
+    if (!facts.checks.length || pending.length)
+      return {
+        kind: "pending",
+        reason: facts.checks.length
+          ? `checks still running on ${headSha.slice(0, 12)}: ${pending.join(", ").slice(0, 200)}`
+          : `no checks reported on ${headSha.slice(0, 12)} yet`,
+        url: known.url,
+      };
+    const { repo, number } = prNumber(known.url);
+    const pr = await this.#pull(repo, number);
+    if (pr.merged) {
+      if (pr.headSha !== headSha)
+        return { kind: "refused", reason: "PR was merged at another head", url: known.url };
+      return { kind: "merged", url: known.url, mergeCommit: pr.mergeCommit };
+    }
+    if (pr.state !== "open")
+      return { kind: "refused", reason: `PR is ${pr.state}`, url: known.url };
+    if (pr.draft) await this.#gh(["pr", "ready", String(number), "--repo", repo]);
+    await this.#gh([
+      "pr",
+      "merge",
+      String(number),
+      "--repo",
+      repo,
+      "--squash",
+      "--match-head-commit",
+      headSha,
+    ]);
+    const after = await this.#pull(repo, number);
+    if (!after.merged || !SHA.test(after.mergeCommit))
+      return { kind: "pending", reason: "GitHub has not recorded the merge yet", url: known.url };
+    return { kind: "merged", url: known.url, mergeCommit: after.mergeCommit };
+  }
+
+  /** The merged PR of a ticket: merge commit on the base branch and the files it changed. */
+  async mergedInfo(
+    project: PullRequestRequest["project"],
+    ticketId: string,
+  ): Promise<{ url: string; mergeCommit: string; headSha: string; files: string[] } | undefined> {
+    const known = this.record(project.id, ticketId);
+    if (!known || !externalRepo(project)) return undefined;
+    const { repo, number } = prNumber(known.url);
+    const pr = await this.#pull(repo, number);
+    if (!pr.merged || !SHA.test(pr.mergeCommit)) return undefined;
+    const files = (
+      await this.#ghItems<{ filename?: string; previous_filename?: string }>(
+        `repos/${repo}/pulls/${number}/files?per_page=100`,
+        ".[]",
+      )
+    ).flatMap((f) => [f.filename, f.previous_filename].filter((x): x is string => !!x));
+    return { url: known.url, mergeCommit: pr.mergeCommit, headSha: pr.headSha, files };
+  }
+
+  async #pull(
+    repo: string,
+    number: number,
+  ): Promise<{
+    state: string;
+    draft: boolean;
+    merged: boolean;
+    mergeCommit: string;
+    headSha: string;
+  }> {
+    const pr = JSON.parse(await this.#gh(["api", `repos/${repo}/pulls/${number}`])) as {
+      state?: string;
+      draft?: boolean;
+      merged?: boolean;
+      merge_commit_sha?: string | null;
+      head?: { sha?: string };
+    };
+    return {
+      state: String(pr.state ?? ""),
+      draft: pr.draft === true,
+      merged: pr.merged === true,
+      mergeCommit: String(pr.merge_commit_sha ?? ""),
+      headSha: String(pr.head?.sha ?? ""),
+    };
+  }
+
   async #git(gitDir: string, args: string[], allowFailure = false): Promise<string> {
     const gh = this.#o.ghBinary ?? "gh";
     const env = safeGitEnv(this.#passthrough(GH_ENV), [
@@ -510,7 +632,34 @@ export function externalAwareMerge(prs: GitHubPullRequests, local?: MergePort): 
         headSha: request.headSha,
         evidence: [],
       });
-      const state = await prs.mergeState(ctx.project, ctx.ticket.id);
+      let state = await prs.mergeState(ctx.project, ctx.ticket.id);
+      // Auto-merge opt-in: authorize() already required the agent QA PASS on this head.
+      if (
+        !state.merged &&
+        !state.moved &&
+        ctx.project.deploy?.merge === "auto" &&
+        request.mode === "autonomous"
+      ) {
+        const auto = await prs.autoMerge(ctx.project, ctx.ticket.id, request.headSha);
+        const url = auto.url ? { url: auto.url } : {};
+        if (auto.kind === "pending")
+          return {
+            ok: false,
+            pending: true,
+            summary: `auto-merge waiting: ${auto.reason}`,
+            ...url,
+          };
+        if (auto.kind === "refused")
+          return { ok: false, summary: `auto-merge refused: ${auto.reason}`, ...url };
+        state = await prs.mergeState(ctx.project, ctx.ticket.id);
+        if (!state.merged)
+          return {
+            ok: true,
+            summary: `pull request squash-merged by Matrix: ${auto.url} (${auto.mergeCommit.slice(0, 12)})`,
+            url: auto.url,
+            mergedSha: auto.mergeCommit,
+          };
+      }
       if (state.moved)
         return {
           ok: false,

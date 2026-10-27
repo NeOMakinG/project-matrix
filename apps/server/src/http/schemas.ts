@@ -82,6 +82,10 @@ export const Project = z
         driver: z.enum(["none", "manual", "agent"]),
       })
       .optional(),
+    deploy: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .openapi({ description: "Deploy profile (ADR 0007)" }),
   })
   .openapi("Project");
 
@@ -191,6 +195,40 @@ const ImplementGuidance = z.string().trim().min(1).max(4000).openapi({
   description:
     "Operator-written guidance appended to the implement prompt as trusted project configuration (e.g. which test command to use for targeted runs).",
 });
+
+const DeployTargetSchema = z
+  .object({
+    name: z.string().regex(/^[a-z0-9-]{1,40}$/),
+    kind: z.enum(["git-integration", "command"]),
+    paths: z.array(z.string().min(1).max(200)).max(50),
+    health: z
+      .object({ url: z.string().max(300), expect: z.number().int().min(100).max(599) })
+      .strict()
+      .optional(),
+    version: z
+      .object({ url: z.string().max(300), field: z.string().regex(/^[A-Za-z0-9_]{1,40}$/) })
+      .strict()
+      .optional(),
+    waitStatus: z.string().max(80).optional(),
+    capability: z.enum(["fly", "eas", "railway", "gh"]).optional(),
+    run: z.array(z.string().max(200)).max(20).optional(),
+    rollback: z
+      .object({ kind: z.literal("fly-releases"), app: z.string().regex(/^[a-z0-9-]{1,60}$/) })
+      .strict()
+      .optional(),
+    holdOn: z.array(z.string().min(1).max(200)).max(50).optional(),
+    coordinate: z
+      .object({ deck: z.boolean(), recentForeignDeployMinutes: z.number().int().min(0).max(1440) })
+      .strict()
+      .optional(),
+    dryRun: z.boolean().optional(),
+  })
+  .strict();
+
+const DeploySettings = z
+  .object({ merge: z.enum(["auto", "human"]), targets: z.array(DeployTargetSchema).max(10) })
+  .strict()
+  .openapi({ description: "Deploy stage (ADR 0007): auto-merge gate and per-target deploys" });
 
 const QaSettings = z
   .object({
@@ -354,6 +392,9 @@ export const UpdateProject = z
     qa: QaSettings.nullable()
       .optional()
       .openapi({ description: "Replaces QA settings; null removes them" }),
+    deploy: DeploySettings.nullable()
+      .optional()
+      .openapi({ description: "Replaces the deploy profile; null removes it" }),
   })
   .strict()
   .openapi("UpdateProject");

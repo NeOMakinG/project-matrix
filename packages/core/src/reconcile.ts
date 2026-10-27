@@ -150,6 +150,7 @@ interface ActiveRun {
   runId: string;
   projectId: string;
   ticketId: string;
+  phase: Phase;
   model: string;
   /** Subscription the run draws on; undefined for phases that call no model. */
   provider: string | undefined;
@@ -176,6 +177,10 @@ const TICKET_STATUS: Partial<Record<Phase, TicketStatus>> = {
 };
 
 const IRREVERSIBLE = new Set<Phase>(["merge", "deploy"]);
+/** Runs that build/run the app or deploy it: bounded per host on their own (`heavyPerHost`). */
+export const HEAVY_PHASES: ReadonlySet<Phase> = new Set<Phase>(["qa", "deploy"]);
+/** Minimum spacing between two auto-merge attempts of one head (CI still pending, GitHub lag). */
+const AUTO_MERGE_RETRY_MS = 60_000;
 const AFTER_REVIEW = new Set<Phase>(["qa", "merge", "deploy"]);
 /** Phases that validate or act on the code: they run only on a clean tree and record its commit. */
 const CLEAN_TREE = new Set<Phase>(["design", "checks", "review", "qa", "merge", "deploy"]);
@@ -432,6 +437,7 @@ export class Reconciler {
       if (this.o.pullRequests) await this.publishPullRequest(project, w);
       await this.observeHandoff(project, w);
       await this.maybeRunAgentQa(project, w);
+      await this.maybeAutoMerge(project, w);
     }
     return report;
   }
@@ -803,6 +809,61 @@ export class Reconciler {
    * request. PASS is re-checked at most every 2 minutes; a FAIL is only seen at merge again once a
    * human re-armed the ticket, so it is checked before the FAIL is applied again.
    */
+  /**
+   * Auto-merge gate (ADR 0007): the project opted in (`deploy.merge: "auto"`), the agent QA lane
+   * passed exactly this head for the latest QA run. Review (0 P1) and checks are re-validated by
+   * gateProblems; green GitHub checks are re-read by the merge port right before it merges.
+   */
+  private async autoMergePassed(
+    project: ProjectConfig,
+    w: WorkflowState,
+    headSha: string,
+  ): Promise<boolean> {
+    if (project.deploy?.merge !== "auto") return false;
+    const manual = await this.latestManualQa(w);
+    if (manual?.tester !== "agent") return false;
+    const qaRun = await this.latestRun(w, "qa");
+    if (!qaRun) return false;
+    return (
+      this.agentQaVerdicts.get(
+        `${project.id}\u0000${w.ticketId}\u0000${headSha}\u0000${qaRun.id}`,
+      ) === "PASS"
+    );
+  }
+
+  /** Last auto-merge attempt per head (throttles retries while CI is still pending). */
+  private readonly autoMergeTriedAt = new Map<string, number>();
+
+  /**
+   * A merge waiting on its agent QA verdict: once the lane passed this head and every gate still
+   * holds, the workflow goes back to pending and the merge phase runs (merge port merges).
+   */
+  private async maybeAutoMerge(project: ProjectConfig, w: WorkflowState): Promise<void> {
+    if (!w.workdir || w.phase !== "merge" || w.status !== "waiting_approval") return;
+    const fresh = (await this.o.store.getProject(project.id)) ?? project;
+    if (fresh.deploy?.merge !== "auto") return;
+    let headSha: string;
+    try {
+      headSha = await this.o.git.headSha(w.workdir);
+    } catch {
+      return;
+    }
+    if (!(await this.autoMergePassed(fresh, w, headSha))) return;
+    const key = `${project.id}\u0000${w.ticketId}\u0000${headSha}`;
+    const now = this.clock().getTime();
+    const last = this.autoMergeTriedAt.get(key);
+    if (last !== undefined && now - last < AUTO_MERGE_RETRY_MS) return;
+    if (this.autoMergeTriedAt.size > 5_000) this.autoMergeTriedAt.clear();
+    this.autoMergeTriedAt.set(key, now);
+    if (await this.gateProblems(fresh, w, "merge")) return;
+    try {
+      const saved = await this.o.store.saveWorkflow({ ...w, status: "pending" });
+      this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+    } catch (error) {
+      if (!(error instanceof VersionConflictError)) throw error;
+    }
+  }
+
   private async agentQaRerun(
     project: ProjectConfig,
     w: WorkflowState,
@@ -1463,8 +1524,15 @@ export class Reconciler {
       return `model limit ${model}`;
     }
     const hostLimit = limits.perHost[project.host] ?? limits.defaultPerHost;
-    if (runs.filter((r) => r.host === project.host).length >= hostLimit)
-      return `host limit ${project.host}`;
+    const onHost = runs.filter((r) => r.host === project.host);
+    if (onHost.length >= hostLimit) return `host limit ${project.host}`;
+    const heavyLimit = limits.heavyPerHost?.[project.host] ?? limits.defaultHeavyPerHost;
+    if (
+      heavyLimit !== undefined &&
+      HEAVY_PHASES.has(w.phase) &&
+      onHost.filter((r) => HEAVY_PHASES.has(r.phase)).length >= heavyLimit
+    )
+      return `heavy limit ${project.host}`;
     if (project.dailyBudgetUsd !== undefined) {
       const spent = await this.o.store.getSpend(project.id, this.day());
       // Spend includes reservations for runs still in flight.
@@ -1767,8 +1835,12 @@ export class Reconciler {
     const problems = await this.gateProblems(fresh, w, phase);
     if (problems) return { ok: false, reason: problems, kind: "gates" };
 
-    // A manual QA handoff always needs a human merge approval, whatever the autonomy setting.
-    const manual = phase === "merge" && (await this.latestManualQa(w)) !== undefined;
+    // A manual QA handoff always needs a human merge approval, whatever the autonomy setting,
+    // except the auto-merge gate: the agent QA lane passed exactly this head (ADR 0007).
+    const manual =
+      phase === "merge" &&
+      (await this.latestManualQa(w)) !== undefined &&
+      !(await this.autoMergePassed(fresh, w, headSha));
     if (requiresApproval(mode, phase) || manual) {
       const run = await this.candidateRun(w, phase);
       if (!run) return { ok: false, reason: `no run to approve for ${phase}`, kind: "gates" };
@@ -2080,6 +2152,7 @@ export class Reconciler {
       runId,
       projectId: project.id,
       ticketId: w.ticketId,
+      phase: w.phase,
       model,
       provider,
       host: project.host,

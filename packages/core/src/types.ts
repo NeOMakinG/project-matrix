@@ -1,3 +1,4 @@
+import type { DeployProfile } from "./deploy-profile.js";
 import type { DesignInput } from "./design.js";
 import type { AutonomyMode, Phase, Receipt, RunnerId, RunStatus } from "./ports.js";
 
@@ -86,6 +87,8 @@ export interface QaSettings {
 
 export interface ProjectConfig {
   qa?: QaSettings;
+  /** Deploy stage (ADR 0007): auto-merge gate and per-target deploys after the merge. */
+  deploy?: DeployProfile;
   agents?: { designFirst?: boolean; figmaMcp?: boolean };
   design?: DesignInput;
   id: string;
@@ -171,6 +174,12 @@ export interface Limits {
   defaultPerModel: number;
   perHost: Record<string, number>;
   defaultPerHost: number;
+  /**
+   * Heavy runs (QA builds/emulators, deploys) per host; light runs (agents, checks, review) only
+   * count against `perHost`. Unset: heavy runs are bounded by `perHost` alone.
+   */
+  heavyPerHost?: Record<string, number>;
+  defaultHeavyPerHost?: number;
 }
 
 export interface BackoffPolicy {

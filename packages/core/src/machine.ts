@@ -26,6 +26,10 @@ const CHECK_KINDS = new Set(["typecheck", "lint", "test", "adr-check"]);
 const LOOP_BACK: ReadonlySet<Phase> = new Set(["checks", "review", "qa", "verify"]);
 
 export function autonomyFor(config: ProjectConfig, phase: Phase): AutonomyMode {
+  // A deploy profile with `merge: "auto"` is the operator's explicit opt-in for both irreversible
+  // phases; the auto-merge gate (agent QA PASS, green CI, 0 P1) still holds in authorize().
+  if ((phase === "merge" || phase === "deploy") && config.deploy?.merge === "auto")
+    return "autonomous";
   return config.autonomy[phase] ?? config.autonomy.default;
 }
 
@@ -190,7 +194,9 @@ export function advance(
         effects: [{ type: "request_approval", phase: "design" }],
       };
     }
-    if (config.lastPhase === state.phase)
+    // A deploy profile extends an external repo's run past the merge: deploy, then verify.
+    const last = config.deploy && config.lastPhase === "merge" ? "verify" : config.lastPhase;
+    if (last === state.phase)
       return { state: { ...withModel, status: "done" }, effects: [{ type: "done" }] };
     const next =
       state.phase === "spike"
