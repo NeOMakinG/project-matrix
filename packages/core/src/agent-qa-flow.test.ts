@@ -273,11 +273,76 @@ test("a failed label write after FAIL is retried; a stale qa:passed never stays"
     if (label === "qa:failed" && failures-- > 0) throw new Error("linear down");
     return add(id, label);
   };
-  await h.drain();
+  const step = async () => {
+    await h.reconciler.tick();
+    await h.reconciler.idle();
+    await h.reconciler.agentQaIdle();
+  };
+  for (let i = 0; i < 50 && reports(h).length === 0; i++) await step();
+  expect(failures).toBe(1);
+  // Backed off: the next tick before the wait is over does not retry.
+  await step();
+  expect(failures).toBe(1);
+  // Retries back off (30 s, then 60 s) and land once the wait is over.
+  for (let i = 0; i < 2; i++) {
+    h.advanceClock(2 * 60_000);
+    await step();
+  }
   const labels = h.tickets.tickets.get(t.id)?.labels ?? [];
   expect(failures).toBeLessThan(0);
   expect(labels).toContain("qa:failed");
   expect(labels).not.toContain("qa:passed");
+});
+
+test("a label Matrix may not create: no per-tick storm, logged at most hourly, lands once created", async () => {
+  // PASS parks the ticket at merge (no re-run), so the queued fix stays the newest one.
+  const { h, requests } = agentHarness([reportOutcome(report())]);
+  await h.setup();
+  const t = await addTicket(h);
+  const add = h.tickets.addLabel.bind(h.tickets);
+  let forbidden = true;
+  let attempts = 0;
+  h.tickets.addLabel = async (id: string, label: string) => {
+    if (label === "qa:passed") {
+      attempts++;
+      if (forbidden)
+        throw Object.assign(new Error('create label "qa:passed" in team NEO: not allowed'), {
+          code: "FORBIDDEN",
+        });
+    }
+    return add(id, label);
+  };
+  const step = async () => {
+    await h.reconciler.tick();
+    await h.reconciler.idle();
+    await h.reconciler.agentQaIdle();
+  };
+  for (let i = 0; i < 50 && reports(h).length === 0; i++) await step();
+  const logged = () =>
+    h.events.filter(
+      (e) => e.type === "tracker.failed" && "operation" in e && e.operation === "agent-qa-labels",
+    ).length;
+  expect(attempts).toBe(1);
+  expect(logged()).toBe(1);
+  // 30 ticks 30 s apart (15 min): backoff 30 s, 1, 2, 4, 8 min... far fewer than 30 tries, one log.
+  for (let i = 0; i < 30; i++) {
+    h.advanceClock(30_000);
+    await step();
+  }
+  expect(attempts).toBeLessThanOrEqual(6);
+  expect(logged()).toBe(1);
+  // The delay never exceeds an hour, and a still-failing write logs again only after an hour.
+  for (let i = 0; i < 4; i++) {
+    h.advanceClock(60 * 60_000);
+    await step();
+  }
+  expect(logged()).toBeGreaterThan(1);
+  expect(logged()).toBeLessThanOrEqual(5);
+  forbidden = false;
+  h.advanceClock(60 * 60_000);
+  await step();
+  expect(h.tickets.tickets.get(t.id)?.labels).toContain("qa:passed");
+  expect(requests).toHaveLength(1);
 });
 
 test("no acceptance criteria: BLOCKED before any device time, never a pass", async () => {
@@ -329,7 +394,10 @@ test("a PR-label retry never rewrites ticket labels that landed (needs-human rem
     if (label === "needs-human") needsHuman++;
     return add(id, label);
   };
-  for (let i = 0; i < 5; i++) await h.drain();
+  for (let i = 0; i < 5; i++) {
+    await h.drain();
+    h.advanceClock(10 * 60_000);
+  }
   expect(needsHuman).toBe(1);
   expect(prLabels).toEqual([{ add: [], remove: ["qa:passed"] }]);
   expect(requests).toHaveLength(1);

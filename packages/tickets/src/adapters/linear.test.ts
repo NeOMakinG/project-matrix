@@ -90,6 +90,22 @@ describe("LinearTicketStore", () => {
     expect(stateOf(fake, t.id)).toBe("Canceled");
   });
 
+  test("an existing label is reused when creating labels is forbidden; a missing one names the fix", async () => {
+    const { fake, store } = make();
+    const t = await store.create({ title: "T", body: "", labels: ["qa:passed"] });
+    fake.labelCreateForbidden = true;
+    const creates = () => fake.calls.filter((c) => c.op === "MatrixLabelCreate").length;
+    const before = creates();
+    await store.removeLabel(t.id, "qa:passed");
+    await store.addLabel(t.id, "qa:passed");
+    expect((await store.get(t.id))?.labels).toContain("qa:passed");
+    expect(creates()).toBe(before);
+    await expect(store.addLabel(t.id, "qa:failed")).rejects.toMatchObject({
+      code: "FORBIDDEN",
+      message: expect.stringContaining('create label "qa:failed" in team NEO'),
+    });
+  });
+
   test("labels patch keeps the project label; assignee resolves a user", async () => {
     const { store } = make();
     const t = await store.create({ title: "T", body: "", labels: ["a"] });
