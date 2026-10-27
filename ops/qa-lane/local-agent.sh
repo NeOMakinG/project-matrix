@@ -5,7 +5,8 @@
 # reads only the job dir, writes only out/, and runs with a cleared environment: HOME is a
 # throwaway dir under the job (no user config, no ~/.claude), the gateway key is the only secret
 # for web, plus the tapflow relay token for iOS (used by ./qa-ios, locked to one simulator).
-# Exit codes: 2 bad arguments, 30 agent failed.
+# Exit codes: 2 bad arguments, 30 agent failed. The timeouts run in the foreground so the whole
+# agent stays in the caller's process group (the lane kills that group when it loses its lock).
 set -euo pipefail
 die() { echo "$2" >&2; exit "$1"; }
 dir="$1" mode="$2" model="$3" timeout_s="$4"
@@ -43,18 +44,21 @@ json.dump({"projects": {d: {"hasTrustDialogAccepted": True}}, "hasCompletedOnboa
 PY
 cd "$dir"
 # `secrets run` resolves the keys; the agent's env is rebuilt from scratch with those alone.
-timeout -k 30 $((timeout_s + 120)) "$SECRETS" run -- bash -c '
+timeout --foreground -k 30 $((timeout_s + 120)) "$SECRETS" run -- bash -c '
   dir="$1" model="$2" timeout_s="$3" gateway="$4" claude="$5" path="$6" mode="$7"; shift 7
   extra=()
   # The PAT goes to a 0600 file outside the job dir (Read(./**) cannot reach it), read by ./qa-ios
   # alone: never in the agent environment, where `./qa-ios type $TAPFLOW_TOKEN` would leak it.
-  if [[ -n "${TAPFLOW_TOKEN:-}" && "$mode" == ios ]]; then
-    tok="$dir.tok"; (umask 077; printf %s "$TAPFLOW_TOKEN" >"$tok")
+  # The lane has its own revocable relay PAT (TAPFLOW_MATRIX_QA_TOKEN, view+builds:write); the
+  # shared host PAT is the fallback.
+  pat="${TAPFLOW_MATRIX_QA_TOKEN:-${TAPFLOW_TOKEN:-}}"
+  if [[ -n "$pat" && "$mode" == ios ]]; then
+    tok="$dir.tok"; (umask 077; printf %s "$pat" >"$tok")
     extra=(TAPFLOW_RELAY_WS="$TAPFLOW_RELAY_WS")
   fi
   exec env -i HOME="$dir/home" TMPDIR="$dir/home" PATH="$path:/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 \
     ANTHROPIC_BASE_URL="$gateway" ANTHROPIC_AUTH_TOKEN="$CLIPROXY_API_KEY" "${extra[@]}" \
-    timeout -k 30 "$timeout_s" "$claude" -p --model "$model" --setting-sources project --strict-mcp-config "$@"' \
+    timeout --foreground -k 30 "$timeout_s" "$claude" -p --model "$model" --setting-sources project --strict-mcp-config "$@"' \
   bash "$dir" "$model" "$timeout_s" "$GATEWAY" "$CLAUDE" "$NODE_DIR" "$mode" "${mcp[@]}" \
     --allowedTools "${allow[@]}" --disallowedTools "${deny[@]}" \
   <"$dir/prompt.md" >"$dir/agent.log" 2>&1 || { tail -c 800 "$dir/agent.log" >&2; exit 30; }

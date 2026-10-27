@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# sim-lock: cooperative lock for the shared iOS simulators on the Mac mini (tapflow host).
+# Installed on the mini as ~/.local/bin/sim-lock. Same protocol as the Matrix iOS QA lane
+# (ops/qa-lane/ios-qa.sh): one directory per simulator UDID under /Users/Shared/sim-lock, holding
+# owner (a token), holder, tenant, beat (epoch seconds) and since. mkdir is the atomic acquire.
+# A holder beats at least every 5 minutes; a lock silent for 20 minutes is stale and reclaimed.
+# A live tapflow session on the simulator (dashboard tester, tapflow-mcp, flow run) also counts
+# as busy: acquire waits for it.
+#
+#   sim-lock acquire <udid> <holder> [wait_s=1200] [tenant=agent]   prints the token; exit 12 busy
+#   sim-lock beat    <udid> <token>
+#   sim-lock release <udid> <token>
+#   sim-lock status  [udid]
+#   sim-lock run     <udid> <holder> <wait_s> -- <command...>   acquire, beat while it runs, release
+set -euo pipefail
+LOCKS="${MATRIX_SIM_LOCK_DIR:-/Users/Shared/sim-lock}"
+STALE_S=1200
+RELAY_WS="${MATRIX_QA_RELAY_WS:-ws://127.0.0.1:4000}"
+NODE_BIN="${MATRIX_QA_NODE_BIN:-$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | tail -1)}"
+[[ -n "$NODE_BIN" && -d "$NODE_BIN" ]] && PATH="$NODE_BIN:$PATH"
+
+die() { echo "$2" >&2; exit "$1"; }
+need() { [[ "$2" =~ $3 ]] || die 2 "invalid $1"; }
+udid_ok() { need udid "$1" '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$'; }
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || date +%s; }
+
+# Beats are published atomically; an unreadable beat falls back to the lock directory's age.
+beat_of() { local b; b=$(cat "$1/beat" 2>/dev/null || true); [[ "$b" =~ ^[0-9]+$ ]] && echo "$b" || mtime "$1"; }
+write_beat() { date +%s >"$1/beat.$$" && mv -f "$1/beat.$$" "$1/beat"; }
+# Every change of a lock's owner (acquire, release, stale reclaim) happens under one guard, so a
+# reclaimer never removes a lock that was released and re-acquired after it judged it stale.
+guard() {
+  # An OS file lock (flock through perl on fd 9, kept by this shell after perl exits): released by
+  # the kernel if the holder dies, so it never needs age-based recovery.
+  (umask 000; mkdir -p "$LOCKS"; : >>"$LOCKS/.guard.lck")
+  exec 9>>"$LOCKS/.guard.lck"
+  perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or exit 2;
+    for (1 .. 300) { exit 0 if flock($f, LOCK_EX | LOCK_NB); select(undef, undef, undef, 0.2) } exit 1' \
+    || { exec 9>&-; return 1; }
+}
+unguard() { exec 9>&-; }
+# Under the guard: a lock silent for STALE_S is removed. Returns 0 when it was.
+reclaim_stale() {
+  local l="$1"
+  [[ -d "$l" ]] && (( $(date +%s) - $(beat_of "$l") > STALE_S )) || return 1
+  echo "reclaimed a stale simulator lock (holder $(cat "$l/holder" 2>/dev/null || echo unknown))" >&2
+  rm -rf "$l"
+}
+# Under the guard: create the lock with all its fields, or fail if it exists (reclaiming a stale one).
+take() {
+  local l="$1" owner="$2" holder="$3" tenant="$4" tmp
+  reclaim_stale "$l" || true
+  [[ -d "$l" ]] && return 1
+  tmp="$l.new.$$"; rm -rf "$tmp"; mkdir "$tmp"
+  echo "$owner" >"$tmp/owner"; echo "$holder" >"$tmp/holder"; echo "$tenant" >"$tmp/tenant"
+  date +%s >"$tmp/beat"; date +%s >"$tmp/since"
+  mv "$tmp" "$l"
+}
+
+tapflow_state() {
+  if [[ -n "${MATRIX_QA_TAPFLOW_STATE_FILE:-}" ]]; then cat "$MATRIX_QA_TAPFLOW_STATE_FILE"; return 0; fi
+  node -e '
+    const [url, udid] = process.argv.slice(1);
+    const done = (s) => { console.log(s); process.exit(0); };
+    setTimeout(() => done("error"), 8000);
+    let ws; try { ws = new WebSocket(url); } catch { done("error"); }
+    ws.onerror = () => done("error");
+    ws.onopen = () => ws.send(JSON.stringify({ type: "agents:list" }));
+    ws.onmessage = (e) => {
+      const m = JSON.parse(String(e.data));
+      if (m.type !== "agents:listed") return;
+      const d = (m.sessions ?? []).flatMap((s) => s.devices ?? []).find((x) => x.id === udid);
+      done(!d ? "absent" : d.busy ? "busy" : "free");
+    };' "$RELAY_WS" "$1" 2>/dev/null || echo error
+}
+
+acquire() {
+  local udid="$1" holder="$2" wait_s="${3:-1200}" tenant="${4:-agent}" L token deadline st
+  udid_ok "$udid"; need holder "$holder" '^[A-Za-z0-9._@-]{1,64}$'; need wait "$wait_s" '^[0-9]{1,5}$'
+  need tenant "$tenant" '^[a-z0-9-]{1,32}$'
+  (umask 000; mkdir -p "$LOCKS")
+  L="$LOCKS/$udid.lock"; token="$tenant-$(date +%s)-$$-$RANDOM"
+  deadline=$(( $(date +%s) + wait_s ))
+  while :; do
+    st=$(tapflow_state "$udid")
+    # An unreachable relay cannot report a tester: fail closed.
+    [[ "$st" == error ]] && die 11 "tapflow relay unreachable: cannot tell whether $udid is in use"
+    if [[ "$st" != busy ]]; then
+      guard || die 12 "simulator lock guard busy"
+      if take "$L" "$token" "$holder" "$tenant"; then
+        unguard
+        st=$(tapflow_state "$udid")
+        case "$st" in
+          free|absent) echo "$token"; return 0 ;;
+          error) release "$udid" "$token"; die 11 "tapflow relay unreachable: cannot tell whether $udid is in use" ;;
+          *) release "$udid" "$token" ;;
+        esac
+      else
+        unguard
+      fi
+    fi
+    (( $(date +%s) < deadline )) || die 12 "simulator $udid busy (lock: $(cat "$L/holder" 2>/dev/null || echo none), tapflow: $st)"
+    sleep 15
+  done
+}
+
+owned() { [[ "$(cat "$LOCKS/$1.lock/owner" 2>/dev/null || true)" == "$2" ]]; }
+release() { guard || return 0; owned "$1" "$2" && rm -rf "$LOCKS/$1.lock"; unguard; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  acquire) acquire "$@" ;;
+  beat)
+    udid_ok "${1:-}"; guard || die 12 "simulator lock guard busy"
+    owned "$1" "${2:-}" || { unguard; die 12 "not the holder of $1"; }
+    write_beat "$LOCKS/$1.lock"; unguard
+    ;;
+  release)
+    udid_ok "${1:-}"; release "$1" "${2:-}"
+    ;;
+  status)
+    for l in "$LOCKS"/*.lock; do
+      [[ -d "$l" ]] || continue
+      u=$(basename "$l" .lock); [[ -z "${1:-}" || "$u" == "$1" ]] || continue
+      age=$(( $(date +%s) - $(beat_of "$l") ))
+      echo "$u held by $(cat "$l/holder" 2>/dev/null || echo ?) ($(cat "$l/tenant" 2>/dev/null || echo ?)), last beat ${age}s ago$( (( age > STALE_S )) && echo ", stale")"
+    done
+    if [[ -n "${1:-}" ]]; then udid_ok "$1"; echo "$1 tapflow: $(tapflow_state "$1")"; fi
+    ;;
+  run)
+    udid="${1:-}" holder="${2:-}" wait_s="${3:-}"; shift 3 || die 2 "usage: sim-lock run <udid> <holder> <wait_s> -- <command...>"
+    [[ "${1:-}" == "--" ]] && shift
+    (( $# > 0 )) || die 2 "no command"
+    token=$(acquire "$udid" "$holder" "$wait_s")
+    beater="" pgid=""
+    finish() {
+      # The command runs in its own process group: stop all of it (leftover children included)
+      # before giving the lock back.
+      set +e
+      [[ -n "$beater" ]] && kill "$beater" 2>/dev/null
+      [[ -n "$pgid" ]] && kill -TERM -- "-$pgid" 2>/dev/null && sleep 1 && kill -KILL -- "-$pgid" 2>/dev/null
+      [[ -n "$pgid" ]] && wait "$pgid" 2>/dev/null
+      release "$udid" "$token"
+      true
+    }
+    trap 'finish; exit 143' INT TERM HUP
+    set -m; "$@" & pgid=$!; set +m
+    # Heartbeat; a lost lock stops the command (its group) at once and fails the run.
+    ( while sleep 60; do
+        guard || continue
+        if owned "$udid" "$token"; then write_beat "$LOCKS/$udid.lock"; unguard
+        else unguard; echo "sim-lock: lost the lock on $udid, stopping the command" >&2; kill -TERM -- "-$pgid" 2>/dev/null; sleep 10; kill -KILL -- "-$pgid" 2>/dev/null; exit 0; fi
+      done ) </dev/null >/dev/null 2>&1 &
+    beater=$!
+    rc=0; wait "$pgid" || rc=$?
+    owned "$udid" "$token" || rc=12
+    finish
+    exit "$rc"
+    ;;
+  *) die 2 "usage: sim-lock acquire|beat|release|status|run (see the header of this script)" ;;
+esac

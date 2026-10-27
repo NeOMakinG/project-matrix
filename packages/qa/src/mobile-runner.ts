@@ -8,7 +8,11 @@ export interface CommandResult {
 
 /** Runs an argv on some host (locally, or on the device host over SSH). Never through a local shell. */
 export interface CommandRunner {
-  run(argv: string[], options?: { timeoutMs?: number; stdin?: string }): Promise<CommandResult>;
+  run(
+    argv: string[],
+    /** `signal` aborts the command: locally its whole process group is killed. */
+    options?: { timeoutMs?: number; stdin?: string; signal?: AbortSignal },
+  ): Promise<CommandResult>;
 }
 
 const MAX_STDOUT = 64 * 1024 * 1024;
@@ -19,11 +23,23 @@ export function localRunner(): CommandRunner {
       new Promise((resolve, reject) => {
         const [cmd, ...args] = argv;
         if (!cmd) return reject(new Error("empty command"));
-        const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"] });
+        const signal = options.signal;
+        // An abortable command leads its own process group so the abort reaches its children.
+        const child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], detached: !!signal });
         const out: Buffer[] = [];
         let size = 0;
         let err = "";
-        const timer = setTimeout(() => child.kill("SIGKILL"), options.timeoutMs ?? 120_000);
+        const kill = () => {
+          try {
+            if (signal && child.pid) process.kill(-child.pid, "SIGKILL");
+            else child.kill("SIGKILL");
+          } catch {
+            child.kill("SIGKILL");
+          }
+        };
+        const timer = setTimeout(kill, options.timeoutMs ?? 120_000);
+        if (signal?.aborted) kill();
+        signal?.addEventListener("abort", kill, { once: true });
         child.stdout.on("data", (d: Buffer) => {
           size += d.length;
           if (size <= MAX_STDOUT) out.push(d);
@@ -35,8 +51,25 @@ export function localRunner(): CommandRunner {
           clearTimeout(timer);
           reject(e);
         });
+        // Leftovers of an abortable command are killed on exit (they may hold its pipes open).
+        child.on("exit", () => {
+          if (signal && child.pid)
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              // the group is already gone
+            }
+        });
         child.on("close", (code) => {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", kill);
+          // An abortable command owns its group: reap whatever it left running.
+          if (signal && child.pid)
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              // the group is already gone
+            }
           resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err });
         });
         // SSH may exit before reading all of stdin: EPIPE must not crash the server.

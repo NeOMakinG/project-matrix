@@ -299,8 +299,17 @@ device (Daymark's X scan cron on the Seeker at :10 past 9, 11, 14, 16, 19 and 21
 ### iOS (`ios-qa-lane.ts`, `ops/qa-lane/ios-qa.sh`)
 
 - Simulator host: the Mac mini (`mini@100.105.165.15`), shared tapflow simulator by UDID (never
-  a personal device). Single tenant: `mkdir` lock `/tmp/matrix-qa-ios.lock` (owner, holder,
-  heartbeat, 2 h stale), plus this process's queue.
+  a personal device). Shared lock, one per simulator: `/Users/Shared/sim-lock/<UDID>.lock`
+  (`mkdir`; owner, holder, tenant, beat, since). The lane beats it every 4 minutes from its own
+  SSH session; a lock silent for 20 minutes is stale and reclaimed (moved aside atomically, only
+  if still the one judged stale); a restarted server reclaims its own holder's lock. tapflow has no
+  reservation API, only session occupancy: the lane asks the relay (`agents:list` over the local
+  WebSocket, no token) and treats a live session on the simulator (a tester in the dashboard,
+  tapflow-mcp, a flow run) as busy, before taking the lock and again before installing (a session
+  joined during the build). Busy past `waitMs` is BLOCKED "simulator busy"; an unreachable relay is
+  "simulator unavailable". Other tenants use the same protocol through `sim-lock`
+  (`ops/qa-lane/sim-lock.sh`, installed on the mini as `~/.local/bin/sim-lock`:
+  `sim-lock run <udid> <holder> <wait_s> -- <command>`, or `acquire`/`beat`/`release`/`status`).
 - Build on the mini: bare mirror fetched with the mini's `gh`, checkout at the exact head SHA
   (refused if the PR moved), then the operator's build command (wayline: `npm ci`,
   `qa-metro-env.mjs simulator <staging> ios` which refuses production, `EXPO_PUBLIC_QA_ENABLED=1`,
@@ -312,10 +321,15 @@ device (Daymark's X scan cron on the Seeker at :10 past 9, 11, 14, 16, 19 and 21
   throwaway HOME, tools = `./qa-ios` (`packages/qa/bin/qa-ios.mjs`: tap, swipe, type, key, home/lock
   over the tapflow relay WebSocket with the PAT header, locked to the job's UDID) and
   `./qa-shot <name>` (simctl screenshot over a fixed SSH step). The relay's own MCP server is not
-  used: it connects without the PAT and this relay refuses it; its UI-tree and screenshot routes
-  need a relay-installed build (a PAT with `builds:write`). Secrets: gateway key + tapflow PAT.
+  used: it connects without the PAT and this relay refuses it. Its UI-tree route reads the app the
+  relay itself launched, which needs the build registered on the relay (upload, `builds:write`;
+  the relay's install also uninstalls the app first, wiping its data). Not done: it costs a few
+  hundred MB of relay uploads per job on a full disk. Secrets: gateway key + the lane's own relay
+  PAT `TAPFLOW_MATRIX_QA_TOKEN` (`view,builds:write`, 365 days, revocable on its own; minted
+  2026-10-27 through the relay's token API), falling back to the host's `TAPFLOW_TOKEN`.
 - Residual risk: PR build code runs as the mini's user (which holds a `gh` login); the PAT can
-  drive the relay's other devices. Owner follow-up: a dedicated macOS build user on the mini.
+  drive the relay's other devices. Owner follow-up: a dedicated macOS build user on the mini
+  (needs sudo, see "iOS build user" below).
 
 ### Web (`web-qa-lane.ts`, `packages/qa/bin/qa-browser.mjs`)
 
@@ -356,3 +370,21 @@ that sandbox themselves (`sandbox_apply: Operation not permitted` from coremlc; 
 plugins and SwiftPM manifests likewise). `ios.sandboxBuild: false` runs the build as the mini's
 user, the same exposure as the mini's existing manual lanes. The fix is a dedicated macOS build
 account on the mini (needs the owner's sudo), then `sandboxBuild` can stay false safely.
+
+### iOS build user (owner step, needs sudo on the mini)
+
+The agent has no sudo on the mini. Commands for the owner (`ssh mini@100.105.165.15`):
+
+```bash
+sudo sysadminctl -addUser matrixbuild -fullName "Matrix iOS build" -password - -home /Users/matrixbuild
+sudo createhomedir -c -u matrixbuild
+sudo dscl . -create /Users/matrixbuild IsHidden 1
+sudo dseditgroup -o edit -a matrixbuild -t user _developer
+sudo mkdir -p /Users/Shared/matrix-build && sudo chown matrixbuild:staff /Users/Shared/matrix-build && sudo chmod 2770 /Users/Shared/matrix-build
+echo 'mini ALL=(matrixbuild) NOPASSWD: /bin/bash /Users/Shared/matrix-build/build-step.sh *' | sudo tee /etc/sudoers.d/matrix-build
+sudo chmod 440 /etc/sudoers.d/matrix-build && sudo visudo -c
+```
+
+Then the lane needs a `buildUser` switch (follow-up PR): checkout and build under
+`/Users/Shared/matrix-build` through `sudo -u matrixbuild`, with no `gh` login, no SSH keys and no
+`~/.secrets` in that account; the mini user keeps fetching the mirror and installing the `.app`.

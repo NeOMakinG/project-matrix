@@ -46,11 +46,17 @@ export async function runLocalAgent(
   mode: "ios" | "web",
   model: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<void> {
   const script = join(REPO_ROOT, "ops", "qa-lane", "local-agent.sh");
+  // Always abortable: the agent then runs in its own process group, killed whole on timeout or
+  // abort and reaped when it exits (no tool process outlives the run).
+  const own = new AbortController();
+  signal?.addEventListener("abort", () => own.abort(), { once: true });
+  if (signal?.aborted) own.abort();
   const r = await runner.run(
     ["bash", script, dir, mode, model, String(Math.round(timeoutMs / 1000))],
-    { timeoutMs: timeoutMs + 240_000 },
+    { timeoutMs: timeoutMs + 240_000, signal: own.signal },
   );
   if (r.exitCode !== 0)
     throw new Error(
