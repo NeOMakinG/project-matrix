@@ -232,3 +232,40 @@ describe("orca route: long scripts", () => {
     expect(calls.filter((c) => c[1] === "send").length).toBeGreaterThan(3);
   });
 });
+
+describe("orca route: upload integrity", () => {
+  test("an incomplete upload never runs: the failure sentinel ends the run", async () => {
+    let final = "";
+    let ready = "";
+    const cli: OrcaCaller = {
+      async call(args) {
+        if (args[0] === "worktree" && args[1] === "create") return { worktree: { path: "/w" } };
+        if (args[1] === "create") return { terminal: { handle: "t" } };
+        if (args[1] === "send") {
+          const text = args[args.indexOf("--text") + 1]!;
+          if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
+          if (text.startsWith("if [")) final = text;
+          return {};
+        }
+        if (args[1] === "read") {
+          if (!final) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
+          // Real sh: the temp file holds only a prefix of the upload.
+          const out = execFileSync(
+            "/bin/sh",
+            ["-c", `_mx_f=$(mktemp); printf %s QUJD >"$_mx_f"; ${final}`],
+            { encoding: "utf8" },
+          );
+          return { terminal: { tail: out.split("\n"), nextCursor: "1" } };
+        }
+        return {};
+      },
+    };
+    const r = await runViaOrca(route, ["fly", "x".repeat(5_000)], {
+      repo: "o/r",
+      timeoutMs: 10_000,
+      cli,
+      sleep: async () => undefined,
+    });
+    expect(r.exitCode).toBe(99);
+  });
+});

@@ -196,7 +196,10 @@ async function typeScript(
   await send(`umask 077; _mx_f="\${TMPDIR:-/tmp}/mx-${nonce}.b64"; : >"$_mx_f"`);
   for (let i = 0; i < encoded.length; i += CHUNK)
     await send(`printf %s ${encoded.slice(i, i + CHUNK)} >>"$_mx_f"`);
-  await send('_mx_s="$(base64 -d <"$_mx_f")"; rm -f "$_mx_f"; /bin/sh -c "$_mx_s"');
+  // Runs only a complete, decodable upload; anything else prints the failure sentinel.
+  await send(
+    `if [ "$(wc -c <"$_mx_f" | tr -d ' ')" = ${encoded.length} ] && _mx_s="$(base64 -d <"$_mx_f")"; then rm -f "$_mx_f"; /bin/sh -c "$_mx_s"; else rm -f "$_mx_f"; printf '__MX%s_%s__\\n' X ${nonce}; fi`,
+  );
 }
 
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -335,6 +338,13 @@ export async function runViaOrca(
       else lines.splice(0, lines.length, ...tail);
       if (lines.length > 6_000) lines.splice(0, lines.length - 6_000);
       cursor = next ?? cursor;
+      if (lines.some((l) => l.trim() === `__MXX_${nonce}__`))
+        return {
+          exitCode: 99,
+          stdout: "",
+          output: "orca route: script upload incomplete; nothing ran",
+          trace,
+        };
       const got = decodePayload(lines, nonce, opts.allowTruncated);
       if (got) return { ...got, trace };
       if (Date.now() >= deadline) {
