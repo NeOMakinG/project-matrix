@@ -44,6 +44,8 @@ interface Opts {
   finished?: string[];
   trusted?: boolean;
   exists?: boolean;
+  raced?: boolean;
+  existsError?: boolean;
 }
 
 function setup(o: Opts = {}) {
@@ -53,7 +55,8 @@ function setup(o: Opts = {}) {
     "pr" in o ? o.pr : { state: "MERGED", headRefOid: HEAD, closedAt: NOW - SETTLE_MS - 1 };
   const ports: TicketCleanupPorts = {
     workflows: async () => (stored ? [stored] : []),
-    getWorkflow: async () => stored,
+    getWorkflow: async () =>
+      o.raced && stored ? { ...stored, status: "pending", version: stored.version + 1 } : stored,
     clearWorkdir: async (w) => {
       calls.push("clear");
       const { workdir: _a, workspaceRef: _b, ...rest } = w;
@@ -63,7 +66,10 @@ function setup(o: Opts = {}) {
     prState: async () => pr,
     trusted: async () =>
       o.trusted === false ? undefined : { gitdir: "/r/.git/worktrees/x", commonDir: "/r/.git" },
-    exists: async () => o.exists !== false,
+    exists: async () => {
+      if (o.existsError) throw new Error("EACCES");
+      return o.exists !== false;
+    },
     git: async (_gitdir, _wt, args) => {
       calls.push(`git ${args.join(" ")}`);
       if (args[0] === "status") return { exitCode: 0, stdout: o.porcelain ?? "" };
@@ -196,11 +202,23 @@ describe("ticket cleanup safety", () => {
     expect(t.calls).not.toContain("close term_other");
   });
 
-  it("does not clear the workflow when git refuses the removal", async () => {
+  it("claims the workflow before destroying, keeps registries when git refuses", async () => {
     const t = setup({ removeExit: 128 });
     expect((await t.cleanup.sweep())[0]?.reason).toMatch(/refused/);
-    expect(t.calls).not.toContain("clear");
+    expect(t.calls.indexOf("clear")).toBeLessThan(t.calls.indexOf("close term_a"));
     expect(t.calls).not.toContain("forget");
+  });
+
+  it("destroys nothing when the workflow moved before the claim", async () => {
+    const t = setup({ raced: true });
+    expect((await t.cleanup.sweep())[0]?.reason).toMatch(/changed/);
+    expect(destructive(t.calls)).toEqual([]);
+  });
+
+  it("skips (never treats as absent) a worktree path it cannot stat", async () => {
+    const t = setup({ existsError: true });
+    expect((await t.cleanup.sweep())[0]?.outcome).toBe("skipped");
+    expect(destructive(t.calls)).toEqual([]);
   });
 
   it("skips worktrees missing from the trusted registry", async () => {
@@ -235,6 +253,6 @@ describe("ticket cleanup parsing", () => {
       { run: { worktree: WD, coordinator: "term_c" }, terminal: "term_d" },
       { run: { worktree: "/elsewhere", coordinator: "term_e" }, terminal: "term_f" },
     ];
-    expect([...finishedFromEvidence(docs, WD)].sort()).toEqual(["term_c", "term_d"]);
+    expect([...finishedFromEvidence(docs, WD)]).toEqual(["term_d"]);
   });
 });

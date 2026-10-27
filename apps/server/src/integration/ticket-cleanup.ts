@@ -198,6 +198,10 @@ export class TicketCleanup {
     )
       return this.#act(w, workdir, "skipped", "workflow changed during the sweep");
 
+    // Claim first: once the workflow no longer points at this worktree, the reconciler will never
+    // run in it again (a restart prepares a fresh one), so nothing can race the removal below.
+    if (!(await p.clearWorkdir(latest)))
+      return this.#act(w, workdir, "skipped", "workflow changed during the sweep");
     for (const handle of handles) await p.closeTerminal(handle);
     const containers = await p.stopSandbox({ projectId: w.projectId, ticketId: w.ticketId });
     if (present && trusted) {
@@ -209,18 +213,13 @@ export class TicketCleanup {
         workdir,
       ]);
       if (removed.exitCode !== 0)
-        return this.#act(w, workdir, "skipped", "git worktree remove refused", {
+        return this.#act(w, workdir, "skipped", "git worktree remove refused; left on disk", {
           terminals: handles,
           containers,
         });
     }
     if (trusted) await p.git(trusted.commonDir, undefined, ["worktree", "prune"]);
     await p.forget(workdir);
-    if (!(await p.clearWorkdir(latest)))
-      return this.#act(w, workdir, "skipped", "workflow changed before it was updated", {
-        terminals: handles,
-        containers,
-      });
     return this.#act(w, workdir, "cleaned", reason, { terminals: handles, containers });
   }
 }
@@ -265,8 +264,8 @@ export function finishedFromEvidence(docs: unknown[], workdir: string): Set<stri
   for (const doc of docs) {
     const d = doc as { run?: { worktree?: unknown; coordinator?: unknown }; terminal?: unknown };
     if (d?.run?.worktree !== workdir) continue;
+    // Only dispatch terminals: their evidence is written after the agent process exited.
     if (typeof d.terminal === "string") out.add(d.terminal);
-    if (typeof d.run.coordinator === "string") out.add(d.run.coordinator);
   }
   return out;
 }

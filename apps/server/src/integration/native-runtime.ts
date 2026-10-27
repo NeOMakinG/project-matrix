@@ -424,11 +424,17 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
         (t) => ({ gitdir: t.gitdir, commonDir: t.commonDir }),
         () => undefined,
       ),
-    exists: (path) =>
-      lstat(path).then(
-        (s) => s.isDirectory() && !s.isSymbolicLink(),
-        () => false,
-      ),
+    // Only a confirmed ENOENT is "absent"; anything odd (EACCES, a file or symlink) throws.
+    exists: async (path) => {
+      try {
+        const s = await lstat(path);
+        if (s.isDirectory() && !s.isSymbolicLink()) return true;
+        throw new Error("worktree path is not a plain directory");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    },
     git: async (gitdir, workTree, args) => {
       const result = await runToCompletion(hostExecutor, {
         cmd: ["git", ...gitLocation(gitdir, workTree), ...args],
@@ -454,7 +460,13 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
           .filter((n) => n.endsWith(".json"))
           .map((n) =>
             readFile(join(evidenceDir, n), "utf8").then(
-              (t) => JSON.parse(t) as unknown,
+              (t) => {
+                try {
+                  return JSON.parse(t) as unknown;
+                } catch {
+                  return undefined;
+                }
+              },
               () => undefined,
             ),
           ),
