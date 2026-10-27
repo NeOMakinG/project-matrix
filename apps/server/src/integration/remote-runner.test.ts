@@ -279,3 +279,36 @@ describe("runner host safety", () => {
     expect(res.exitCode).toBe(98);
   });
 });
+
+describe("remote check report path", () => {
+  test("the wrapper gives an absolute report path in args and env, even after a cd", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, readFileSync, mkdirSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { REPORT_PLACEHOLDER, REPORT_WRAPPER } = await import("./remote-runner.js");
+    const root = mkdtempSync(join(tmpdir(), "mx-rep-"));
+    mkdirSync(join(root, "app"));
+    execFileSync(
+      "/bin/sh",
+      [
+        "-c",
+        REPORT_WRAPPER,
+        "sh",
+        "1",
+        "OUT_ENV",
+        "sh",
+        "-c",
+        'cd app && printf env >"$OUT_ENV" && printf arg >"$1"',
+        "inner",
+        `${REPORT_PLACEHOLDER}/a.json`,
+      ],
+      { cwd: root, env: { PATH: process.env.PATH ?? "", OUT_ENV: `${REPORT_PLACEHOLDER}/e.tap` } },
+    );
+    expect(readFileSync(join(root, ".matrix-report/e.tap"), "utf8")).toBe("env");
+    expect(readFileSync(join(root, ".matrix-report/a.json"), "utf8")).toBe("arg");
+    expect(() =>
+      execFileSync("/bin/sh", ["-c", REPORT_WRAPPER, "sh", "1", "BAD;rm", "true"], { cwd: root }),
+    ).toThrow();
+  });
+});

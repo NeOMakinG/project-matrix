@@ -296,6 +296,23 @@ export async function remoteContext(
   };
 }
 
+/** Stands for the absolute report directory on the runner host (see REPORT_WRAPPER). */
+export const REPORT_PLACEHOLDER = "@@MATRIX_REPORT_DIR@@";
+
+/**
+ * `sh -c` wrapper: `$1` = count of env names, then those names, then the argv. Creates
+ * "$PWD/.matrix-report" and swaps the placeholder for it in those env values and in every arg.
+ * Env names come from the spec and are validated as identifiers by the route before `eval`.
+ */
+export const REPORT_WRAPPER = [
+  'r="$PWD/.matrix-report"; mkdir -p "$r" || exit 97',
+  `sub() { printf '%s' "$1" | sed "s|${REPORT_PLACEHOLDER}|$r|g"; }`,
+  'n="$1"; shift',
+  'while [ "$n" -gt 0 ]; do k="$1"; shift; case "$k" in *[!A-Za-z0-9_]*|[0-9]*|"") exit 96;; esac; eval "v=\\${$k-}" || exit 95; export "$k=$(sub "$v")"; n=$((n-1)); done',
+  'for a; do shift; set -- "$@" "$(sub "$a")"; done',
+  'exec "$@"',
+].join("\n");
+
 /** LineExecutor that runs one runner CLI spec on the remote host (implement collects edits). */
 export function remoteLineExecutor(
   c: RemoteRunContext,
@@ -341,12 +358,21 @@ export function remoteAwareSandbox(local: Sandbox, r: RemoteRunners | undefined)
       );
       if (!c) return local.exec(spec, signal);
       const rel = spec.report ? `.matrix-report/${spec.report.name}` : undefined;
+      // Checks may change directory (`npm --prefix app`), so the report path the command sees
+      // is absolute: a placeholder swapped on the host for "$PWD/.matrix-report" by the wrapper.
       const swap = (v: string) =>
-        rel ? v.split(`${REPORT_MOUNT}/${spec.report!.name}`).join(rel) : v;
+        rel
+          ? v
+              .split(`${REPORT_MOUNT}/${spec.report!.name}`)
+              .join(`${REPORT_PLACEHOLDER}/${spec.report!.name}`)
+          : v;
       const argv = spec.cmd.map(swap);
       const env = Object.fromEntries(Object.entries(spec.env ?? {}).map(([k, v]) => [k, swap(v)]));
+      const swapped = Object.keys(env).filter((k) => env[k]!.includes(REPORT_PLACEHOLDER));
       const res = await runRemote(c, {
-        argv: rel ? ["sh", "-c", 'mkdir -p .matrix-report && exec "$@"', "sh", ...argv] : argv,
+        argv: rel
+          ? ["sh", "-c", REPORT_WRAPPER, "sh", String(swapped.length), ...swapped, ...argv]
+          : argv,
         env,
         timeoutMs: spec.timeoutMs,
         // Like the local sandbox's output cap: a long log is cut, never a false failure.
