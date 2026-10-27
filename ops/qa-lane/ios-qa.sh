@@ -223,6 +223,18 @@ case "$step" in
     need app_id "$app_id" '^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)+$'
     (( timeout_s <= 5400 )) || die 2 "timeout above the lock's stale limit"
     owns "$1"
+    # A build of an earlier job whose lock is gone (server restart, reclaimed) is stopped first: the
+    # checkout and build HOME are shared. One whose job still holds its lock means busy.
+    for p in "$ROOT"/jobs/*/build.pid; do
+      [[ -f "$p" ]] || continue
+      other=$(basename "$(dirname "$p")"); [[ "$other" == "$1" ]] && continue
+      op=$(cat "$p" 2>/dev/null || true)
+      [[ "$op" =~ ^[0-9]+$ ]] && kill -0 "$op" 2>/dev/null || continue
+      [[ -n "$(held_lock "$other")" ]] && die 12 "another Matrix build is running"
+      kill -TERM "$op" 2>/dev/null || true
+      for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 "$op" 2>/dev/null || break; sleep 5; done
+      kill -0 "$op" 2>/dev/null && die 12 "an earlier Matrix build did not stop"
+    done
     mirror="$ROOT/mirrors/${repo/\//__}.git" work="$ROOT/build/${repo/\//__}"
     mkdir -p "$ROOT/mirrors" "$ROOT/build" "$ROOT/build-home/tmp"
     cat >"$dir/build.sb" <<SB
@@ -282,6 +294,7 @@ SB
           $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 }; $SIG{TERM} = sub { kill "KILL", -$pid; exit 143 };
           alarm $t; waitpid($pid, 0); kill "KILL", -$pid; exit($? >> 8)' "$timeout_s" nice bash "$dir/build.sh" </dev/null &
       bpid=$!
+      echo "$bpid" >"$dir/build.pid"
       # Fence: the build beats the lock itself, and is killed if the lock is ever lost (reclaimed
       # by another tenant), so it never writes the shared build dir without owning it.
       ( while kill -0 "$bpid" 2>/dev/null; do
@@ -365,6 +378,12 @@ SB
     # Build output (node_modules, Pods, DerivedData) is rebuilt from scratch each job anyway:
     # drop it so the shared Mac keeps its disk.
     dir=$(job_dir "$1")
+    # A build still running (its SSH step timed out) is stopped before anything else.
+    op=$(cat "$dir/build.pid" 2>/dev/null || true)
+    if [[ "$op" =~ ^[0-9]+$ ]] && kill -0 "$op" 2>/dev/null; then
+      kill -TERM "$op" 2>/dev/null || true
+      for _ in 1 2 3 4 5 6; do kill -0 "$op" 2>/dev/null || break; sleep 5; done
+    fi
     # Only while this job still holds its lock: the build dir is shared (a job that lost it leaves
     # the output to the next precheck).
     if [[ -f "$dir/src" && -n "$(held_lock "$1")" ]]; then

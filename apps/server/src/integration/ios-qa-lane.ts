@@ -188,6 +188,7 @@ export class TapflowIosQaLane implements AgentQaPort {
     let lost = false;
     // Losing the lock stops the QA agent at once: it must not keep driving another tenant's sim.
     const stop = new AbortController();
+    let confirmedAt = Date.now();
     try {
       // Two rounds: the simulator host may be briefly overloaded or the sim mid-reboot.
       let info: string | undefined;
@@ -225,13 +226,23 @@ export class TapflowIosQaLane implements AgentQaPort {
       // Builds and agent runs outlast the stale window: beat from here, on its own SSH session.
       beater = setInterval(() => {
         if (!beater) return;
-        this.#step(["beat", job.id], 60_000).catch((e: Error) => {
-          if (e.message.startsWith(WHAT[12] ?? "simulator busy")) {
-            lost = true;
-            stop.abort();
-          }
-          console.error(`[ios-qa-lane] lock beat failed: ${e.message.slice(0, 160)}`);
-        });
+        // Renewals that cannot be confirmed (SSH down) stop the run before the lock can go stale.
+        if (Date.now() - confirmedAt > 3.5 * this.#beatMs) {
+          lost = true;
+          stop.abort();
+        }
+        this.#step(["beat", job.id], 60_000).then(
+          () => {
+            confirmedAt = Date.now();
+          },
+          (e: Error) => {
+            if (e.message.startsWith(WHAT[12] ?? "simulator busy")) {
+              lost = true;
+              stop.abort();
+            }
+            console.error(`[ios-qa-lane] lock beat failed: ${e.message.slice(0, 160)}`);
+          },
+        );
       }, this.#beatMs);
       beater.unref?.();
       const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");

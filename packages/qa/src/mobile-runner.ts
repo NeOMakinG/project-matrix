@@ -54,6 +54,13 @@ export function localRunner(): CommandRunner {
         child.on("close", (code) => {
           clearTimeout(timer);
           signal?.removeEventListener("abort", kill);
+          // An abortable command owns its group: reap whatever it left running.
+          if (signal && child.pid)
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              // the group is already gone
+            }
           resolve({ exitCode: code ?? -1, stdout: Buffer.concat(out), stderr: err });
         });
         // SSH may exit before reading all of stdin: EPIPE must not crash the server.
