@@ -58,6 +58,11 @@ export interface GitPort {
    * squashed change on `onto` and leaves the conflict markers uncommitted for the implementer.
    */
   syncOnto?(workdir: string, onto: string): Promise<BaseSyncResult>;
+  /**
+   * Optional (feature-detected): points the clean run branch at `headSha` (a commit pushed to the
+   * PR outside Matrix, already fetched) and moves the trusted BASE to `forkSha`.
+   */
+  adoptHead?(workdir: string, headSha: string, forkSha: string): Promise<void>;
 }
 
 export interface QaDriver {
@@ -129,6 +134,15 @@ export interface PullRequestPort {
    * returns its SHA so the run branch can be rebased onto it before the auto-merge.
    */
   baseState?(project: ProjectConfig, ticketId: string, headSha: string): Promise<BaseState>;
+  /**
+   * Optional: the head of the ticket's open PR when someone pushed to it outside Matrix (it differs
+   * from the head Matrix last published). The commit is fetched host-side; `forkSha` is its
+   * merge-base with the fetched base tip. Undefined when the PR head is Matrix's own.
+   */
+  externalHead?(
+    project: ProjectConfig,
+    ticketId: string,
+  ): Promise<{ headSha: string; forkSha: string } | undefined>;
 }
 
 export type BaseState =

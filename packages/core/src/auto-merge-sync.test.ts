@@ -129,3 +129,59 @@ test("auto-merge: a conflicting base goes back to Implement with the files, noth
   expect(merged.length).toBeLessThanOrEqual(1);
   expect((await h.store.getWorkflow("pilot", t.id))?.status).toBe("done");
 });
+
+test("a PR head pushed outside Matrix is adopted and re-validated before any merge", async () => {
+  const pushed = "e".repeat(40);
+  const merged: string[] = [];
+  let external: { headSha: string; forkSha: string } | undefined = {
+    headSha: pushed,
+    forkSha: BASE,
+  };
+  const h = createHarness({
+    project: {
+      autonomy: { default: "autonomous" },
+      lastPhase: "merge",
+      qa: { surfaces: ["android"], driver: "agent" },
+      deploy: { merge: "auto", targets: [] },
+      maxLoops: 3,
+    },
+    pullRequests: {
+      publish: async () => ({ url: PR_URL, branch: "matrix-T-1-export" }),
+      label: async () => undefined,
+      baseState: async () => ({ kind: "current" }),
+      externalHead: async () => external,
+    },
+    agentQa: { handles: () => true, run: async () => reportOutcome(report()) },
+    merge: {
+      merge: async (_ctx, request) => {
+        merged.push(request.headSha);
+        return { ok: true, summary: "squash-merged" };
+      },
+    },
+  });
+  (h.tickets as unknown as { uploadFile: unknown }).uploadFile = async (
+    _id: string,
+    name: string,
+  ) => `https://uploads.linear.app/x/${name}`;
+  const adopted: string[] = [];
+  (h.git as unknown as { adoptHead: unknown }).adoptHead = async (workdir: string, sha: string) => {
+    adopted.push(sha);
+    h.git.commit(workdir, sha);
+    external = undefined;
+  };
+  await h.setup();
+  const t = await addTicket(h);
+  for (let i = 0; i < 8 && (await h.store.getWorkflow("pilot", t.id))?.status !== "done"; i++)
+    await h.drain();
+  expect(adopted).toEqual([pushed]);
+  // Only the adopted head, re-validated, was merged; never the stale one.
+  expect(merged).toEqual([pushed]);
+  expect(
+    h.events.some(
+      (e) =>
+        e.type === "workflow.changed" &&
+        e.workflow.phase === "checks" &&
+        (e.workflow.lastError ?? "").includes("pushed outside Matrix"),
+    ),
+  ).toBe(true);
+});

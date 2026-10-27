@@ -759,6 +759,33 @@ export class WorktreeGitPort implements GitPort {
     }
   }
 
+  async adoptHead(workdir: string, headSha: string, forkSha: string): Promise<void> {
+    for (const sha of [headSha, forkSha])
+      if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error("adoptHead needs full commit SHAs");
+    if (!(await this.isClean(workdir)))
+      throw new Error("worktree has uncommitted changes; not adopting");
+    const entry = await this.#trusted.lookup(workdir);
+    const head = await this.headSha(workdir);
+    if (head === headSha) return;
+    const branch = (await this.#git(workdir, ["symbolic-ref", "HEAD"])).trim();
+    if (!branch.startsWith("refs/heads/")) throw new Error("run branch is detached; not adopting");
+    await this.#git(workdir, ["cat-file", "-e", `${headSha}^{commit}`]);
+    if ((await this.#git(workdir, ["merge-base", forkSha, headSha])).trim() !== forkSha)
+      throw new Error("adopted head does not descend from its fork point");
+    await this.#git(workdir, ["update-ref", "-m", "matrix: adopt PR head", branch, headSha, head]);
+    try {
+      await this.#git(workdir, ["reset", "--hard", "--quiet", headSha], true);
+      await this.#trusted.record(workdir, { ...entry, baseSha: forkSha });
+      // Re-run the tamper checks on the adopted commits (gitlinks, commit count since BASE).
+      await this.headSha(workdir);
+    } catch (error) {
+      await this.#git(workdir, ["update-ref", branch, head]).catch(() => undefined);
+      await this.#git(workdir, ["reset", "--hard", "--quiet", head], true).catch(() => undefined);
+      await this.#trusted.record(workdir, entry).catch(() => undefined);
+      throw error;
+    }
+  }
+
   async headSha(workdir: string): Promise<string> {
     const sha = (await this.#git(workdir, ["rev-parse", "--verify", "HEAD^{commit}"])).trim();
     if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`unexpected HEAD ${sha}`);

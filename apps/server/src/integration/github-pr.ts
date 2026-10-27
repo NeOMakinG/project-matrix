@@ -627,6 +627,53 @@ export class GitHubPullRequests implements PullRequestPort {
   }
 
   /**
+   * The open PR's head when it was pushed outside Matrix (an agent's rebase, a human fix): fetched
+   * from GitHub's `refs/pull/N/head` into `refs/matrix/pr/N` with the base tip, so the run
+   * worktree can adopt it and re-validate it. Undefined while the PR head is Matrix's own.
+   */
+  async externalHead(
+    project: PullRequestRequest["project"],
+    ticketId: string,
+  ): Promise<{ headSha: string; forkSha: string } | undefined> {
+    const repo = externalRepo(project);
+    const known = this.record(project.id, ticketId);
+    if (!repo?.github || !known) return undefined;
+    const { repo: slug, number } = prNumber(known.url);
+    const pr = await this.#pull(slug, number);
+    if (pr.merged || pr.state !== "open" || !SHA.test(pr.headSha) || pr.headSha === known.headSha)
+      return undefined;
+    const base = project.baseBranch;
+    if (!validBranch(base)) throw new Error("invalid base branch");
+    const gitDir = `${project.repoPath}${sep}.git`;
+    await this.#assertNoUrlRewrites(gitDir);
+    await this.#git(gitDir, [
+      "fetch",
+      "--no-tags",
+      "--no-recurse-submodules",
+      "--",
+      `https://github.com/${repo.github}.git`,
+      `+refs/pull/${number}/head:refs/matrix/pr/${number}`,
+      `+refs/heads/${base}:refs/remotes/origin/${base}`,
+    ]);
+    const fetched = await this.#git(gitDir, [
+      "rev-parse",
+      "--verify",
+      `refs/matrix/pr/${number}^{commit}`,
+    ]);
+    if (fetched !== pr.headSha) return undefined; // moved again while fetching: next tick
+    const tip = await this.#git(gitDir, [
+      "rev-parse",
+      "--verify",
+      `refs/remotes/origin/${base}^{commit}`,
+    ]);
+    await this.#fastForwardBase(project.repoPath, gitDir, base, tip);
+    const forkSha = await this.#git(gitDir, ["merge-base", tip, fetched]);
+    if (!SHA.test(forkSha)) throw new Error("adopted PR head shares no history with the base");
+    await this.#assertNoMatrixArtifacts(gitDir, base, fetched);
+    return { headSha: fetched, forkSha };
+  }
+
+  /**
    * Review context and check baselines diff against the local base branch: keep it on the fetched
    * tip. Fast-forward only; a checked-out base is advanced only with a clean tracked tree.
    */

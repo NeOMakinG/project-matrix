@@ -98,3 +98,30 @@ describe("syncOnto refuses what a rebase would lose", { timeout: 60_000 }, () =>
     expect(f.git(f.workdir, "rev-parse", "HEAD")).toBe(head);
   });
 });
+
+describe("adoptHead (a PR head pushed outside Matrix)", { timeout: 60_000 }, () => {
+  test("points the run branch at the pushed commit and moves the trusted BASE", async () => {
+    const f = await fixture();
+    await f.commit(f.workdir, "b.txt", "ticket\n", "ticket");
+    const tip = await f.commit(f.repo, "a.txt", "main\n", "main moved");
+    f.git(f.repo, "checkout", "-q", "-b", "elsewhere", tip);
+    const pushed = await f.commit(f.repo, "b.txt", "rebased by an agent\n", "ticket, rebased");
+    f.git(f.repo, "checkout", "-q", "main");
+    await f.port.adoptHead(f.workdir, pushed, tip);
+    expect(f.git(f.workdir, "rev-parse", "HEAD")).toBe(pushed);
+    expect(await readFile(join(f.workdir, "b.txt"), "utf8")).toBe("rebased by an agent\n");
+    expect((await f.trusted.lookup(f.workdir)).baseSha).toBe(tip);
+    expect(await f.port.isClean(f.workdir)).toBe(true);
+  });
+
+  test("refuses a fork point the head does not descend from, leaving the branch alone", async () => {
+    const f = await fixture();
+    const head = await f.commit(f.workdir, "b.txt", "ticket\n", "ticket");
+    const tip = await f.commit(f.repo, "a.txt", "main\n", "main moved");
+    await expect(f.port.adoptHead(f.workdir, head, tip)).resolves.toBeUndefined();
+    const other = await f.commit(f.workdir, "b.txt", "more\n", "more");
+    f.git(f.workdir, "reset", "-q", "--hard", head);
+    await expect(f.port.adoptHead(f.workdir, other, tip)).rejects.toThrow(/fork point/);
+    expect(f.git(f.workdir, "rev-parse", "HEAD")).toBe(head);
+  });
+});

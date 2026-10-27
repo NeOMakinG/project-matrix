@@ -447,6 +447,7 @@ export class Reconciler {
     for (const w of await this.o.store.listWorkflows({ status: ["waiting_approval"] })) {
       const project = byId.get(w.projectId);
       if (!project || w.phase !== "merge" || this.isActive(w)) continue;
+      if (await this.adoptExternalHead(project, w)) continue;
       if (this.o.pullRequests) await this.publishPullRequest(project, w);
       await this.observeHandoff(project, w);
       await this.maybeRunAgentQa(project, w);
@@ -940,7 +941,15 @@ export class Reconciler {
       const blocked = recent.length > 5;
       const next: WorkflowState = blocked
         ? { ...current, status: "blocked", lastError: `base sync limit (6 in a day): ${reason}` }
-        : { ...current, phase, attempt: 0, status: "pending", lastError: reason };
+        : // New generation: the earlier checks/review/QA steps of this loop never replay.
+          {
+            ...current,
+            phase,
+            attempt: 0,
+            status: "pending",
+            lastError: reason,
+            generation: (current.generation ?? 0) + 1,
+          };
       delete next.reviewedTree;
       try {
         const saved = await this.o.store.saveWorkflow(next);
@@ -954,6 +963,43 @@ export class Reconciler {
         if (!(error instanceof VersionConflictError)) throw error;
         current = await this.o.store.getWorkflow(w.projectId, w.ticketId);
       }
+    }
+  }
+
+  /** Last external-head check per ticket (one GitHub read per ticket per minute). */
+  private readonly externalHeadAt = new Map<string, number>();
+
+  /**
+   * A PR head pushed outside Matrix (an agent's rebase, a human fix) is never left untested and
+   * never tested stale: the run worktree adopts it and checks, review and QA run again on it.
+   * True when the workflow was requeued.
+   */
+  private async adoptExternalHead(project: ProjectConfig, w: WorkflowState): Promise<boolean> {
+    const port = this.o.pullRequests;
+    if (!port?.externalHead || !this.o.git.adoptHead || !w.workdir) return false;
+    if (w.status !== "waiting_approval") return false;
+    const key = `${w.projectId}\u0000${w.ticketId}`;
+    const now = this.clock().getTime();
+    const last = this.externalHeadAt.get(key);
+    if (last !== undefined && now - last < AUTO_MERGE_RETRY_MS) return false;
+    if (this.externalHeadAt.size > 5_000) this.externalHeadAt.clear();
+    this.externalHeadAt.set(key, now);
+    try {
+      const external = await port.externalHead(project, w.ticketId);
+      if (!external) return false;
+      const head = await this.o.git.headSha(w.workdir);
+      if (external.headSha === head) return false;
+      await this.o.git.adoptHead(w.workdir, external.headSha, external.forkSha);
+      await this.requeueForBase(
+        (await this.o.store.getProject(project.id)) ?? project,
+        w,
+        "checks",
+        `adopted the PR head ${external.headSha.slice(0, 12)} pushed outside Matrix (Matrix had ${head.slice(0, 12)}); checks, review and QA run again on it`,
+      );
+      return true;
+    } catch (error) {
+      this.trackerFailed(project.id, w.ticketId, "adopt-head", error);
+      return false;
     }
   }
 
