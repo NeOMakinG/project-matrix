@@ -18,10 +18,12 @@ export interface RemoteJob {
   stdin?: string;
   placeholder?: string;
   key?: KeySource;
-  /** After a successful run: commit everything and push it to this branch (implement). */
-  pushTo?: string;
-  /** Relative report file whose content is returned (structured checks). */
-  report?: string;
+  /**
+   * After a successful run, write the staged binary diff of everything the job changed to
+   * PATCH_FILE (implement). It travels back in the route payload, never through GitHub, so the
+   * host-side gates see it before anything is published.
+   */
+  collect?: boolean;
 }
 
 const q = (s: string) => {
@@ -30,7 +32,8 @@ const q = (s: string) => {
 };
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SHA = /^[0-9a-f]{40}$/;
-const BRANCH = /^matrix-run\/[A-Za-z0-9_-]{1,80}$/;
+/** Worktree-relative file the collected patch is written to (the route returns it whole). */
+export const PATCH_FILE = ".matrix-patch";
 export const MAX_STDIN = 200 * 1024;
 const b64 = (s: string) => Buffer.from(s).toString("base64");
 
@@ -51,21 +54,10 @@ function inner(job: RemoteJob, keyVar: string | undefined): string {
   ].join("\n");
 }
 
-/** Splits a structured report off the job's stdout (see `report`). */
-export function splitReport(stdout: string): { stdout: string; report?: string } {
-  const at = stdout.lastIndexOf("\n__MXREPORT__\n");
-  if (at < 0) return { stdout };
-  const report = Buffer.from(stdout.slice(at + 14).replace(/\s/g, ""), "base64").toString("utf8");
-  return { stdout: stdout.slice(0, at), ...(report ? { report } : {}) };
-}
-
 /** The argv the Orca route runs (one `/bin/sh -c`), with its exit code as the job's. */
 export function remoteJobArgv(job: RemoteJob): string[] {
   if (!SHA.test(job.sha)) throw new Error("remote job needs a full commit sha");
-  if (job.pushTo && !BRANCH.test(job.pushTo)) throw new Error(`bad scratch branch ${job.pushTo}`);
   if ((job.stdin?.length ?? 0) > MAX_STDIN) throw new Error("remote job stdin over 200KB");
-  if (job.report && !/^[A-Za-z0-9_./-]{1,120}$/.test(job.report))
-    throw new Error("bad report path");
   const key = job.key;
   if (key && "secrets" in key && !NAME.test(key.secrets)) throw new Error("bad secret name");
   if (key && "envFile" in key && (!NAME.test(key.name) || !key.envFile.startsWith("/")))
@@ -89,13 +81,9 @@ export function remoteJobArgv(job: RemoteJob): string[] {
     ),
     `${withKey}; rc=$?`,
   ];
-  if (job.report)
+  if (job.collect)
     lines.push(
-      `printf '\\n__MX%s__\\n' REPORT; head -c 1000000 ${q(job.report)} 2>/dev/null | base64 || true`,
-    );
-  if (job.pushTo)
-    lines.push(
-      `if [ "$rc" = 0 ]; then git add -A && git -c user.name=Matrix -c user.email=matrix@localhost commit -q --allow-empty --no-verify -m "matrix remote run" && git push -q origin HEAD:refs/heads/${job.pushTo} || rc=97; fi`,
+      `if [ "$rc" = 0 ]; then git add -A && git diff --cached --binary HEAD >${PATCH_FILE} || rc=97; fi`,
     );
   lines.push('rm -rf "$d"', 'exit "$rc"');
   return ["/bin/sh", "-c", lines.join("\n")];

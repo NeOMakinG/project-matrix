@@ -155,3 +155,24 @@ describe("orca route tail mode", () => {
     expect(decodePayload(out.split("\n"), "t1")!.exitCode).toBe(125);
   });
 });
+
+describe("orca route attachment", () => {
+  test("attachment travels whole even when the log is cut", () => {
+    const dir = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
+    const script = routeScript({
+      nonce: "a1",
+      argv: ["sh", "-c", "seq 1 400000; printf 'p\\0q  \\n' > .matrix-patch"],
+      keepTail: true,
+      attach: ".matrix-patch",
+    });
+    const out = execFileSync("/bin/sh", ["-c", script], {
+      cwd: dir,
+      encoding: "utf8",
+      maxBuffer: 64 << 20,
+    });
+    const got = decodePayload(out.split("\n"), "a1", true)!;
+    expect(got.exitCode).toBe(0);
+    expect(got.attachment).toEqual(Buffer.from("p\0q  \n"));
+    expect(() => routeScript({ nonce: "x", argv: ["x"], attach: "../etc" })).toThrow("attachment");
+  });
+});

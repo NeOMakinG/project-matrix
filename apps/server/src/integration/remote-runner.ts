@@ -11,7 +11,7 @@ import { z } from "zod";
 import { type OrcaCaller, runViaOrca } from "./deploy-orca.js";
 import { autoLimits } from "./host-limits.js";
 import type { StoredProject } from "./mapping.js";
-import { type KeySource, remoteJobArgv, splitReport } from "./remote-job.js";
+import { type KeySource, PATCH_FILE, remoteJobArgv } from "./remote-job.js";
 
 /**
  * Runner hosts (`MATRIX_RUNNER_HOSTS`): extra machines reached through their paired Orca
@@ -128,6 +128,8 @@ export interface RemoteRunContext {
   orcaCli?: OrcaCaller;
   orcaBinary?: string;
   pollMs?: number;
+  /** Secret scan of the commits about to be pushed as the scratch branch. */
+  scan?: (workdir: string, sha: string) => Promise<{ ok: boolean; summary: string }>;
 }
 
 export interface RemoteSpec {
@@ -151,10 +153,15 @@ export interface RemoteSpec {
 export async function runRemote(
   c: RemoteRunContext,
   spec: RemoteSpec,
-): Promise<{ exitCode: number; stdout: string; output: string; trace: string[] }> {
+): Promise<{
+  exitCode: number;
+  stdout: string;
+  output: string;
+  trace: string[];
+  attachment?: Buffer | "too-big";
+}> {
   const id = c.runId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 60);
   const inRef = `matrix-run/${id}`;
-  const outRef = `matrix-run/${id}-out`;
   if (!SCRATCH.test(inRef)) throw new Error("bad run id for a scratch branch");
   const g = (args: string[], stdin?: string) =>
     hostGit(c.workdir, args, {
@@ -165,8 +172,12 @@ export async function runRemote(
   if ((await g(["status", "--porcelain"])) !== "")
     throw new Error("remote run needs a clean worktree (uncommitted changes would be lost)");
   const sha = await g(["rev-parse", "HEAD"]);
+  // Only commits that already passed the host handover are published, and scanned again first.
+  if (c.scan) {
+    const gate = await c.scan(c.workdir, sha);
+    if (!gate.ok) throw new Error(`secret gate refused the scratch push: ${gate.summary}`);
+  }
   await g(["push", "--quiet", "--no-follow-tags", target, `${sha}:refs/heads/${inRef}`]);
-  const cleanupRefs = [inRef, ...(spec.collect ? [outRef] : [])];
   try {
     const r = await runViaOrca(
       { environment: c.host.orca.environment, repos: c.host.orca.repos },
@@ -178,8 +189,7 @@ export async function runRemote(
         ...(spec.stdin !== undefined ? { stdin: spec.stdin } : {}),
         ...(spec.placeholder ? { placeholder: spec.placeholder } : {}),
         key: c.host.key as KeySource,
-        ...(spec.collect ? { pushTo: outRef } : {}),
-        ...(spec.report ? { report: spec.report } : {}),
+        ...(spec.collect ? { collect: true } : {}),
       }),
       {
         repo: c.github,
@@ -187,6 +197,7 @@ export async function runRemote(
         timeoutMs: spec.timeoutMs,
         label: "run",
         allowTruncated: spec.allowTruncated === true,
+        ...(spec.collect ? { attach: PATCH_FILE } : spec.report ? { attach: spec.report } : {}),
         pollMs: c.pollMs ?? 10_000,
         ...(spec.signal ? { signal: spec.signal } : {}),
         ...(c.orcaCli ? { cli: c.orcaCli } : {}),
@@ -194,21 +205,22 @@ export async function runRemote(
       },
     );
     if (spec.collect && r.exitCode === 0) {
-      const local = `refs/matrix-run/${id}-out`;
-      await g(["fetch", "--quiet", "--no-tags", target, `+refs/heads/${outRef}:${local}`]);
-      try {
-        const diff = await g(["diff", "--binary", "HEAD", local]);
-        if (diff) await g(["apply", "--whitespace=nowarn", "-"], `${diff}\n`);
-        r.trace.push(`collected ${diff ? "changes" : "no changes"} from ${c.host.name}`);
-      } finally {
-        await g(["update-ref", "-d", local]).catch(() => undefined);
-      }
+      if (!Buffer.isBuffer(r.attachment))
+        return {
+          ...r,
+          exitCode: 98,
+          output: `${r.output}\nremote patch ${r.attachment === "too-big" ? "too big for the transport" : "missing"}`,
+        };
+      // The patch only touches the worktree; the host handover gates decide what is committed.
+      if (r.attachment.length)
+        await g(["apply", "--whitespace=nowarn", "--binary", "-"], r.attachment.toString("utf8"));
+      r.trace.push(
+        `collected ${r.attachment.length ? `${r.attachment.length} patch bytes` : "no changes"} from ${c.host.name}`,
+      );
     }
     return r;
   } finally {
-    // One push per ref: deleting a ref that was never created must not keep the other alive.
-    for (const ref of cleanupRefs)
-      await g(["push", "--quiet", target, `:refs/heads/${ref}`]).catch(() => undefined);
+    await g(["push", "--quiet", target, `:refs/heads/${inRef}`]).catch(() => undefined);
   }
 }
 
@@ -220,6 +232,11 @@ export interface RemoteRunners {
   orcaCli?: (environment: string) => OrcaCaller;
   executor?: LineExecutor;
   pollMs?: number;
+  scan?: (
+    workdir: string,
+    sha: string,
+    project: ProjectConfig,
+  ) => Promise<{ ok: boolean; summary: string }>;
 }
 
 export function setupCommands(project: ProjectConfig): string[][] {
@@ -259,6 +276,7 @@ export async function remoteContext(
     ...(r.orcaCli ? { orcaCli: r.orcaCli(host.orca.environment) } : {}),
     ...(r.orcaBinary ? { orcaBinary: r.orcaBinary } : {}),
     ...(r.pollMs !== undefined ? { pollMs: r.pollMs } : {}),
+    ...(r.scan ? { scan: (w: string, sha: string) => r.scan!(w, sha, project) } : {}),
   };
 }
 
@@ -320,18 +338,24 @@ export function remoteAwareSandbox(local: Sandbox, r: RemoteRunners | undefined)
         ...(rel ? { report: rel } : {}),
         ...(signal ? { signal } : {}),
       });
-      const { stdout, report } = splitReport(res.stdout);
       const max = spec.maxOutputBytes ?? 1_000_000;
+      const att = res.attachment;
+      const report = Buffer.isBuffer(att) ? att.toString("utf8") : undefined;
       return {
         code: res.exitCode,
-        stdout: stdout.slice(-max),
+        stdout: res.stdout.slice(-max),
         stderr: `${res.output.slice(-16_000)}\n[runner host ${c.host.name}]`,
         ...(rel
           ? {
               report:
-                report && report.length <= (spec.report?.maxBytes ?? 0)
+                report !== undefined && Buffer.byteLength(report) <= (spec.report?.maxBytes ?? 0)
                   ? { text: report }
-                  : { error: report ? "report too big" : "report missing on the runner host" },
+                  : {
+                      error:
+                        att === "too-big" || report !== undefined
+                          ? "report too big"
+                          : "report missing on the runner host",
+                    },
             }
           : {}),
       };

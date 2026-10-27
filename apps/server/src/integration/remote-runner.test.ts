@@ -57,7 +57,7 @@ function git(opts: { dirty?: boolean; diff?: string } = {}) {
 }
 
 /** Fake Orca: answers the framed payload for the nonce found in the terminal command. */
-function orca(stdout: string, rc = 0) {
+function orca(stdout: string, rc = 0, att?: string) {
   const calls: string[][] = [];
   let nonce = "";
   const cli: OrcaCaller = {
@@ -73,7 +73,7 @@ function orca(stdout: string, rc = 0) {
       if (args[1] === "read") {
         const body = Buffer.concat([
           Buffer.from(
-            `rc=${rc} out=${Buffer.byteLength(stdout)} full=${Buffer.byteLength(stdout)}\n${stdout}`,
+            `rc=${rc} out=${Buffer.byteLength(stdout)} full=${Buffer.byteLength(stdout)} att=${att === undefined ? -1 : Buffer.byteLength(att)}\n${stdout}${att ?? ""}`,
           ),
           Buffer.from("err\n"),
         ]);
@@ -102,8 +102,8 @@ describe("runner hosts", () => {
   });
 
   test("implement: push scratch, run, collect diff, always delete scratch refs", async () => {
-    const g = git({ diff: "diff --git a/b b/b" });
-    const o = orca('{"type":"result"}\n');
+    const g = git();
+    const o = orca('{"type":"result"}\n', 0, "diff --git a/b b/b\n+x  \n");
     const c = await remoteContext(
       {
         hosts,
@@ -127,13 +127,12 @@ describe("runner hosts", () => {
     });
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toContain("result");
-    expect(g.applied()).toContain("diff --git a/b b/b");
+    expect(g.applied()).toBe("diff --git a/b b/b\n+x  \n");
+    expect(g.ran.some((x) => x.startsWith("fetch"))).toBe(false);
     expect(g.ran).toEqual(
       expect.arrayContaining([
         `push --quiet --no-follow-tags https://github.com/o/r.git ${SHA}:refs/heads/matrix-run/run-1`,
-        "fetch --quiet --no-tags https://github.com/o/r.git +refs/heads/matrix-run/run-1-out:refs/matrix-run/run-1-out",
         "push --quiet https://github.com/o/r.git :refs/heads/matrix-run/run-1",
-        "push --quiet https://github.com/o/r.git :refs/heads/matrix-run/run-1-out",
       ]),
     );
     const cmd = o.calls.find((x) => x[1] === "create" && x[0] === "terminal")!.join(" ");
@@ -165,7 +164,7 @@ describe("runner hosts", () => {
       g.ran.filter((x) =>
         x.startsWith("push --quiet https://github.com/o/r.git :refs/heads/matrix-run/run-2"),
       ).length,
-    ).toBe(2);
+    ).toBe(1);
   });
 
   test("dirty tree or no host: runs locally; unknown host or repo refused", async () => {
@@ -196,7 +195,7 @@ describe("runner hosts", () => {
 
   test("checks sandbox: host specs go remote with the report mount swapped, others stay local", async () => {
     const g = git();
-    const o = orca("tests ok\n\n__MXREPORT__\n" + Buffer.from('{"r":1}').toString("base64") + "\n");
+    const o = orca("tests ok\n", 0, '{"r":1}');
     const local = {
       kind: "podman" as const,
       exec: async () => ({ code: 0, stdout: "local", stderr: "" }),
@@ -225,5 +224,34 @@ describe("runner hosts", () => {
     expect(res.report).toEqual({ text: '{"r":1}' });
     const script = o.calls.find((x) => x[0] === "terminal" && x[1] === "create")!;
     expect(script.join(" ")).toContain("printf %s");
+  });
+});
+
+describe("runner host safety", () => {
+  test("a failing secret scan stops the scratch push; a missing patch fails the run", async () => {
+    const g = git();
+    const o = orca("done\n", 0);
+    const r: RemoteRunners = {
+      hosts,
+      project: async () => project,
+      executor: g.executor,
+      orcaCli: () => o.cli,
+      pollMs: 0,
+      scan: async () => ({ ok: false, summary: "leak" }),
+    };
+    const c = await remoteContext(r, "miniforum", "p", "/wt", "run-3");
+    await expect(
+      runRemote(c!, { argv: ["x"], env: {}, timeoutMs: 1, collect: true }),
+    ).rejects.toThrow("secret gate");
+    expect(g.ran.some((x) => x.startsWith("push"))).toBe(false);
+    const c2 = await remoteContext(
+      { ...r, scan: async () => ({ ok: true, summary: "" }) },
+      "miniforum",
+      "p",
+      "/wt",
+      "run-4",
+    );
+    const res = await runRemote(c2!, { argv: ["x"], env: {}, timeoutMs: 5_000, collect: true });
+    expect(res.exitCode).toBe(98);
   });
 });

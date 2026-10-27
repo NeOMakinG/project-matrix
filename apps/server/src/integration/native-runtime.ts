@@ -432,8 +432,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
     cacheRoot: join(opts.dataDir, "deps-cache"),
     policy: (ctx) => {
       const repo = (ctx.project as StoredProject).matrix?.repo;
-      // Checks on a runner host install dependencies there (the remote job runs repo.setup).
-      if (!repo || ctx.host) return undefined;
+      if (!repo) return undefined;
       return {
         ...(repo.setup ? { steps: repo.setup } : {}),
         ...(repo.setupScripts ? { scripts: true } : {}),

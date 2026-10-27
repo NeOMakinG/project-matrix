@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { remoteJobArgv, splitReport } from "./remote-job.js";
+import { PATCH_FILE, remoteJobArgv } from "./remote-job.js";
 
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "mx-rj-"));
@@ -55,45 +55,26 @@ describe("remote job script", () => {
     ).toBe(7);
   });
 
-  test("implement: changes are committed and pushed to the scratch branch", () => {
+  test("implement: the staged binary diff lands in the patch file, nothing is pushed", () => {
     const { dir, sha } = repo();
-    const bare = mkdtempSync(join(tmpdir(), "mx-rj-bare-"));
-    execFileSync("git", ["init", "-q", "--bare", bare]);
-    execFileSync("git", ["-C", dir, "remote", "add", "origin", bare]);
     const argv = remoteJobArgv({
       sha,
       setup: [],
-      argv: ["sh", "-c", "echo b > b.txt"],
+      argv: ["sh", "-c", "echo b > b.txt; rm a.txt"],
       env: {},
-      pushTo: "matrix-run/r1-out",
+      collect: true,
     });
+    expect(argv[2]).not.toContain("push");
     expect(run(argv, dir).status).toBe(0);
-    const files = execFileSync(
-      "git",
-      ["-C", bare, "show", "--name-only", "--format=", "matrix-run/r1-out"],
-      { encoding: "utf8" },
-    );
-    expect(files.trim()).toBe("b.txt");
-  });
-
-  test("report rides on stdout and is split back off", () => {
-    const { dir, sha } = repo();
-    const argv = remoteJobArgv({
-      sha,
-      setup: [],
-      argv: ["sh", "-c", "echo out; echo '{\"ok\":1}' > rep.json"],
-      env: {},
-      report: "rep.json",
-    });
-    const r = run(argv, dir);
-    expect(splitReport(r.stdout)).toEqual({ stdout: "out\n", report: '{"ok":1}\n' });
-    expect(readFileSync(join(dir, "rep.json"), "utf8")).toContain("ok");
+    const patch = readFileSync(join(dir, PATCH_FILE), "utf8");
+    expect(patch).toContain("b/b.txt");
+    expect(patch).toContain("deleted file mode");
+    expect(patch).not.toContain(PATCH_FILE);
   });
 
   test("refuses bad input before building anything", () => {
     const base = { sha: "a".repeat(40), setup: [], argv: ["x"], env: {} };
     expect(() => remoteJobArgv({ ...base, sha: "abc" })).toThrow("full commit sha");
-    expect(() => remoteJobArgv({ ...base, pushTo: "main" })).toThrow("scratch branch");
     expect(() => remoteJobArgv({ ...base, env: { "A B": "1" } })).toThrow("invalid env name");
     expect(() => remoteJobArgv({ ...base, env: { K: "P" }, placeholder: "P" })).toThrow(
       "key source",

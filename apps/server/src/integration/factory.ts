@@ -11,6 +11,7 @@ import {
   EventBus,
   MemoryStore,
   PgStore,
+  type ProjectConfig,
   Reconciler,
   type Store,
 } from "@matrix/core";
@@ -198,6 +199,13 @@ async function createOwnedFactory(
                 remote: {
                   hosts: options.runnerHosts,
                   project: (projectId: string) => store.getProject(projectId),
+                  // Scratch pushes publish handed-over commits only; scanned again before.
+                  scan: (workdir: string, sha: string, project: ProjectConfig) =>
+                    scanCommittedHistory(
+                      workdir,
+                      `${project.baseBranch}..${sha}`,
+                      options.native?.gitleaksBinary,
+                    ),
                   ...(options.native.orcaBinary ? { orcaBinary: options.native.orcaBinary } : {}),
                 },
               }
