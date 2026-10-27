@@ -148,6 +148,10 @@ export class TicketCleanup {
     if (!pr) return this.#act(w, workdir, "kept", "no pull request recorded");
     if (pr.state !== "MERGED" && pr.state !== "CLOSED")
       return this.#act(w, workdir, "kept", `PR ${pr.state.toLowerCase()}`);
+    // A merged PR on a ticket still waiting in Matrix is finished by Matrix's own merge step
+    // (auto-merge or approval -> done); it is swept once done. A closed one never progresses.
+    if (w.status === "waiting_approval" && pr.state === "MERGED")
+      return this.#act(w, workdir, "kept", "PR merged; waiting for Matrix to mark it done");
     const now = (p.now ?? Date.now)();
     if (pr.closedAt === undefined || now - pr.closedAt < SETTLE_MS)
       return this.#act(w, workdir, "kept", `PR ${pr.state.toLowerCase()} < 30 min ago`);

@@ -22,7 +22,7 @@ function wf(over: Partial<WorkflowState> = {}): WorkflowState {
     projectId: "p1",
     ticketId: "NEO-7",
     phase: "merge",
-    status: "waiting_approval",
+    status: "done",
     attempt: 0,
     loops: 0,
     priority: 2,
@@ -125,6 +125,17 @@ describe("ticket cleanup safety", () => {
     const before = t.calls.length;
     expect(await t.cleanup.sweep()).toEqual([]);
     expect(t.calls.length).toBe(before);
+  });
+
+  it("leaves a merged PR on a waiting ticket to Matrix's merge step, cleans a closed one", async () => {
+    const merged = setup({ workflow: wf({ status: "waiting_approval" }) });
+    expect((await merged.cleanup.sweep())[0]?.outcome).toBe("kept");
+    expect(destructive(merged.calls)).toEqual([]);
+    const closed = setup({
+      workflow: wf({ status: "waiting_approval" }),
+      pr: { state: "CLOSED", headRefOid: HEAD, closedAt: 0 },
+    });
+    expect((await closed.cleanup.sweep())[0]?.outcome).toBe("cleaned");
   });
 
   it("handles a closed PR too", async () => {
