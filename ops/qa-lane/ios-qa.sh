@@ -56,6 +56,7 @@ write_beat() { date +%s >"$1/beat.$$" && mv -f "$1/beat.$$" "$1/beat"; }
 # reclaimer never removes a lock that was released and re-acquired after it judged it stale.
 guard() {
   local g="$LOCKS/.guard" n=0
+  (umask 000; mkdir -p "$LOCKS")
   until mkdir "$g" 2>/dev/null; do
     (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g" && continue
     (( ++n < 300 )) || return 1
@@ -364,8 +365,9 @@ SB
     # Build output (node_modules, Pods, DerivedData) is rebuilt from scratch each job anyway:
     # drop it so the shared Mac keeps its disk.
     dir=$(job_dir "$1")
-    # Only while this job still holds its lock (or no Matrix job does): the build dir is shared.
-    if [[ -f "$dir/src" ]] && { [[ -n "$(held_lock "$1")" ]] || ! lane_running; }; then
+    # Only while this job still holds its lock: the build dir is shared (a job that lost it leaves
+    # the output to the next precheck).
+    if [[ -f "$dir/src" && -n "$(held_lock "$1")" ]]; then
       w=$(cat "$dir/src"); [[ "$w" == "$ROOT/build/"* && -d "$w/.git" ]] && git -C "$w" clean -qffdx
     fi
     rm -rf "$dir"

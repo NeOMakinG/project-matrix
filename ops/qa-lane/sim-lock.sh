@@ -31,6 +31,7 @@ write_beat() { date +%s >"$1/beat.$$" && mv -f "$1/beat.$$" "$1/beat"; }
 # reclaimer never removes a lock that was released and re-acquired after it judged it stale.
 guard() {
   local g="$LOCKS/.guard" n=0
+  (umask 000; mkdir -p "$LOCKS")
   until mkdir "$g" 2>/dev/null; do
     (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g" && continue
     (( ++n < 300 )) || return 1
@@ -148,7 +149,7 @@ case "$cmd" in
     ( while sleep 60; do
         guard || continue
         if owned "$udid" "$token"; then write_beat "$LOCKS/$udid.lock"; unguard
-        else unguard; echo "sim-lock: lost the lock on $udid, stopping the command" >&2; kill -TERM -- "-$pgid" 2>/dev/null; exit 0; fi
+        else unguard; echo "sim-lock: lost the lock on $udid, stopping the command" >&2; kill -TERM -- "-$pgid" 2>/dev/null; sleep 10; kill -KILL -- "-$pgid" 2>/dev/null; exit 0; fi
       done ) </dev/null >/dev/null 2>&1 &
     beater=$!
     rc=0; wait "$pgid" || rc=$?
