@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Phase,
   type ProjectConfig,
@@ -212,8 +215,17 @@ export async function runRemote(
           output: `${r.output}\nremote patch ${r.attachment === "too-big" ? "too big for the transport" : "missing"}`,
         };
       // The patch only touches the worktree; the host handover gates decide what is committed.
-      if (r.attachment.length)
-        await g(["apply", "--whitespace=nowarn", "--binary", "-"], r.attachment.toString("utf8"));
+      if (r.attachment.length) {
+        // Raw bytes through a private file: non-UTF-8 text hunks must survive untouched.
+        const dir = await mkdtemp(join(tmpdir(), "matrix-remote-patch-"));
+        try {
+          const file = join(dir, "patch");
+          await writeFile(file, r.attachment, { mode: 0o600 });
+          await g(["apply", "--whitespace=nowarn", "--binary", file]);
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      }
       r.trace.push(
         `collected ${r.attachment.length ? `${r.attachment.length} patch bytes` : "no changes"} from ${c.host.name}`,
       );

@@ -20,8 +20,8 @@ and the Mac has no SSH (Remote Login off) and no container runtime.
   crosses Orca: env values equal to the run-token placeholder are filled on the host from its own
   key source (`secrets` wrapper on the Mac, `~/.config/claude-proxy/env` on miniforum), and the
   runner talks to claude-proxy (`MATRIX_GATEWAY_URL`) directly.
-- Implement: the host commits and pushes `matrix-run/<run>-out`; bosgame applies
-  `git diff --binary HEAD <out>` into the worktree and the unchanged host handover (approved paths,
+- Implement: the host stages everything and returns `git diff --binary <input sha>` (agent
+  commits included) in the route payload; bosgame applies it into the worktree and the unchanged host handover (approved paths,
   gitleaks, Matrix commit) decides. Checks return exit codes, output and the structured report.
   The patch and reports return inside the route payload (one framed attachment, never truncated with
   the logs), never through GitHub; only already handed-over commits are pushed as the scratch input,

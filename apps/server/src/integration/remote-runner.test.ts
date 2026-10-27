@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import type { ProjectConfig } from "@matrix/core";
 import type { LineExecutor } from "@matrix/sandbox";
@@ -50,7 +51,7 @@ function git(opts: { dirty?: boolean; diff?: string } = {}) {
     if (args[0] === "status") onLine(opts.dirty ? " M a.ts" : "");
     if (args[0] === "rev-parse") onLine(SHA);
     if (args[0] === "diff") onLine(opts.diff ?? "");
-    if (args[0] === "apply") stdin = spec.stdin;
+    if (args[0] === "apply") stdin = readFileSync(args.at(-1)!, "utf8");
     return { exitCode: 0, stderrTail: "", timedOut: false, cancelled: false };
   };
   return { ran, executor, applied: () => stdin };
