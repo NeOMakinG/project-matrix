@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,6 +56,23 @@ describe("remote job script", () => {
     ).toBe(7);
   });
 
+  test("implement: commits the agent made itself are collected too", () => {
+    const { dir, sha } = repo();
+    const argv = remoteJobArgv({
+      sha,
+      setup: [],
+      argv: [
+        "sh",
+        "-c",
+        "echo c > c.txt && git add c.txt && git -c user.name=a -c user.email=a@a commit -qm agent",
+      ],
+      env: {},
+      collect: true,
+    });
+    expect(run(argv, dir).status).toBe(0);
+    expect(readFileSync(join(dir, PATCH_FILE), "utf8")).toContain("b/c.txt");
+  });
+
   test("implement: the staged binary diff lands in the patch file, nothing is pushed", () => {
     const { dir, sha } = repo();
     const argv = remoteJobArgv({
@@ -79,6 +97,12 @@ describe("remote job script", () => {
     expect(() => remoteJobArgv({ ...base, env: { K: "P" }, placeholder: "P" })).toThrow(
       "key source",
     );
-    expect(() => remoteJobArgv({ ...base, stdin: "x".repeat(210_000) })).toThrow("200KB");
+    expect(() => remoteJobArgv({ ...base, stdin: randomBytes(60_000).toString("hex") })).toThrow(
+      "transport limit",
+    );
+    // A big but ordinary prompt compresses well and stays inside one exec argument.
+    expect(remoteJobArgv({ ...base, stdin: "word ".repeat(40_000) })[2]!.length).toBeLessThan(
+      60_000,
+    );
   });
 });

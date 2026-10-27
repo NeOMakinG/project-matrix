@@ -23,7 +23,13 @@ and the Mac has no SSH (Remote Login off) and no container runtime.
 - Implement: the host commits and pushes `matrix-run/<run>-out`; bosgame applies
   `git diff --binary HEAD <out>` into the worktree and the unchanged host handover (approved paths,
   gitleaks, Matrix commit) decides. Checks return exit codes, output and the structured report.
-  Scratch branches, the Orca terminal and worktree are always removed. A dirty tree runs locally.
+  The patch and reports return inside the route payload (one framed attachment, never truncated with
+  the logs), never through GitHub; only already handed-over commits are pushed as the scratch input,
+  after a gitleaks pass. Scratch branches, the Orca terminal and worktree are always removed.
+- Known limit: a run whose worktree has leftovers runs on the project host instead, while its slot
+  was counted on the runner host (rare: checks always start clean).
+- Limits: the prompt travels gzip+base64 in one exec argument (40 KB compressed cap, command checked
+  under 120 KB); the attachment is capped at 4 MB raw and must fit the ~2000-line scrollback.
 
 ## Trade-off (accepted)
 Runner hosts are NOT sandboxed: the agent and the checked code run as the host user with network

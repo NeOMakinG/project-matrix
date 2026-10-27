@@ -66,6 +66,7 @@ export function routeScript(input: {
     // A missing credential must fail fast, never wait on a prompt nobody answers.
     "export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never",
     'd="$(mktemp -d)"',
+    `trap 'rm -rf "$d"' EXIT HUP INT TERM`,
     `( ${run} ) >"$d/out" 2>"$d/err" </dev/null`,
     "rc=$?",
     // Attachment: -1 none, -2 too big for the transport, else its byte length (sent whole).
@@ -222,6 +223,9 @@ export async function runViaOrca(
       ...(opts.attach ? { attach: opts.attach } : {}),
     });
     const command = `/bin/sh -c "$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d)"`;
+    // One exec argument on the Orca CLI host (Linux: 128 KiB); refuse before anything runs.
+    if (command.length > 120_000)
+      throw new Error(`orca route: command too long (${command.length} bytes)`);
     const made = record(
       await cli.call(
         [

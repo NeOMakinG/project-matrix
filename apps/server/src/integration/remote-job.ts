@@ -1,3 +1,4 @@
+import { gzipSync } from "node:zlib";
 /**
  * Script for one remote runner job (implement / checks) on an Orca-routed host. Pure text
  * builder: the Orca route (deploy-orca.ts) runs it in a throwaway worktree and frames its output.
@@ -34,7 +35,11 @@ const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SHA = /^[0-9a-f]{40}$/;
 /** Worktree-relative file the collected patch is written to (the route returns it whole). */
 export const PATCH_FILE = ".matrix-patch";
-export const MAX_STDIN = 200 * 1024;
+/**
+ * The prompt rides gzip+base64 inside the route command, which is one exec argument (Linux caps
+ * one at 128 KiB): its compressed size is bounded, the final command is checked again.
+ */
+export const MAX_STDIN_GZ = 40 * 1024;
 const b64 = (s: string) => Buffer.from(s).toString("base64");
 
 /** Inner script, run with the key in the environment (`$1` = private temp dir). */
@@ -57,7 +62,8 @@ function inner(job: RemoteJob, keyVar: string | undefined): string {
 /** The argv the Orca route runs (one `/bin/sh -c`), with its exit code as the job's. */
 export function remoteJobArgv(job: RemoteJob): string[] {
   if (!SHA.test(job.sha)) throw new Error("remote job needs a full commit sha");
-  if ((job.stdin?.length ?? 0) > MAX_STDIN) throw new Error("remote job stdin over 200KB");
+  if (gzipSync(job.stdin ?? "").length > MAX_STDIN_GZ)
+    throw new Error("remote job stdin over the transport limit (40KB compressed)");
   const key = job.key;
   if (key && "secrets" in key && !NAME.test(key.secrets)) throw new Error("bad secret name");
   if (key && "envFile" in key && (!NAME.test(key.name) || !key.envFile.startsWith("/")))
@@ -73,7 +79,9 @@ export function remoteJobArgv(job: RemoteJob): string[] {
     "set -u",
     `test "$(git rev-parse HEAD)" = ${job.sha} || { echo "remote checkout is not ${job.sha}" >&2; exit 96; }`,
     'd="$(mktemp -d)"',
-    `printf %s ${q(b64(job.stdin ?? ""))} | base64 -d >"$d/in"`,
+    // Timeouts and interrupts must not leave prompts or a big HOME behind.
+    `trap 'rm -rf "$d"' EXIT HUP INT TERM`,
+    `printf %s ${q(gzipSync(job.stdin ?? "").toString("base64"))} | base64 -d | gzip -dc >"$d/in"`,
     `printf %s ${q(b64(inner(job, keyVar)))} | base64 -d >"$d/inner.sh"`,
     ...job.setup.map(
       (c) =>
@@ -83,7 +91,8 @@ export function remoteJobArgv(job: RemoteJob): string[] {
   ];
   if (job.collect)
     lines.push(
-      `if [ "$rc" = 0 ]; then git add -A && git diff --cached --binary HEAD >${PATCH_FILE} || rc=97; fi`,
+      // Against the verified input commit: commits the agent made itself are collected too.
+      `if [ "$rc" = 0 ]; then git add -A && git diff --cached --binary ${job.sha} >${PATCH_FILE} || rc=97; fi`,
     );
   lines.push('rm -rf "$d"', 'exit "$rc"');
   return ["/bin/sh", "-c", lines.join("\n")];
