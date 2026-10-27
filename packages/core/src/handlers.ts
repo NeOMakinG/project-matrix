@@ -127,6 +127,8 @@ export async function callModel(
         model: resolveModel(ctx.project, model.model),
         prompt,
         workdir: options.workdir ?? ctx.workdir,
+        // Only the ticket worktree's own phase call moves; private QA scratch dirs never do.
+        ...(ctx.host && !options.workdir && !options.phase ? { host: ctx.host } : {}),
         timeoutMs: phaseTimeoutMs(ctx.project, options.phase ?? ctx.workflow.phase),
         ...(ctx.project.idleTimeoutMs !== undefined
           ? { idleTimeoutMs: ctx.project.idleTimeoutMs }

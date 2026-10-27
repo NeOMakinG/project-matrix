@@ -11,6 +11,7 @@ import {
   EventBus,
   MemoryStore,
   PgStore,
+  type ProjectConfig,
   Reconciler,
   type Store,
 } from "@matrix/core";
@@ -36,6 +37,7 @@ import { OwnedHoldoutStore } from "./owned-holdout.js";
 import { ownedExternalTickets } from "./owned-tickets.js";
 import { resolveQuota } from "./quota-config.js";
 import { RealCore } from "./real-core.js";
+import { type RunnerHost, runnerSlots } from "./remote-runner.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
 import { scanCommittedHistory } from "./secret-scan.js";
 import { CLEANUP_STATUSES, TicketCleanup } from "./ticket-cleanup.js";
@@ -60,6 +62,8 @@ export interface FactoryOptions {
   host: string;
   /** Deploy capability map (`MATRIX_DEPLOY_HOSTS`). */
   deployHosts?: DeployHost[];
+  /** Runner hosts (MATRIX_RUNNER_HOSTS): implement / checks runs off this host, via Orca. */
+  runnerHosts?: RunnerHost[];
   /** Deck note before coordinated deploys (EagleRay activity log). */
   deckNote?: (summary: string) => Promise<void>;
   /** Run concurrency per host (`MATRIX_LIMITS`); defaults keep one heavy run per host. */
@@ -190,6 +194,22 @@ async function createOwnedFactory(
           ...options.native,
           dataDir: options.dataDir,
           stateOwner,
+          ...(options.runnerHosts?.length
+            ? {
+                remote: {
+                  hosts: options.runnerHosts,
+                  project: (projectId: string) => store.getProject(projectId),
+                  // Scratch pushes publish handed-over commits only; scanned again before.
+                  scan: (workdir: string, sha: string, project: ProjectConfig) =>
+                    scanCommittedHistory(
+                      workdir,
+                      `${project.baseBranch}..${sha}`,
+                      options.native?.gitleaksBinary,
+                    ),
+                  ...(options.native.orcaBinary ? { orcaBinary: options.native.orcaBinary } : {}),
+                },
+              }
+            : {}),
           // Resolved per run (the store exists by then): existing repos' edit policy.
           projectPolicy: async (projectId: string) => {
             const project = (await store.getProject(projectId)) as StoredProject | null;
@@ -302,6 +322,9 @@ async function createOwnedFactory(
     ...(options.runtime === "fake" && !options.quota ? {} : resolveQuota(options.quota)),
     ...(runtime.gatewayReady ? { gatewayReady: runtime.gatewayReady } : {}),
     host: options.host,
+    ...(options.runnerHosts?.length && options.runtime !== "fake"
+      ? { runnerHosts: runnerSlots(options.runnerHosts) }
+      : {}),
     scratchRoot: join(options.dataDir, "scratch"),
     pullRequests: stateOwner.fence(pullRequests),
     ...(agentQa ? { agentQa } : {}),

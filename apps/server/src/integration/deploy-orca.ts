@@ -21,6 +21,8 @@ export interface OrcaRunResult {
   output: string;
   /** What happened on the route (worktree, terminal, cleanup), for receipts. */
   trace: string[];
+  /** The `attach` file's bytes, or "too-big" when it could not fit the transport. */
+  attachment?: Buffer | "too-big";
 }
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -37,7 +39,20 @@ export function routeScript(input: {
   nonce: string;
   argv: string[];
   checkout?: { sha: string };
+  /** Keep the END of an oversized stdout (runner logs: the result line is last). */
+  keepTail?: boolean;
+  /**
+   * Worktree-relative file the job writes (a patch, a report): returned whole in its own frame
+   * section, never truncated with the logs; `att=-2` when it cannot fit the transport.
+   */
+  attach?: string;
 }): string {
+  if (
+    input.attach !== undefined &&
+    !/^(?!.*\.\.)[A-Za-z0-9_.][A-Za-z0-9_./-]{0,119}$/.test(input.attach)
+  )
+    throw new Error("orca route: bad attachment path");
+  const att = input.attach ? q(input.attach) : "";
   const steps = input.checkout
     ? [
         `git fetch --quiet origin ${input.checkout.sha}`,
@@ -48,12 +63,22 @@ export function routeScript(input: {
   const run = [...steps, input.argv.map(q).join(" ")].join(" && ");
   return [
     "set -u",
+    // A missing credential must fail fast, never wait on a prompt nobody answers.
+    "export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never",
     'd="$(mktemp -d)"',
+    `trap 'rm -rf "$d"' EXIT HUP INT TERM`,
     `( ${run} ) >"$d/out" 2>"$d/err" </dev/null`,
     "rc=$?",
-    'pack() { head -c "$1" "$d/out" >"$d/o"; { printf "rc=%s out=%s full=%s\\n" "$rc" "$(wc -c <"$d/o" | tr -d " ")" "$(wc -c <"$d/out" | tr -d " ")"; cat "$d/o"; tail -c 16000 "$d/err"; } | gzip -c | base64 | fold -w 120 >"$d/p"; }',
+    // Attachment: -1 none, -2 too big for the transport, else its byte length (sent whole).
+    input.attach
+      ? `: >"$d/a"; al=-1; if [ -f ${att} ]; then if [ "$(wc -c <${att} | tr -d " ")" -le 4000000 ]; then cp ${att} "$d/a"; al="$(wc -c <"$d/a" | tr -d " ")"; else al=-2; fi; fi`
+      : `: >"$d/a"; al=-1`,
+    `pack() { ${input.keepTail ? "tail" : "head"} -c "$1" "$d/out" >"$d/o";` +
+      '  { printf "rc=%s out=%s full=%s att=%s\\n" "$rc" "$(wc -c <"$d/o" | tr -d " ")" "$(wc -c <"$d/out" | tr -d " ")" "$al"; cat "$d/o" "$d/a"; tail -c 16000 "$d/err"; } | gzip -c | base64 | fold -w 120 >"$d/p"; }',
     "pack 2000000",
     `[ "$(wc -l <"$d/p")" -gt ${PAYLOAD_LINES} ] && pack 60000`,
+    `[ "$(wc -l <"$d/p")" -gt ${PAYLOAD_LINES} ] && pack 4000`,
+    `[ "$(wc -l <"$d/p")" -gt ${PAYLOAD_LINES} ] && { : >"$d/a"; al=-2; pack 4000; }`,
     `printf '__MX%s_%s__\\n' B ${input.nonce}`,
     'cat "$d/p"',
     `printf '__MX%s_%s__\\n' E ${input.nonce}`,
@@ -65,7 +90,11 @@ export function routeScript(input: {
 export function decodePayload(
   lines: string[],
   nonce: string,
-): { exitCode: number; stdout: string; output: string } | undefined {
+  /** Runner output keeps its tail (the final result line); a truncated stdout is still a pass. */
+  allowTruncated = false,
+):
+  | { exitCode: number; stdout: string; output: string; attachment?: Buffer | "too-big" }
+  | undefined {
   const trimmed = lines.map((l) => l.trim());
   const begin = trimmed.lastIndexOf(`__MXB_${nonce}__`);
   const end = trimmed.lastIndexOf(`__MXE_${nonce}__`);
@@ -90,7 +119,7 @@ export function decodePayload(
   }
   const nl = raw.indexOf(10);
   const header = raw.subarray(0, nl).toString("utf8");
-  const m = /^rc=(\d+) out=(\d+) full=(\d+)$/.exec(header);
+  const m = /^rc=(\d+) out=(\d+) full=(\d+)(?: att=(-?\d+))?$/.exec(header);
   if (!m)
     return {
       exitCode: 126,
@@ -98,11 +127,19 @@ export function decodePayload(
       output: `orca route: bad payload header ${JSON.stringify(header.slice(0, 40))}`,
     };
   const outLen = Number(m[2]);
+  const attLen = Math.max(0, Number(m[4] ?? -1));
   const stdout = raw.subarray(nl + 1, nl + 1 + outLen).toString("utf8");
-  const stderr = raw.subarray(nl + 1 + outLen).toString("utf8");
+  const attachment =
+    m[4] === "-2"
+      ? ("too-big" as const)
+      : Number(m[4] ?? -1) >= 0
+        ? Buffer.from(raw.subarray(nl + 1 + outLen, nl + 1 + outLen + attLen))
+        : undefined;
+  const stderr = raw.subarray(nl + 1 + outLen + attLen).toString("utf8");
   return {
+    ...(attachment ? { attachment } : {}),
     // Truncated stdout never passes as a success: callers parse it (e.g. release JSON).
-    exitCode: Number(m[1]) === 0 && Number(m[3]) > outLen ? 125 : Number(m[1]),
+    exitCode: Number(m[1]) === 0 && Number(m[3]) > outLen && !allowTruncated ? 125 : Number(m[1]),
     stdout,
     output: `${stdout.slice(-16_000)}\n${stderr}`,
   };
@@ -128,6 +165,10 @@ export async function runViaOrca(
     pollMs?: number;
     sleep?: (ms: number) => Promise<void>;
     label?: string;
+    /** Accept a truncated stdout tail as success (runner logs; never for parsed output). */
+    allowTruncated?: boolean;
+    /** Worktree-relative file returned whole (see routeScript). */
+    attach?: string;
   },
 ): Promise<OrcaRunResult> {
   const repoPath = route.repos[opts.repo];
@@ -178,8 +219,13 @@ export async function runViaOrca(
       nonce,
       argv,
       ...(opts.checkout ? { checkout: opts.checkout } : {}),
+      ...(opts.allowTruncated ? { keepTail: true } : {}),
+      ...(opts.attach ? { attach: opts.attach } : {}),
     });
     const command = `/bin/sh -c "$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d)"`;
+    // One exec argument on the Orca CLI host (Linux: 128 KiB); refuse before anything runs.
+    if (command.length > 120_000)
+      throw new Error(`orca route: command too long (${command.length} bytes)`);
     const made = record(
       await cli.call(
         [
@@ -198,7 +244,10 @@ export async function runViaOrca(
     );
     terminal = str(record(made.terminal).handle);
     if (!terminal) throw new Error("orca route: terminal create returned no handle");
-    trace.push(`${route.environment}: terminal ${terminal} runs ${argv.join(" ")}`);
+    // Short: remote jobs carry whole scripts (base64 stdin included) as argv.
+    trace.push(
+      `${route.environment}: terminal ${terminal} runs ${argv.join(" ").replace(/\s+/g, " ").slice(0, 160)}`,
+    );
     const lines: string[] = [];
     let cursor: string | undefined;
     for (;;) {
@@ -227,7 +276,7 @@ export async function runViaOrca(
       else lines.splice(0, lines.length, ...tail);
       if (lines.length > 6_000) lines.splice(0, lines.length - 6_000);
       cursor = next ?? cursor;
-      const got = decodePayload(lines, nonce);
+      const got = decodePayload(lines, nonce, opts.allowTruncated);
       if (got) return { ...got, trace };
       if (Date.now() >= deadline) {
         // Stop the command before the terminal is closed, so a timed-out deploy is not left

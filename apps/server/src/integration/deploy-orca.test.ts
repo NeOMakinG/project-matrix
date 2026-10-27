@@ -140,3 +140,39 @@ describe("orca deploy route", () => {
     ).toThrow("orca needs");
   });
 });
+
+describe("orca route tail mode", () => {
+  test("keepTail keeps the end of an oversized stdout and still passes", () => {
+    const script = routeScript({
+      nonce: "t1",
+      argv: ["sh", "-c", "seq 1 400000; echo LAST"],
+      keepTail: true,
+    });
+    const out = execFileSync("/bin/sh", ["-c", script], { encoding: "utf8", maxBuffer: 64 << 20 });
+    const got = decodePayload(out.split("\n"), "t1", true)!;
+    expect(got.exitCode).toBe(0);
+    expect(got.stdout.trimEnd().endsWith("LAST")).toBe(true);
+    expect(decodePayload(out.split("\n"), "t1")!.exitCode).toBe(125);
+  });
+});
+
+describe("orca route attachment", () => {
+  test("attachment travels whole even when the log is cut", () => {
+    const dir = execFileSync("mktemp", ["-d"], { encoding: "utf8" }).trim();
+    const script = routeScript({
+      nonce: "a1",
+      argv: ["sh", "-c", "seq 1 400000; printf 'p\\0q  \\n' > .matrix-patch"],
+      keepTail: true,
+      attach: ".matrix-patch",
+    });
+    const out = execFileSync("/bin/sh", ["-c", script], {
+      cwd: dir,
+      encoding: "utf8",
+      maxBuffer: 64 << 20,
+    });
+    const got = decodePayload(out.split("\n"), "a1", true)!;
+    expect(got.exitCode).toBe(0);
+    expect(got.attachment).toEqual(Buffer.from("p\0q  \n"));
+    expect(() => routeScript({ nonce: "x", argv: ["x"], attach: "../etc" })).toThrow("attachment");
+  });
+});

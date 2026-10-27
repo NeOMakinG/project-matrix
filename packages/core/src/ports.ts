@@ -49,6 +49,8 @@ export interface RunRequest {
   model: string;
   prompt: string;
   workdir: string;
+  /** Runner machine when not the project host (the runtime routes the run there). */
+  host?: string;
   /** Mount the workdir read-only (review and judge runs). */
   readOnly?: boolean;
   env?: Record<string, string>;
@@ -98,6 +100,10 @@ export type NetworkPolicy = "none" | "gateway" | "allowlist";
 
 export interface SandboxExecSpec {
   workdir: string;
+  /** Runner machine when not the project host (the runtime routes the command there). */
+  host?: string;
+  /** Set with `host`: whose repo checkout the remote machine uses. */
+  projectId?: string;
   cmd: string[];
   env?: Record<string, string>;
   network: NetworkPolicy;

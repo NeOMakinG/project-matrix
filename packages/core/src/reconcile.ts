@@ -119,6 +119,12 @@ export interface ReconcilerOptions {
   limits: Limits;
   backoff: BackoffPolicy;
   host: string;
+  /**
+   * Extra machines that take light runs (implement, checks) off the project host, each with its
+   * own slot count. A run goes to the eligible host with the most free slots (the project host
+   * wins ties); heavy phases (QA, deploy) and every other phase stay on the project host.
+   */
+  runnerHosts?: RunnerHostSlot[];
   /** Unique per process. Approvals requested by a reconciler can never be decided by it. */
   ownerId?: string;
   /** How long a workflow lease lasts without a heartbeat before another reconciler may take over. */
@@ -155,6 +161,42 @@ export interface ReconcilerOptions {
   sleep?: (ms: number) => Promise<void>;
   clock?: () => Date;
   ids?: () => string;
+}
+
+/** One extra runner machine (see `ReconcilerOptions.runnerHosts`). */
+export interface RunnerHostSlot {
+  name: string;
+  phases: readonly Phase[];
+  slots: number;
+  /** False when the host has no checkout of this project's repo. Absent: serves every project. */
+  serves?: (project: ProjectConfig) => boolean;
+}
+
+/** Phases that may run on another machine than the project host. */
+export const REMOTE_PHASES: ReadonlySet<Phase> = new Set<Phase>(["implement", "checks"]);
+
+/**
+ * Pure host choice for one run: the project host or an eligible runner host, whichever has the
+ * most free light slots (ties: the project host). Null when every eligible host is full.
+ */
+export function pickRunHost(
+  project: ProjectConfig,
+  phase: Phase,
+  runs: readonly { host: string }[],
+  limits: Limits,
+  runnerHosts: readonly RunnerHostSlot[] = [],
+): string | null {
+  const busy = (host: string) => runs.filter((r) => r.host === host).length;
+  const local = (limits.perHost[project.host] ?? limits.defaultPerHost) - busy(project.host);
+  let best = { host: project.host, free: local };
+  if (REMOTE_PHASES.has(phase))
+    for (const h of runnerHosts) {
+      if (h.name === project.host || !h.phases.includes(phase)) continue;
+      if (h.serves && !h.serves(project)) continue;
+      const free = h.slots - busy(h.name);
+      if (free > best.free) best = { host: h.name, free };
+    }
+  return best.free > 0 ? best.host : null;
 }
 
 interface ActiveRun {
@@ -1809,9 +1851,9 @@ export class Reconciler {
     ) {
       return `model limit ${model}`;
     }
-    const hostLimit = limits.perHost[project.host] ?? limits.defaultPerHost;
+    if (pickRunHost(project, w.phase, runs, limits, this.o.runnerHosts) === null)
+      return `host limit ${project.host}${REMOTE_PHASES.has(w.phase) && this.o.runnerHosts?.length ? " (and runner hosts)" : ""}`;
     const onHost = runs.filter((r) => r.host === project.host);
-    if (onHost.length >= hostLimit) return `host limit ${project.host}`;
     const heavyLimit = limits.heavyPerHost?.[project.host] ?? limits.defaultHeavyPerHost;
     if (
       heavyLimit !== undefined &&
@@ -2391,6 +2433,9 @@ export class Reconciler {
     }
 
     const { model, provider, runner } = await this.phaseModel(project, w);
+    const runHost =
+      pickRunHost(project, w.phase, [...this.active.values()], this.o.limits, this.o.runnerHosts) ??
+      project.host;
     // Checks bind to the SHA returned by cleanForChecks; review, QA, merge and deploy must match it.
     const headSha =
       checkedSha ??
@@ -2404,7 +2449,7 @@ export class Reconciler {
       stepKey: key,
       runner,
       model,
-      host: project.host,
+      host: runHost,
       ownerId: this.ownerId,
       ...(headSha ? { headSha } : {}),
       status: "running",
@@ -2431,9 +2476,16 @@ export class Reconciler {
     this.o.bus.publish({ type: "workflow.changed", workflow: state });
 
     const controller = new AbortController();
-    const promise = this.execute(project, state, runId, key, controller, reserved, headSha).finally(
-      () => this.active.delete(runId),
-    );
+    const promise = this.execute(
+      project,
+      state,
+      runId,
+      key,
+      controller,
+      reserved,
+      headSha,
+      runHost,
+    ).finally(() => this.active.delete(runId));
     this.active.set(runId, {
       runId,
       projectId: project.id,
@@ -2441,7 +2493,7 @@ export class Reconciler {
       phase: w.phase,
       model,
       provider,
-      host: project.host,
+      host: runHost,
       controller,
       promise,
     });
@@ -2505,6 +2557,7 @@ export class Reconciler {
     controller: AbortController,
     reserved: number,
     validatedSha?: string,
+    runHost: string = project.host,
   ): Promise<void> {
     const timer = setInterval(() => {
       void this.heartbeat(project.id, w.ticketId, runId, controller).catch(() => undefined);
@@ -2589,6 +2642,7 @@ export class Reconciler {
         ),
         runId,
         workdir,
+        ...(runHost !== project.host ? { host: runHost } : {}),
         branch,
         idempotencyKey,
         signal,
