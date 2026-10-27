@@ -59,6 +59,7 @@ import {
   manualQaData,
   manualQaReason,
   manualQaStillAllowed,
+  requiredDeviceSurfaces,
 } from "./manual-qa.js";
 import { DEFAULT_RUN_IDLE_MS, phaseTimeoutMs, resolveModel, selectModel } from "./models.js";
 import type { AutonomyMode, Phase, RunEvent, RunEventKind, RunnerId, Workspace } from "./ports.js";
@@ -94,7 +95,14 @@ import {
   VersionConflictError,
 } from "./store.js";
 import { bestEffortComments } from "./tracker-writes.js";
-import type { BackoffPolicy, Limits, PhaseOutcome, ProjectConfig, WorkflowState } from "./types.js";
+import type {
+  BackoffPolicy,
+  Limits,
+  PhaseOutcome,
+  ProjectConfig,
+  QaSurface,
+  WorkflowState,
+} from "./types.js";
 
 export interface ReconcilerOptions {
   uiContext?: UiContextPort;
@@ -754,6 +762,7 @@ export class Reconciler {
         if (!this.o.agentQa?.handles(project))
           throw new Error("no agent QA lane is configured for this project on the Matrix host");
         [, facts] = await verifyCode();
+        const surfaces = laneRunSurfaces(project, ticket, manual.surfaces, facts);
         outcome = await this.o.agentQa.run({
           project,
           ticket: {
@@ -767,7 +776,7 @@ export class Reconciler {
           },
           pullRequest: { url, number: Number(pr[2]), repo: pr[1] },
           headSha,
-          surfaces: manual.surfaces,
+          surfaces,
           criteria,
           deviceCriteria: numbered("device", "both"),
           ...(facts ? { pullRequestBody: facts.body.slice(0, 8_000) } : {}),
@@ -2812,6 +2821,28 @@ interface AgentQaRerun {
   reason: string;
   /** Requested with the `qa:rerun` label (removed when the run starts). */
   label?: boolean;
+}
+
+/**
+ * Surfaces a lane run covers: the QA run's snapshot, plus any surface the project config enables
+ * NOW that routing selects for this ticket and diff (e.g. iOS turned on after the first run, then a
+ * rerun). Never fewer than the snapshot: a partial GitHub file list only ever adds.
+ */
+export function laneRunSurfaces(
+  project: ProjectConfig,
+  ticket: { body: string; labels?: readonly string[] },
+  snapshot: readonly QaSurface[],
+  facts: PullRequestFacts | undefined,
+): QaSurface[] {
+  const out = new Set<QaSurface>(snapshot);
+  if (facts?.files.length)
+    for (const s of requiredDeviceSurfaces(
+      project,
+      ticket,
+      facts.files.map((f) => f.path),
+    ))
+      out.add(s);
+  return [...out];
 }
 
 /** The ticket's acceptance criteria as they are now; the QA run's snapshot when it lists none. */
