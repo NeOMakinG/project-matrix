@@ -55,15 +55,15 @@ write_beat() { date +%s >"$1/beat.$$" && mv -f "$1/beat.$$" "$1/beat"; }
 # Every change of a lock's owner (acquire, release, stale reclaim) happens under one guard, so a
 # reclaimer never removes a lock that was released and re-acquired after it judged it stale.
 guard() {
-  local g="$LOCKS/.guard" n=0
-  (umask 000; mkdir -p "$LOCKS")
-  until mkdir "$g" 2>/dev/null; do
-    (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g" && continue
-    (( ++n < 300 )) || return 1
-    sleep 0.2
-  done
+  # An OS file lock (flock through perl on fd 9, kept by this shell after perl exits): released by
+  # the kernel if the holder dies, so it never needs age-based recovery.
+  (umask 000; mkdir -p "$LOCKS"; : >>"$LOCKS/.guard.lck")
+  exec 9>>"$LOCKS/.guard.lck"
+  perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or exit 2;
+    for (1 .. 300) { exit 0 if flock($f, LOCK_EX | LOCK_NB); select(undef, undef, undef, 0.2) } exit 1' \
+    || { exec 9>&-; return 1; }
 }
-unguard() { rm -rf "$LOCKS/.guard"; }
+unguard() { exec 9>&-; }
 # Under the guard: a lock silent for STALE_S is removed. Returns 0 when it was.
 reclaim_stale() {
   local l="$1"
@@ -115,6 +115,15 @@ wait_tapflow_free() {
 # Another Matrix job (any simulator) holds a lock: the build dir and build HOME are shared.
 # Fails closed: without the guard the lock stays (it goes stale and is reclaimed later).
 release() { guard || return 0; [[ "$(cat "$1/owner" 2>/dev/null || true)" == "$2" ]] && rm -rf "$1"; unguard; }
+# The start time identifies a process beyond its (reusable) pid.
+proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | tr ' ' '_' || true; }
+# The pid of a recorded build wrapper if that very process is still alive, else nothing.
+recorded_build() {
+  local pid start
+  read -r pid start <"$1" 2>/dev/null || return 0
+  [[ "$pid" =~ ^[0-9]+$ && -n "$start" && "$(proc_start "$pid")" == "$start" ]] && echo "$pid"
+  return 0
+}
 lane_running() {
   local l
   for l in "$LOCKS"/*.lock; do
@@ -228,8 +237,7 @@ case "$step" in
     for p in "$ROOT"/jobs/*/build.pid; do
       [[ -f "$p" ]] || continue
       other=$(basename "$(dirname "$p")"); [[ "$other" == "$1" ]] && continue
-      op=$(cat "$p" 2>/dev/null || true)
-      [[ "$op" =~ ^[0-9]+$ ]] && kill -0 "$op" 2>/dev/null || continue
+      op=$(recorded_build "$p"); [[ -n "$op" ]] || continue
       [[ -n "$(held_lock "$other")" ]] && die 12 "another Matrix build is running"
       kill -TERM "$op" 2>/dev/null || true
       for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 "$op" 2>/dev/null || break; sleep 5; done
@@ -294,14 +302,16 @@ SB
           $SIG{ALRM} = sub { kill "KILL", -$pid; exit 124 }; $SIG{TERM} = sub { kill "KILL", -$pid; exit 143 };
           alarm $t; waitpid($pid, 0); kill "KILL", -$pid; exit($? >> 8)' "$timeout_s" nice bash "$dir/build.sh" </dev/null &
       bpid=$!
-      echo "$bpid" >"$dir/build.pid"
+      echo "$bpid $(proc_start "$bpid")" >"$dir/build.pid"
       # Fence: the build beats the lock itself, and is killed if the lock is ever lost (reclaimed
       # by another tenant), so it never writes the shared build dir without owning it.
       ( while kill -0 "$bpid" 2>/dev/null; do
           if [[ -z "$(held_lock "$job")" ]]; then echo "lock lost: stopping the build"; kill -TERM "$bpid"; exit 0; fi
           beat "$job"; sleep 30
         done ) </dev/null &
-      wait "$bpid"
+      brc=0; wait "$bpid" || brc=$?
+      rm -f "$dir/build.pid"
+      exit "$brc"
     ) >"$dir/build.log" 2>&1
     rc=$?
     set -e
@@ -379,8 +389,8 @@ SB
     # drop it so the shared Mac keeps its disk.
     dir=$(job_dir "$1")
     # A build still running (its SSH step timed out) is stopped before anything else.
-    op=$(cat "$dir/build.pid" 2>/dev/null || true)
-    if [[ "$op" =~ ^[0-9]+$ ]] && kill -0 "$op" 2>/dev/null; then
+    op=$(recorded_build "$dir/build.pid")
+    if [[ -n "$op" ]]; then
       kill -TERM "$op" 2>/dev/null || true
       for _ in 1 2 3 4 5 6; do kill -0 "$op" 2>/dev/null || break; sleep 5; done
     fi

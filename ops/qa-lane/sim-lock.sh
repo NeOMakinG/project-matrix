@@ -30,15 +30,15 @@ write_beat() { date +%s >"$1/beat.$$" && mv -f "$1/beat.$$" "$1/beat"; }
 # Every change of a lock's owner (acquire, release, stale reclaim) happens under one guard, so a
 # reclaimer never removes a lock that was released and re-acquired after it judged it stale.
 guard() {
-  local g="$LOCKS/.guard" n=0
-  (umask 000; mkdir -p "$LOCKS")
-  until mkdir "$g" 2>/dev/null; do
-    (( $(date +%s) - $(mtime "$g") > 60 )) && rm -rf "$g" && continue
-    (( ++n < 300 )) || return 1
-    sleep 0.2
-  done
+  # An OS file lock (flock through perl on fd 9, kept by this shell after perl exits): released by
+  # the kernel if the holder dies, so it never needs age-based recovery.
+  (umask 000; mkdir -p "$LOCKS"; : >>"$LOCKS/.guard.lck")
+  exec 9>>"$LOCKS/.guard.lck"
+  perl -MFcntl=:flock -e 'open(my $f, ">&=", 9) or exit 2;
+    for (1 .. 300) { exit 0 if flock($f, LOCK_EX | LOCK_NB); select(undef, undef, undef, 0.2) } exit 1' \
+    || { exec 9>&-; return 1; }
 }
-unguard() { rm -rf "$LOCKS/.guard"; }
+unguard() { exec 9>&-; }
 # Under the guard: a lock silent for STALE_S is removed. Returns 0 when it was.
 reclaim_stale() {
   local l="$1"

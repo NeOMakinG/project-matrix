@@ -223,6 +223,7 @@ export class TapflowIosQaLane implements AgentQaPort {
         c.waitMs + 60_000,
       );
       locked = true;
+      confirmedAt = Date.now();
       // Builds and agent runs outlast the stale window: beat from here, on its own SSH session.
       beater = setInterval(() => {
         if (!beater) return;
