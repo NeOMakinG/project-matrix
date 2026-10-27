@@ -314,7 +314,10 @@ export class TapflowIosQaLane implements AgentQaPort {
         durationMs: Date.now() - started,
       };
     } catch (error) {
-      return { kind: "blocked", reason: (error as Error).message.slice(0, 600), device, build };
+      const reason = lost
+        ? "simulator busy: the lane lost its simulator lock during the run (another tenant may have used it)"
+        : (error as Error).message.slice(0, 600);
+      return { kind: "blocked", reason, device, build };
     } finally {
       if (beater) clearInterval(beater);
       beater = undefined;

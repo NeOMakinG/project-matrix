@@ -393,6 +393,8 @@ SB
     if [[ -n "$op" ]]; then
       kill -TERM "$op" 2>/dev/null || true
       for _ in 1 2 3 4 5 6; do kill -0 "$op" 2>/dev/null || break; sleep 5; done
+      # Never clean under a live writer: leave the job (and its pid record) for the next build's scan.
+      kill -0 "$op" 2>/dev/null && die 12 "the build did not stop; cleanup deferred"
     fi
     # Only while this job still holds its lock: the build dir is shared (a job that lost it leaves
     # the output to the next precheck).

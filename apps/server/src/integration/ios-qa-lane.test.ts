@@ -67,6 +67,8 @@ function fake(opts: { fail?: Record<string, number>; slowAgentMs?: number } = {}
           });
         });
       writeFileSync(join(argv[2] ?? "", "out", "report.json"), REPORT);
+      // A real abort kills the agent: the runner reports a failure.
+      if (aborted.length) return { exitCode: -1, stdout: Buffer.alloc(0), stderr: "killed" };
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     },
   };

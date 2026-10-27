@@ -51,6 +51,15 @@ export function localRunner(): CommandRunner {
           clearTimeout(timer);
           reject(e);
         });
+        // Leftovers of an abortable command are killed on exit (they may hold its pipes open).
+        child.on("exit", () => {
+          if (signal && child.pid)
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              // the group is already gone
+            }
+        });
         child.on("close", (code) => {
           clearTimeout(timer);
           signal?.removeEventListener("abort", kill);
