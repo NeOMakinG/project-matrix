@@ -145,6 +145,66 @@ export function decodePayload(
   };
 }
 
+/** Longest startup command typed as-is (under macOS's 1024-byte canonical line limit). */
+export const INLINE_COMMAND_MAX = 900;
+/** base64 per typed line: the whole line stays under macOS's 1024-byte canonical limit. */
+const CHUNK = 880;
+
+/** Waits for the prompt, then types the base64 script in short lines into a 0600 file and runs it. */
+async function typeScript(
+  cli: OrcaCaller,
+  terminal: string,
+  encoded: string,
+  nonce: string,
+  budget: (cap: number) => number,
+  sleep: (ms: number) => Promise<unknown>,
+): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    const read = record(
+      record(await cli.call(["terminal", "read", "--terminal", terminal, "--json"], budget(30_000)))
+        .terminal,
+    );
+    const tail = Array.isArray(read.tail) ? read.tail.map(String) : [];
+    if (tail.some((l) => l.trim())) break;
+    await sleep(500);
+  }
+  const send = (text: string) =>
+    cli.call(
+      ["terminal", "send", "--terminal", terminal, "--text", text, "--enter", "--json"],
+      budget(30_000),
+    );
+  // A plain POSIX shell takes the long lines: zsh line-editor plugins (highlighting,
+  // autosuggestions) re-render on every typed character and crawl on 3000-byte lines.
+  await send("exec /bin/sh");
+  // Readiness: the sentinel only prints once /bin/sh itself is reading our input.
+  await send(`printf '__MX%s_%s__\\n' R ${nonce}`);
+  let ready = false;
+  for (let i = 0; i < 60 && !ready; i++) {
+    const read = record(
+      record(
+        await cli.call(
+          ["terminal", "read", "--terminal", terminal, "--limit", "200", "--json"],
+          budget(30_000),
+        ),
+      ).terminal,
+    );
+    const tail = Array.isArray(read.tail) ? read.tail.map(String) : [];
+    ready = tail.some((l) => l.trim() === `__MXR_${nonce}__`);
+    if (!ready) await sleep(500);
+  }
+  if (!ready) throw new Error("orca route: the remote shell never became ready");
+  // The trap removes a partial upload when the terminal is closed (HUP) on any failure path.
+  await send(
+    `umask 077; _mx_f="\${TMPDIR:-/tmp}/mx-${nonce}.b64"; trap 'rm -f "$_mx_f"' EXIT HUP INT TERM; : >"$_mx_f"`,
+  );
+  for (let i = 0; i < encoded.length; i += CHUNK)
+    await send(`printf %s ${encoded.slice(i, i + CHUNK)} >>"$_mx_f"`);
+  // Runs only a complete, decodable upload; anything else prints the failure sentinel.
+  await send(
+    `if [ "$(wc -c <"$_mx_f" | tr -d ' ')" = ${encoded.length} ] && _mx_s="$(base64 -d <"$_mx_f")"; then rm -f "$_mx_f"; /bin/sh -c "$_mx_s"; else rm -f "$_mx_f"; printf '__MX%s_%s__\\n' X ${nonce}; fi`,
+  );
+}
+
 const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -222,10 +282,15 @@ export async function runViaOrca(
       ...(opts.allowTruncated ? { keepTail: true } : {}),
       ...(opts.attach ? { attach: opts.attach } : {}),
     });
-    const command = `/bin/sh -c "$(printf %s ${Buffer.from(script).toString("base64")} | base64 -d)"`;
+    const encoded = Buffer.from(script).toString("base64");
+    const command = `/bin/sh -c "$(printf %s ${encoded} | base64 -d)"`;
     // One exec argument on the Orca CLI host (Linux: 128 KiB); refuse before anything runs.
     if (command.length > 120_000)
       throw new Error(`orca route: command too long (${command.length} bytes)`);
+    // A long startup command is typed before the shell is reading: the tty's canonical line
+    // limit (4095 on Linux, 1024 on macOS) swallows it and nothing runs. Long scripts are sent
+    // in short lines once the prompt is up, into a private file, then run.
+    const inline = command.length <= INLINE_COMMAND_MAX;
     const made = record(
       await cli.call(
         [
@@ -235,8 +300,7 @@ export async function runViaOrca(
           `path:${worktree}`,
           "--title",
           name,
-          "--command",
-          command,
+          ...(inline ? ["--command", command] : []),
           "--json",
         ],
         budget(120_000),
@@ -244,6 +308,7 @@ export async function runViaOrca(
     );
     terminal = str(record(made.terminal).handle);
     if (!terminal) throw new Error("orca route: terminal create returned no handle");
+    if (!inline) await typeScript(cli, terminal, encoded, nonce, budget, sleep);
     // Short: remote jobs carry whole scripts (base64 stdin included) as argv.
     trace.push(
       `${route.environment}: terminal ${terminal} runs ${argv.join(" ").replace(/\s+/g, " ").slice(0, 160)}`,
@@ -276,6 +341,13 @@ export async function runViaOrca(
       else lines.splice(0, lines.length, ...tail);
       if (lines.length > 6_000) lines.splice(0, lines.length - 6_000);
       cursor = next ?? cursor;
+      if (lines.some((l) => l.trim() === `__MXX_${nonce}__`))
+        return {
+          exitCode: 99,
+          stdout: "",
+          output: "orca route: script upload incomplete; nothing ran",
+          trace,
+        };
       const got = decodePayload(lines, nonce, opts.allowTruncated);
       if (got) return { ...got, trace };
       if (Date.now() >= deadline) {

@@ -44,17 +44,31 @@ describe("orca deploy route", () => {
   test("worktree + terminal created, output decoded, both always cleaned up", async () => {
     const calls: string[][] = [];
     let script = "";
+    let typed = "";
+    let ready = "";
     const cli: OrcaCaller = {
       async call(args) {
         calls.push(args);
         if (args[1] === "create" && args[0] === "worktree")
           return { worktree: { path: "/Users/x/ws/r/mx-1" } };
         if (args[1] === "create") {
-          const cmd = args[args.indexOf("--command") + 1]!;
-          script = Buffer.from(/printf %s (\S+) \|/.exec(cmd)![1]!, "base64").toString();
+          if (args.includes("--command")) {
+            const cmd = args[args.indexOf("--command") + 1]!;
+            script = Buffer.from(/printf %s (\S+) \|/.exec(cmd)![1]!, "base64").toString();
+          }
           return { terminal: { handle: "term_1" } };
         }
+        if (args[1] === "send") {
+          const text = args[args.indexOf("--text") + 1]!;
+          if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
+          const m = /^printf %s (\S+) >>/.exec(text);
+          if (m) typed += m[1];
+          if (text.includes('/bin/sh -c "$_mx_s"'))
+            script = Buffer.from(typed, "base64").toString();
+          return {};
+        }
         if (args[1] === "read") {
+          if (!script) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
           const lines = shRun(script.replace(/git [^&]*&& |test [^&]*&& /g, ""), "echo deployed");
           return { terminal: { tail: lines, nextCursor: "9" } };
         }
@@ -70,13 +84,9 @@ describe("orca deploy route", () => {
     });
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("deployed\n");
-    expect(calls.map((c) => c.slice(0, 2).join(" "))).toEqual([
-      "worktree create",
-      "terminal create",
-      "terminal read",
-      "terminal close",
-      "worktree rm",
-    ]);
+    const seq = calls.map((c) => c.slice(0, 2).join(" "));
+    expect(seq.slice(0, 2)).toEqual(["worktree create", "terminal create"]);
+    expect(seq.slice(-2)).toEqual(["terminal close", "worktree rm"]);
     expect(calls[0]).toContain("path:/Users/x/r");
   });
 
@@ -174,5 +184,88 @@ describe("orca route attachment", () => {
     expect(got.exitCode).toBe(0);
     expect(got.attachment).toEqual(Buffer.from("p\0q  \n"));
     expect(() => routeScript({ nonce: "x", argv: ["x"], attach: "../etc" })).toThrow("attachment");
+  });
+});
+
+describe("orca route: long scripts", () => {
+  test("a script over the inline limit is typed in short lines after the prompt, then run", async () => {
+    const calls: string[][] = [];
+    let encoded = "";
+    let ran = false;
+    let ready = "";
+    const cli: OrcaCaller = {
+      async call(args) {
+        calls.push(args);
+        if (args[0] === "worktree" && args[1] === "create") return { worktree: { path: "/w" } };
+        if (args[1] === "create") {
+          expect(args).not.toContain("--command");
+          return { terminal: { handle: "t" } };
+        }
+        if (args[1] === "send") {
+          const text = args[args.indexOf("--text") + 1]!;
+          expect(text.length).toBeLessThan(3_100);
+          if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
+          const m = /^printf %s (\S+) >>/.exec(text);
+          if (m) encoded += m[1];
+          if (text.includes('/bin/sh -c "$_mx_s"')) ran = true;
+          return {};
+        }
+        if (args[1] === "read") {
+          if (!ran) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
+          const script = Buffer.from(encoded, "base64").toString();
+          const lines = execFileSync("/bin/sh", ["-c", `fly() { echo big; }\n${script}`], {
+            encoding: "utf8",
+          }).split("\n");
+          return { terminal: { tail: lines, nextCursor: "1" } };
+        }
+        return {};
+      },
+    };
+    const r = await runViaOrca(route, ["fly", "x".repeat(5_000)], {
+      repo: "o/r",
+      timeoutMs: 10_000,
+      cli,
+      sleep: async () => undefined,
+    });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("big\n");
+    expect(calls.filter((c) => c[1] === "send").length).toBeGreaterThan(3);
+  });
+});
+
+describe("orca route: upload integrity", () => {
+  test("an incomplete upload never runs: the failure sentinel ends the run", async () => {
+    let final = "";
+    let ready = "";
+    const cli: OrcaCaller = {
+      async call(args) {
+        if (args[0] === "worktree" && args[1] === "create") return { worktree: { path: "/w" } };
+        if (args[1] === "create") return { terminal: { handle: "t" } };
+        if (args[1] === "send") {
+          const text = args[args.indexOf("--text") + 1]!;
+          if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
+          if (text.startsWith("if [")) final = text;
+          return {};
+        }
+        if (args[1] === "read") {
+          if (!final) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
+          // Real sh: the temp file holds only a prefix of the upload.
+          const out = execFileSync(
+            "/bin/sh",
+            ["-c", `_mx_f=$(mktemp); printf %s QUJD >"$_mx_f"; ${final}`],
+            { encoding: "utf8" },
+          );
+          return { terminal: { tail: out.split("\n"), nextCursor: "1" } };
+        }
+        return {};
+      },
+    };
+    const r = await runViaOrca(route, ["fly", "x".repeat(5_000)], {
+      repo: "o/r",
+      timeoutMs: 10_000,
+      cli,
+      sleep: async () => undefined,
+    });
+    expect(r.exitCode).toBe(99);
   });
 });

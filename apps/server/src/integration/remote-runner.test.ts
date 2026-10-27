@@ -62,17 +62,31 @@ function git(opts: { dirty?: boolean; diff?: string } = {}) {
 function orca(stdout: string, rc = 0, att?: string) {
   const calls: string[][] = [];
   let nonce = "";
+  let typed = "";
+  let ready = "";
   const cli: OrcaCaller = {
     async call(args) {
       calls.push(args);
       if (args[0] === "worktree" && args[1] === "create") return { worktree: { path: "/w/mx" } };
       if (args[1] === "create") {
-        const cmd = args[args.indexOf("--command") + 1]!;
-        const script = Buffer.from(/printf %s (\S+) \|/.exec(cmd)![1]!, "base64").toString();
-        nonce = /' B (\w+)/.exec(script)![1]!;
+        if (args.includes("--command")) {
+          const cmd = args[args.indexOf("--command") + 1]!;
+          const script = Buffer.from(/printf %s (\S+) \|/.exec(cmd)![1]!, "base64").toString();
+          nonce = /' B (\w+)/.exec(script)![1]!;
+        }
         return { terminal: { handle: "t1" } };
       }
+      if (args[1] === "send") {
+        const text = args[args.indexOf("--text") + 1]!;
+        if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
+        const m = /^printf %s (\S+) >>/.exec(text);
+        if (m) typed += m[1];
+        if (text.includes('/bin/sh -c "$_mx_s"'))
+          nonce = /' B (\w+)/.exec(Buffer.from(typed, "base64").toString())![1]!;
+        return {};
+      }
       if (args[1] === "read") {
+        if (!nonce) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
         const body = Buffer.concat([
           Buffer.from(
             `rc=${rc} out=${Buffer.byteLength(stdout)} full=${Buffer.byteLength(stdout)} att=${att === undefined ? -1 : Buffer.byteLength(att)}\n${stdout}${att ?? ""}`,
@@ -224,8 +238,10 @@ describe("runner hosts", () => {
     });
     expect(res.stdout).toBe("tests ok\n");
     expect(res.report).toEqual({ text: '{"r":1}' });
-    const script = o.calls.find((x) => x[0] === "terminal" && x[1] === "create")!;
-    expect(script.join(" ")).toContain("printf %s");
+    const typedOrInline = o.calls.filter(
+      (x) => x[0] === "terminal" && (x[1] === "create" || x[1] === "send"),
+    );
+    expect(typedOrInline.map((x) => x.join(" ")).join("\n")).toContain("printf %s");
   });
 });
 
