@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -19,12 +19,16 @@ import { createRunner } from "@matrix/runners";
 import {
   CredentialBroker,
   type CredentialSource,
+  gitLocation,
+  hostExecutor,
   LLM_PORT,
   PodmanSandbox,
   RUN_TOKEN_PLACEHOLDER,
   requiredStackTools,
   resolveCredential,
   runSecretGate,
+  runToCompletion,
+  safeGitEnv,
   validateImageCapabilities,
 } from "@matrix/sandbox";
 import {
@@ -49,6 +53,7 @@ import type { Runtime } from "./runtime.js";
 import { scenarioQaDriver } from "./scenario-qa.js";
 import { scanCommittedHistory } from "./secret-scan.js";
 import { scanSourceSnapshot } from "./source-scan.js";
+import { type CleanupHost, finishedFromEvidence, parseTerminalList } from "./ticket-cleanup.js";
 
 const exec = promisify(execFile);
 
@@ -412,8 +417,71 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       sandboxedRunner(id, sandbox, git, opts, gatewayKey, served, orca),
     ]),
   ) as Partial<Record<RunnerId, Runner>>;
+  const evidenceDir = join(opts.dataDir, "orca-evidence");
+  const cleanup: CleanupHost = {
+    trusted: (workdir) =>
+      trusted.lookup(workdir).then(
+        (t) => ({ gitdir: t.gitdir, commonDir: t.commonDir }),
+        () => undefined,
+      ),
+    // Only a confirmed ENOENT is "absent"; anything odd (EACCES, a file or symlink) throws.
+    exists: async (path) => {
+      try {
+        const s = await lstat(path);
+        if (s.isDirectory() && !s.isSymbolicLink()) return true;
+        throw new Error("worktree path is not a plain directory");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+        throw error;
+      }
+    },
+    git: async (gitdir, workTree, args) => {
+      const result = await runToCompletion(hostExecutor, {
+        cmd: ["git", ...gitLocation(gitdir, workTree), ...args],
+        cwd: gitdir,
+        env: safeGitEnv(),
+        timeoutMs: 120_000,
+      });
+      return { exitCode: result.exitCode, stdout: result.stdout };
+    },
+    terminals: async (workdir) =>
+      orca
+        ? parseTerminalList(
+            await orca.cli.call(["terminal", "list", "--worktree", `path:${workdir}`, "--json"]),
+          )
+        : [],
+    closeTerminal: async (handle) => {
+      await orca?.cli.call(["terminal", "close", "--terminal", handle, "--json"]);
+    },
+    finishedTerminals: async (workdir) => {
+      const names = await readdir(evidenceDir).catch(() => [] as string[]);
+      const docs = await Promise.all(
+        names
+          .filter((n) => n.endsWith(".json"))
+          .map((n) =>
+            readFile(join(evidenceDir, n), "utf8").then(
+              (t) => {
+                try {
+                  return JSON.parse(t) as unknown;
+                } catch {
+                  return undefined;
+                }
+              },
+              () => undefined,
+            ),
+          ),
+      );
+      return finishedFromEvidence(docs, workdir);
+    },
+    stopSandbox: (target) => sandbox.stop(target),
+    forget: async (workdir) => {
+      await orca?.forget(workdir);
+      await trusted.forget(workdir);
+    },
+  };
   return {
     kind: opts.workspace,
+    cleanup,
     gatewayReady: (model) => served.ready(model),
     broker,
     workspace,

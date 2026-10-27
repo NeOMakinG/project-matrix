@@ -110,6 +110,8 @@ const factory = await createFactory({
     : {}),
   ...(env.MATRIX_TICK_MS ? { tickMs: Number(env.MATRIX_TICK_MS) } : {}),
   ...(env.MATRIX_MONITOR_MS ? { monitorMs: Number(env.MATRIX_MONITOR_MS) } : {}),
+  ...(env.MATRIX_CLEANUP_MS !== undefined ? { cleanupMs: Number(env.MATRIX_CLEANUP_MS) } : {}),
+  ...(env.MATRIX_CLEANUP_DRY_RUN === "1" ? { cleanupDryRun: true } : {}),
   watch: env.MATRIX_WATCH === "1",
 });
 if (!env.MATRIX_DATABASE_URL) {

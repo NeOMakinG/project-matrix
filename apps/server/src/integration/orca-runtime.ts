@@ -54,6 +54,8 @@ export interface OrcaRuntimeBridge {
   phase(req: RunRequest): Promise<OrcaPhase | undefined>;
   /** Closes the ticket's coordinator terminal before its worktree is removed. */
   release(workdir: string): Promise<void>;
+  /** release() plus the persisted worktree -> Run binding (cleanup after the worktree is gone). */
+  forget(workdir: string): Promise<void>;
 }
 
 /** `isTicketWorktree` from the host's trusted registry (OrcaWorkspace.prepare records realpaths). */
@@ -192,6 +194,12 @@ export function orcaBridge(o: OrcaBridgeOptions): OrcaRuntimeBridge {
       const session = sessions.get(workdir);
       sessions.delete(workdir);
       await session?.close();
+    },
+    async forget(workdir) {
+      const session = sessions.get(workdir);
+      sessions.delete(workdir);
+      await session?.close().catch(() => undefined);
+      await memory.delete(workdir);
     },
   };
 }

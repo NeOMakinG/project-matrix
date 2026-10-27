@@ -38,6 +38,7 @@ import { resolveQuota } from "./quota-config.js";
 import { RealCore } from "./real-core.js";
 import { createRuntime, type RuntimeKind } from "./runtime.js";
 import { scanCommittedHistory } from "./secret-scan.js";
+import { CLEANUP_STATUSES, TicketCleanup } from "./ticket-cleanup.js";
 import {
   type TicketBinaries,
   type TicketSettings,
@@ -76,6 +77,10 @@ export interface FactoryOptions {
   binaries?: TicketBinaries;
   /** `MATRIX_REPO_ROOTS`: directories existing repos may be registered from (empty = off). */
   repoRoots?: string[];
+  /** Merged/closed-PR cleanup sweep interval (`MATRIX_CLEANUP_MS`); 0 disables. Default 15 min. */
+  cleanupMs?: number;
+  /** `MATRIX_CLEANUP_DRY_RUN=1`: the sweep logs what it would remove and changes nothing. */
+  cleanupDryRun?: boolean;
   /** Test seam: replaces the GitHub draft-PR publisher. */
   pullRequests?: GitHubPullRequests;
   /** `MATRIX_QA_LANE_CONFIG`: device-host agent QA lane settings (qa.driver "agent" projects). */
@@ -380,6 +385,25 @@ async function createOwnedFactory(
     ...(options.binaries ? { binaries: options.binaries } : {}),
   });
 
+  const ticketCleanup = runtime.cleanup
+    ? new TicketCleanup({
+        ...runtime.cleanup,
+        workflows: () => store.listWorkflows({ status: [...CLEANUP_STATUSES] }),
+        getWorkflow: (projectId, ticketId) => store.getWorkflow(projectId, ticketId),
+        clearWorkdir: async (w) => {
+          try {
+            const { workdir: _w, workspaceRef: _r, ...rest } = w;
+            await store.saveWorkflow(rest);
+            return true;
+          } catch {
+            return false;
+          }
+        },
+        prState: (projectId, ticketId) => pullRequests.prState(projectId, ticketId),
+        log,
+      })
+    : undefined;
+
   const timers: ReturnType<typeof setInterval>[] = [];
   const activeLoops = new Map<string, Promise<unknown>>();
   const watchState = new PrivateState<{ nextAt: number }>(
@@ -514,6 +538,16 @@ async function createOwnedFactory(
         const watchTick = guarded("watch", watchAll);
         timers.push(setInterval(watchTick, 60 * 60 * 1000));
         void watchTick();
+      }
+      const cleanupMs = options.cleanupMs ?? 15 * 60_000;
+      if (ticketCleanup && cleanupMs > 0) {
+        const sweep = guarded("ticket-cleanup", () =>
+          ticketCleanup.sweep({ dryRun: options.cleanupDryRun === true }),
+        );
+        timers.push(setInterval(sweep, cleanupMs));
+        // One-shot sweep for tickets whose PR was merged/closed while the server was down.
+        const first = setTimeout(sweep, 60_000);
+        first.unref?.();
       }
       for (const t of timers) t.unref?.();
     },
