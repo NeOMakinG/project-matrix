@@ -27,6 +27,8 @@ export interface FakeLinear {
   tokens: string[];
   revoked: Set<string>;
   tokenCalls: Array<Record<string, string>>;
+  /** When true, issueLabelCreate fails as for an actor without the right to create labels. */
+  labelCreateForbidden?: boolean;
 }
 
 const STATES: Array<[string, string]> = [
@@ -150,6 +152,8 @@ export function fakeLinear(teamKey = "NEO"): FakeLinear {
           },
         };
       case "MatrixLabelCreate": {
+        if (fake.labelCreateForbidden)
+          throw new Error("You are not allowed to create labels in this team.");
         const label = { id: `label-${++seq}`, name: v.input.name, team: { id: v.input.teamId } };
         labels.set(label.id, label);
         return { issueLabelCreate: { success: true, issueLabel: label } };

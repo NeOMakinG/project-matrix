@@ -61,6 +61,10 @@ export interface LinearStoreOptions extends LinearClientOptions {
 }
 
 const norm = (s: string) => s.trim().toLowerCase();
+
+/** Linear refused the actor the right to do this (retrying changes nothing until a human acts). */
+const isPermissionError = (e: LinearApiError) =>
+  e.code === "FORBIDDEN" || e.status === 403 || /not allowed|permission|forbidden/i.test(e.message);
 /** Legacy comment markers, also as Linear renders them back (`-->` shown as `→`, or escaped). */
 const OPEN = String.raw`(?:<!--|&lt;!--)\s*`;
 const CLOSE = String.raw`\s*(?:-->|--&gt;|→)`;
@@ -410,9 +414,19 @@ export class LinearTicketStore implements TicketStore {
     }
     for (const name of wanted) {
       if (found.has(name)) continue;
-      const data = await this.#client.request<{
-        issueLabelCreate: { success: boolean; issueLabel: { id: string } | null };
-      }>(Q.CREATE_LABEL, { input: { name, teamId: team.id } });
+      let data: { issueLabelCreate: { success: boolean; issueLabel: { id: string } | null } };
+      try {
+        data = await this.#client.request(Q.CREATE_LABEL, { input: { name, teamId: team.id } });
+      } catch (error) {
+        // A missing label Matrix may not create stays missing until a human creates it: say which.
+        if (error instanceof LinearApiError && isPermissionError(error))
+          throw new LinearApiError(
+            `Linear label ${JSON.stringify(name)} is missing and Matrix may not create labels: create label ${JSON.stringify(name)} in team ${team.key} (${error.message})`,
+            error.status,
+            "FORBIDDEN",
+          );
+        throw error;
+      }
       if (!data.issueLabelCreate.success || !data.issueLabelCreate.issueLabel)
         throw new LinearApiError(`could not create Linear label ${JSON.stringify(name)}`);
       found.set(name, data.issueLabelCreate.issueLabel.id);

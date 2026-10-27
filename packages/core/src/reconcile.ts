@@ -286,6 +286,11 @@ export class Reconciler {
   private readonly agentQaLabelsLatest = new Map<string, AgentQaLabelFix>();
   /** Label writes queued by an earlier process were reloaded from the store. */
   private agentQaLabelsResumed = false;
+  /**
+   * Backoff of a failing label write, by the same key: when the next retry may run, and when a
+   * permanent (permission) failure was last logged, so a label nobody may create never storms.
+   */
+  private readonly agentQaLabelsBackoff = new Map<string, { nextAt: number; loggedAt?: number }>();
   /** Tail of each ticket's label-retry store writes (keeps them in issue order). */
   private readonly labelRetryOps = new Map<string, Promise<void>>();
   readonly ownerId: string;
@@ -392,6 +397,8 @@ export class Reconciler {
     await this.resumeAgentQaLabels();
     for (const fix of [...this.agentQaLabelsPending.values()]) {
       const project = byId.get(fix.projectId);
+      const backoff = this.agentQaLabelsBackoff.get(`${fix.projectId}\u0000${fix.ticketId}`);
+      if (backoff && this.clock().getTime() < backoff.nextAt) continue;
       if (project) await this.writeAgentQaLabels(project, fix);
     }
     for (const w of await this.o.store.listWorkflows({ status: ["waiting_approval"] })) {
@@ -892,6 +899,8 @@ export class Reconciler {
         for (const old of this.agentQaLabelsLatest.keys())
           if (!this.agentQaLabelsPending.has(old)) this.agentQaLabelsLatest.delete(old);
       this.agentQaLabelsLatest.set(k, fix);
+      // A new verdict is written now, whatever an older one's backoff said.
+      this.agentQaLabelsBackoff.delete(k);
       // Write-ahead: a restart mid-write resumes it (label writes are idempotent).
       await this.queueLabelRetryOp(fix, "persist", (st, f) => st.saveLabelRetry(f));
     }
@@ -915,9 +924,23 @@ export class Reconciler {
         // Progress only: never overwrites (or resurrects) a newer verdict's row.
         await this.queueLabelRetryOp(fix, "persist", (st, f) => st.updateLabelRetry(f));
       }
-      this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
+      const now = this.clock().getTime();
+      const permanent = isPermissionFailure(error);
+      const prev = this.agentQaLabelsBackoff.get(k);
+      const cap = permanent ? LABEL_RETRY_PERMANENT_CAP_MS : LABEL_RETRY_CAP_MS;
+      const delay = Math.min(cap, LABEL_RETRY_BASE_MS * 2 ** Math.min(fix.tries - 1, 20));
+      const log = !permanent || prev?.loggedAt === undefined || now - prev.loggedAt >= HOUR_MS;
+      const loggedAt = log ? now : prev?.loggedAt;
+      // Only the ticket's newest fix sets its backoff (an older one failing late never delays it).
+      if (this.agentQaLabelsLatest.get(k) === fix)
+        this.agentQaLabelsBackoff.set(k, {
+          nextAt: now + delay,
+          ...(loggedAt !== undefined ? { loggedAt } : {}),
+        });
+      if (log) this.trackerFailed(project.id, fix.ticketId, "agent-qa-labels", error);
       return;
     }
+    this.agentQaLabelsBackoff.delete(k);
     // Only this fix's row: a newer verdict's queued write stays. A leftover row only replays
     // idempotent label writes after a restart.
     await this.queueLabelRetryOp(fix, "dequeue", (st, f) =>
@@ -2593,3 +2616,19 @@ export class Reconciler {
 }
 
 type AgentQaLabelFix = LabelRetry;
+
+/** Label-write retry backoff: doubles from the base, capped (an hour for permission failures). */
+const LABEL_RETRY_BASE_MS = 30_000;
+const LABEL_RETRY_CAP_MS = 10 * 60_000;
+const LABEL_RETRY_PERMANENT_CAP_MS = HOUR_MS;
+
+/** The tracker refused the actor the right (e.g. to create a label): only a human can fix it. */
+function isPermissionFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const e = error as Error & { code?: unknown; status?: unknown };
+  return (
+    e.code === "FORBIDDEN" ||
+    e.status === 403 ||
+    /not allowed|permission|forbidden/i.test(e.message)
+  );
+}
