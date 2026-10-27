@@ -54,14 +54,23 @@ function fake(opts: { fail?: Record<string, number>; slowAgentMs?: number } = {}
       return { exitCode: 0, stdout: Buffer.from(out), stderr: "" };
     },
   };
+  const aborted: boolean[] = [];
   const local: CommandRunner = {
-    run: async (argv) => {
-      if (opts.slowAgentMs) await new Promise((r) => setTimeout(r, opts.slowAgentMs));
+    run: async (argv, o) => {
+      if (opts.slowAgentMs)
+        await new Promise<void>((r) => {
+          const t = setTimeout(r, opts.slowAgentMs);
+          o?.signal?.addEventListener("abort", () => {
+            clearTimeout(t);
+            aborted.push(true);
+            r();
+          });
+        });
       writeFileSync(join(argv[2] ?? "", "out", "report.json"), REPORT);
       return { exitCode: 0, stdout: Buffer.alloc(0), stderr: "" };
     },
   };
-  return { steps, remote, local };
+  return { steps, remote, local, aborted };
 }
 
 test("locks the configured simulator by UDID, beats while holding it, unlocks after cleanup", async () => {
@@ -113,11 +122,12 @@ test("a restarted server reclaims its own lock before the first job", async () =
 });
 
 test("a lock lost mid-run (beat exit 12) blocks the result", async () => {
-  const f = fake({ fail: { beat: 12 }, slowAgentMs: 60 });
+  const f = fake({ fail: { beat: 12 }, slowAgentMs: 5_000 });
   const lane = new TapflowIosQaLane(config, { remote: f.remote, local: f.local, beatMs: 10 });
   const out = await lane.run(request());
   expect(out).toMatchObject({
     kind: "blocked",
     reason: expect.stringMatching(/lost its simulator lock/),
   });
+  expect(f.aborted).toEqual([true]);
 });

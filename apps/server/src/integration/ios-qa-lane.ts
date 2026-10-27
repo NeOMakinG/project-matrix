@@ -186,6 +186,8 @@ export class TapflowIosQaLane implements AgentQaPort {
     let beater: ReturnType<typeof setInterval> | undefined;
     // Set when a beat finds the lock gone (reclaimed by another tenant): nothing of this run counts.
     let lost = false;
+    // Losing the lock stops the QA agent at once: it must not keep driving another tenant's sim.
+    const stop = new AbortController();
     try {
       // Two rounds: the simulator host may be briefly overloaded or the sim mid-reboot.
       let info: string | undefined;
@@ -224,7 +226,10 @@ export class TapflowIosQaLane implements AgentQaPort {
       beater = setInterval(() => {
         if (!beater) return;
         this.#step(["beat", job.id], 60_000).catch((e: Error) => {
-          if (e.message.startsWith(WHAT[12] ?? "simulator busy")) lost = true;
+          if (e.message.startsWith(WHAT[12] ?? "simulator busy")) {
+            lost = true;
+            stop.abort();
+          }
           console.error(`[ios-qa-lane] lock beat failed: ${e.message.slice(0, 160)}`);
         });
       }, this.#beatMs);
@@ -267,7 +272,7 @@ export class TapflowIosQaLane implements AgentQaPort {
         "prompt.md",
         qaPrompt(readManual(), request, intro, project.fixtures?.note),
       );
-      await runLocalAgent(this.#local, job.dir, "ios", c.model, c.agentTimeoutMs);
+      await runLocalAgent(this.#local, job.dir, "ios", c.model, c.agentTimeoutMs, stop.signal);
       if (lost)
         throw new Error(
           "simulator busy: the lane lost its simulator lock during the run (another tenant may have used it)",

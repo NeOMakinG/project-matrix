@@ -106,7 +106,8 @@ wait_tapflow_free() {
   done
 }
 # Another Matrix job (any simulator) holds a lock: the build dir and build HOME are shared.
-release() { guard || true; [[ "$(cat "$1/owner" 2>/dev/null || true)" == "$2" ]] && rm -rf "$1"; unguard; }
+# Fails closed: without the guard the lock stays (it goes stale and is reclaimed later).
+release() { guard || return 0; [[ "$(cat "$1/owner" 2>/dev/null || true)" == "$2" ]] && rm -rf "$1"; unguard; }
 lane_running() {
   local l
   for l in "$LOCKS"/*.lock; do
@@ -184,11 +185,13 @@ case "$step" in
     ;;
   reclaim)
     holder="$1"; need holder "$holder" '^[A-Za-z0-9._@-]{1,64}$'
+    guard || die 12 "simulator lock guard busy"
     for l in "$LOCKS"/*.lock "$LEGACY_LOCK"; do
       if [[ -d "$l" && "$(cat "$l/holder" 2>/dev/null || true)" == "$holder" ]]; then
-        guard || true; rm -rf "$l"; unguard; echo "reclaimed the iOS lane lock of a previous $holder"
+        rm -rf "$l"; echo "reclaimed the iOS lane lock of a previous $holder"
       fi
     done
+    unguard
     ;;
   unlock)
     job="$1"; need job "$job" '^[a-z0-9-]{8,64}$'
@@ -347,7 +350,10 @@ SB
     # Build output (node_modules, Pods, DerivedData) is rebuilt from scratch each job anyway:
     # drop it so the shared Mac keeps its disk.
     dir=$(job_dir "$1")
-    if [[ -f "$dir/src" ]]; then w=$(cat "$dir/src"); [[ "$w" == "$ROOT/build/"* && -d "$w/.git" ]] && git -C "$w" clean -qffdx; fi
+    # Only while this job still holds its lock (or no Matrix job does): the build dir is shared.
+    if [[ -f "$dir/src" ]] && { [[ -n "$(held_lock "$1")" ]] || ! lane_running; }; then
+      w=$(cat "$dir/src"); [[ "$w" == "$ROOT/build/"* && -d "$w/.git" ]] && git -C "$w" clean -qffdx
+    fi
     rm -rf "$dir"
     ;;
   *) die 2 "unknown step $step" ;;

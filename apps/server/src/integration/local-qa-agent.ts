@@ -46,11 +46,12 @@ export async function runLocalAgent(
   mode: "ios" | "web",
   model: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<void> {
   const script = join(REPO_ROOT, "ops", "qa-lane", "local-agent.sh");
   const r = await runner.run(
     ["bash", script, dir, mode, model, String(Math.round(timeoutMs / 1000))],
-    { timeoutMs: timeoutMs + 240_000 },
+    { timeoutMs: timeoutMs + 240_000, ...(signal ? { signal } : {}) },
   );
   if (r.exitCode !== 0)
     throw new Error(

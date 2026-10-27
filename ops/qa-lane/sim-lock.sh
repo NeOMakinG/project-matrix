@@ -104,7 +104,7 @@ acquire() {
 }
 
 owned() { [[ "$(cat "$LOCKS/$1.lock/owner" 2>/dev/null || true)" == "$2" ]]; }
-release() { guard || true; owned "$1" "$2" && rm -rf "$LOCKS/$1.lock"; unguard; }
+release() { guard || return 0; owned "$1" "$2" && rm -rf "$LOCKS/$1.lock"; unguard; }
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -133,10 +133,12 @@ case "$cmd" in
     beater="" child=""
     finish() {
       # The command runs in its own process group: stop all of it before giving the lock back.
+      set +e
       [[ -n "$child" ]] && kill -TERM -- "-$child" 2>/dev/null
       [[ -n "$beater" ]] && kill "$beater" 2>/dev/null
       [[ -n "$child" ]] && wait "$child" 2>/dev/null
       release "$udid" "$token"
+      true
     }
     trap 'finish; exit 143' INT TERM HUP
     ( while sleep 240; do owned "$udid" "$token" || exit 0; write_beat "$LOCKS/$udid.lock"; done ) </dev/null >/dev/null 2>&1 &
