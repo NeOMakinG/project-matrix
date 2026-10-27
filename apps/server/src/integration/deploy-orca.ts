@@ -204,11 +204,25 @@ export async function runViaOrca(
       await sleep(opts.pollMs ?? 3_000);
     }
   } finally {
-    if (terminal && worktree)
-      await cli
-        .call(["terminal", "close", "--worktree", `path:${worktree}`, "--all", "--json"])
-        .then(() => trace.push(`${route.environment}: terminal closed`))
-        .catch((e: Error) => trace.push(`terminal close failed: ${e.message.slice(0, 120)}`));
+    // Older Orca hosts refuse one of the two close forms; worktree rm stops what is left.
+    if (terminal && worktree) {
+      const closeErrors: string[] = [];
+      for (const args of [
+        ["terminal", "close", "--terminal", terminal, "--json"],
+        ["terminal", "close", "--worktree", `path:${worktree}`, "--all", "--json"],
+      ]) {
+        const closed = await cli.call(args).then(
+          () => true,
+          (e: Error) => void closeErrors.push(e.message.slice(0, 100)),
+        );
+        if (closed) break;
+      }
+      trace.push(
+        closeErrors.length < 2
+          ? `${route.environment}: terminal closed`
+          : `${route.environment}: terminal left to worktree rm (${closeErrors.join("; ")})`,
+      );
+    }
     if (worktree)
       await cli
         .call(["worktree", "rm", "--worktree", `path:${worktree}`, "--force", "--json"], 180_000)
