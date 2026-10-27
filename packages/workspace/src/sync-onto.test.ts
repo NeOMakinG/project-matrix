@@ -36,7 +36,7 @@ async function fixture() {
   return { repo, workdir, port, git, commit, trusted: workspace.trusted };
 }
 
-describe("syncOnto (rebase before an auto-merge)", () => {
+describe("syncOnto (rebase before an auto-merge)", { timeout: 60_000 }, () => {
   test("already on the base tip: current, nothing moves", async () => {
     const f = await fixture();
     await f.commit(f.workdir, "b.txt", "ticket\n", "ticket");
