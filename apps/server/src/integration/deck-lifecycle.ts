@@ -41,7 +41,7 @@ export class DeckLifecycle {
   readonly #taskCache = new Map<string, CachedTask>();
   /** runId → projectId:ticketId key */
   readonly #runs = new Map<string, string>();
-  #unsubscribe?: () => void;
+  #unsubscribe: (() => void) | undefined = undefined;
 
   constructor(options: DeckLifecycleOptions) {
     this.#fetch = options.fetch ?? globalThis.fetch;

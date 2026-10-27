@@ -7,9 +7,11 @@ import { DeckLifecycle, type DeckConfig } from "./deck-lifecycle.js";
 
 // Minimal Store mock
 function makeStore(github?: string, ticket?: Partial<Ticket>): Store {
-  const project: Partial<StoredProject> = github
-    ? { id: "proj1", matrix: { repo: { github } } as StoredProject["matrix"] }
-    : { id: "proj1" };
+  const project = (
+    github
+      ? { id: "proj1", matrix: { repo: { github } } as StoredProject["matrix"] }
+      : { id: "proj1" }
+  ) as Partial<StoredProject>;
   return {
     getProject: vi.fn().mockResolvedValue(project),
     getIndexedTicket: vi.fn().mockResolvedValue(
