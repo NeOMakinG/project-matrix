@@ -1,4 +1,4 @@
-# Agent QA lane (Android device QA by a QA agent)
+# Agent QA lane (Android, iOS and web QA by a QA agent)
 
 Status: spike 2026-10-25, implemented in the same PR.
 
@@ -216,5 +216,107 @@ child process only. Linear stays on the Matrix host.
 
 ## Out of scope
 
-iOS (tapflow on the Mac mini; an iOS surface is BLOCKED, never passed), Metro/dev-client builds,
-video upload, auto-merge on PASS.
+Metro/dev-client builds, video upload, auto-merge on PASS.
+
+## Surfaces: routing, Android pool, iOS, web (spike + implementation 2026-10-26)
+
+Owner rule: QA is (almost) never a human. Android on the emulator or the Seeker, iOS on the
+tapflow simulator, web in a dedicated Chrome. The human handoff is the last resort: a surface
+whose every automated driver stays unavailable after retries is BLOCKED with that reason and
+`needs-human` (the human tests it, or fixes the driver and removes `needs-human`).
+
+### Routing (`packages/core/src/qa-surfaces.ts`)
+
+Lane surfaces are `android`, `ios`, and `web` when `qa.driver` is `"agent"`. For a ticket:
+
+1. Upper bound: the project's `qa.surfaces` (operator-trusted).
+2. Declarations narrow: ticket labels (`ios`, `platform:android`, `surface:web`, `backend`) and the
+   `QA: Surface:` body line. A declaration naming no configured surface is ignored (ticket text
+   never escapes QA on its own).
+3. The change narrows (host-computed diff from the review context): only `ios/`, `*.ios.tsx`,
+   Podfile, Xcode files → ios; only `android/`, `*.android.ts`, Gradle → android; `*.web.tsx`,
+   `web/`, `public/` → web; anything else UI-ish (`shared`) keeps every selected surface; a path
+   for an unconfigured platform never removes a configured one.
+4. **Backend-only**: when every changed path is backend/docs (`server/`, `backend/`, `api/`,
+   `supabase/`, `functions/`, `migrations/`, `infra/`, `ops/`, `docs/`, `.github/`, `*.md`,
+   `*.sql`, Dockerfiles), no lane runs: the QA phase runs the existing in-run QA (host/api
+   probes, holdout scenarios, the checks that already passed). QA for a backend ticket means:
+   checks + review + holdout scenarios proven by host-executed probes against the API.
+
+A mobile ticket touching both platforms runs both drivers, one after the other
+(`MultiSurfaceAgentQaLane`), and the merged report passes only when every surface passes: one
+FAIL fails it, otherwise one BLOCKED blocks it. Each surface must check every acceptance
+criterion with its own collected screenshot (a criterion seen on Android does not count for iOS).
+Steps, findings and screenshots are prefixed per surface (`[iOS] …`, `ios-s1.png`).
+
+### Android device pool
+
+Lane config: `serial` (primary, e.g. `emulator-5554`) plus `fallbackDevices` tried in order when a
+device is unavailable (exit 11), reserved (exit 13) or unreachable; one more round after
+`retryDelayMs`. A fallback's `appIdSuffix` (default `.qa`) is appended to the app id and handed
+to the build as `APP_ID`: the Seeker keeps its own `ai.traveljournal.app` (different signing key,
+private data) untouched while `ai.traveljournal.app.qa` is installed beside it; the lane never
+uninstalls or wipes. `busy` lists device-host-local `HHMM-HHMM` windows another tenant owns the
+device (Daymark's X scan cron on the Seeker at :10 past 9, 11, 14, 16, 19 and 21 h with up to
+30 min jitter).
+
+### iOS (`ios-qa-lane.ts`, `ops/qa-lane/ios-qa.sh`)
+
+- Simulator host: the Mac mini (`mini@100.105.165.15`), shared tapflow simulator by UDID (never
+  a personal device). Single tenant: `mkdir` lock `/tmp/matrix-qa-ios.lock` (owner, holder,
+  heartbeat, 2 h stale), plus this process's queue.
+- Build on the mini: bare mirror fetched with the mini's `gh`, checkout at the exact head SHA
+  (refused if the PR moved), then the operator's build command (wayline: `npm ci`,
+  `qa-metro-env.mjs simulator <staging> ios` which refuses production, `EXPO_PUBLIC_QA_ENABLED=1`,
+  `expo prebuild -p ios`, `pod install`, `xcodebuild … -sdk iphonesimulator -configuration
+  Release`) with a cleared environment. The `.app`'s bundle id must equal the configured app id.
+- Install with `simctl install` over the existing app (keeps its data), launch, first screenshot.
+  Fixtures: `simctl addmedia` once per (simulator, fixture-set hash).
+- The QA agent runs on the Matrix host (`ops/qa-lane/local-agent.sh`): `claude -p`, cleared env,
+  throwaway HOME, tools = `./qa-ios` (`packages/qa/bin/qa-ios.mjs`: tap, swipe, type, key, home/lock
+  over the tapflow relay WebSocket with the PAT header, locked to the job's UDID) and
+  `./qa-shot <name>` (simctl screenshot over a fixed SSH step). The relay's own MCP server is not
+  used: it connects without the PAT and this relay refuses it; its UI-tree and screenshot routes
+  need a relay-installed build (a PAT with `builds:write`). Secrets: gateway key + tapflow PAT.
+- Residual risk: PR build code runs as the mini's user (which holds a `gh` login); the PAT can
+  drive the relay's other devices. Owner follow-up: a dedicated macOS build user on the mini.
+
+### Web (`web-qa-lane.ts`, `packages/qa/bin/qa-browser.mjs`)
+
+- Target: the PR's preview deploy (`previewUrl` template with `{pr}`, trusted only when the head
+  SHA's commit status with `previewStatus` prefix is `success`, waits up to `previewWaitMs` while
+  pending); otherwise a local build of the head SHA in a rootless podman container (no host
+  mounts but the checkout, no host secrets), served on `127.0.0.1` (refused if the output holds
+  symlinks). Neither → BLOCKED.
+- Browser: `/usr/bin/google-chrome --headless=new` with a throwaway profile under the job dir and
+  a DevTools port on 127.0.0.1 from `ports` (9300-9399), never 9222/9223 (the owner's Chromes).
+- The agent's only tool is `./qa-browser` (open/snapshot/click/fill/press/viewport/screenshot/
+  console/network), navigation limited to the target origin. A lane-owned recorder logs console
+  errors, page errors, failed requests and 4xx/5xx responses; they become "Lane evidence" lines
+  in the Linear report.
+- Single tenant: `/tmp/matrix-qa-web.lock` (reclaimed when its process died).
+
+### Lane config additions
+
+```json
+{
+  "serial": "emulator-5554", "bootEmulator": true,
+  "fallbackDevices": [{ "serial": "SM02E4072815934", "abi": "arm64-v8a", "appIdSuffix": ".qa",
+    "busy": ["0900-1000", "1100-1200", "1400-1500", "1600-1700", "1900-2000", "2100-2200"] }],
+  "ios": { "host": "mini@100.105.165.15", "udid": "<shared sim UDID>",
+    "projects": { "<project-id>": { "repo": "NeOMakinG/wayline", "build": "…", "appId": "com.wayline.app",
+      "app": "app/ios/build/Build/Products/Release-iphonesimulator/*.app" } } },
+  "web": { "projects": { "<project-id>": { "repo": "owner/site",
+    "previewUrl": "https://deploy-preview-{pr}--site.netlify.app", "previewStatus": "netlify/",
+    "build": "npm ci && npm run build", "dist": "dist" } } }
+}
+```
+
+Server env: `MATRIX_QA_NODE_DIR` (node for `qa-browser` and `tapflow-mcp`), optional
+`MATRIX_QA_GATEWAY`, `MATRIX_QA_CLAUDE`, `MATRIX_QA_SECRETS`, `MATRIX_QA_TAPFLOW_MCP`.
+
+iOS build sandbox, measured live (2026-10-26, wayline): the Seatbelt profile breaks Xcode tools
+that sandbox themselves (`sandbox_apply: Operation not permitted` from coremlc; Swift macro
+plugins and SwiftPM manifests likewise). `ios.sandboxBuild: false` runs the build as the mini's
+user, the same exposure as the mini's existing manual lanes. The fix is a dedicated macOS build
+account on the mini (needs the owner's sudo), then `sandboxBuild` can stay false safely.

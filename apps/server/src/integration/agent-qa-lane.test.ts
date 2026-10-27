@@ -105,6 +105,7 @@ test("runs precheck, lock, build, install, agent, collect, then unlocks", async 
     SHA,
     "arm64-v8a",
     "3600",
+    "com.wayline.app",
   ]);
   expect(out.kind).toBe("report");
   if (out.kind !== "report") return;
@@ -306,4 +307,69 @@ test("the committed fixture set loads with names the device host accepts", () =>
   expect(files.length).toBeGreaterThanOrEqual(10);
   for (const f of files)
     expect(f.bytes.subarray(0, 2).equals(Buffer.from([0xff, 0xd8]))).toBe(true);
+});
+
+test("device pool: an unavailable primary falls back to the next device with its app id suffix", async () => {
+  const steps: string[][] = [];
+  const runner: CommandRunner = {
+    run: async (argv) => {
+      const step = argv.slice(3);
+      steps.push(step);
+      if (step[0] === "precheck" && step[1] === "emulator-5554")
+        return {
+          exitCode: 11,
+          stdout: Buffer.alloc(0),
+          stderr: "device emulator-5554 unavailable",
+        };
+      const out =
+        step[0] === "precheck"
+          ? "model=Seeker\nandroid=16\n"
+          : step[0] === "collect"
+            ? `report.json\t${Buffer.from(REPORT).toString("base64")}\n`
+            : "";
+      return { exitCode: 0, stdout: Buffer.from(out), stderr: "" };
+    },
+  };
+  const pooled = laneConfigSchema.parse({
+    ...config,
+    serial: "emulator-5554",
+    retryDelayMs: 0,
+    fallbackDevices: [{ serial: "SM02E4072815934", abi: "arm64-v8a", busy: ["0905-1000"] }],
+  });
+  const lane = new SshAgentQaLane(pooled, { runner, script: "SCRIPT", manual: "M" });
+  const out = await lane.run(request());
+  const pre = steps.filter((s) => s[0] === "precheck");
+  expect(pre.map((s) => s[1])).toEqual(["emulator-5554", "SM02E4072815934"]);
+  expect(pre[1]?.[5]).toBe("0905-1000");
+  const appId = `${Object.values(config.projects)[0]?.appId}.qa`;
+  expect(steps.find((s) => s[0] === "build")?.[7]).toBe(appId);
+  const install = steps.find((s) => s[0] === "install");
+  expect([install?.[2], install?.[4]]).toEqual(["SM02E4072815934", appId]);
+  expect(out.device?.serial).toBe("SM02E4072815934");
+});
+
+test("device pool: every device unavailable after the retry round is BLOCKED, not a pass", async () => {
+  let prechecks = 0;
+  const runner: CommandRunner = {
+    run: async (argv) => {
+      if (argv[3] === "precheck") prechecks++;
+      return {
+        exitCode: argv[3] === "precheck" ? 13 : 0,
+        stdout: Buffer.alloc(0),
+        stderr: "reserved",
+      };
+    },
+  };
+  const pooled = laneConfigSchema.parse({
+    ...config,
+    retryDelayMs: 0,
+    fallbackDevices: [{ serial: "emulator-5556" }],
+  });
+  const out = await new SshAgentQaLane(pooled, { runner, script: "SCRIPT", manual: "M" }).run(
+    request(),
+  );
+  expect(prechecks).toBe(4);
+  expect(out.kind).toBe("blocked");
+  if (out.kind === "blocked")
+    expect(out.reason).toMatch(/all automated Android devices unavailable after retries/);
 });

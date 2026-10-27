@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Matrix agent QA lane, device-host side. Streamed by the Matrix host: `ssh host bash -s -- <step> ...`.
 # Every argument is validated by the caller AND here. Exit codes: 10 host overloaded, 11 device
-# unavailable, 12 lane busy, 20 build failed, 21 install failed, 30 agent failed, 2 bad arguments.
+# unavailable, 12 lane busy, 13 device reserved (busy window), 20 build failed, 21 install failed, 30 agent failed, 2 bad arguments.
 # A device that drops offline (install, seeding, before launch) is reconnected or, for an emulator
 # this host boots, restarted once before the step gives up with 11.
 set -euo pipefail
@@ -54,9 +54,17 @@ lost_device() { grep -qiE "device .*(offline|not found)|no devices/emulators|dev
 step="${1:-}"; shift || true
 case "$step" in
   precheck)
-    serial="$1" boot="$2" max_load_pct="$3" min_mem_mb="$4"
+    serial="$1" boot="$2" max_load_pct="$3" min_mem_mb="$4" busy="${5:-}"
     need serial "$serial" '^[A-Za-z0-9._:-]{1,64}$'
     need boot "$boot" '^[01]$'; need load "$max_load_pct" '^[0-9]{1,3}$'; need mem "$min_mem_mb" '^[0-9]{1,6}$'
+    need busy "$busy" '^([0-9]{4}-[0-9]{4})?(,[0-9]{4}-[0-9]{4}){0,23}$'
+    # Device-host local time windows another tenant owns the device (e.g. a cron scan): skip it.
+    now=$((10#$(date +%H%M)))
+    for w in ${busy//,/ }; do
+      from=$((10#${w%-*})) to=$((10#${w#*-}))
+      # A window may cross midnight (2300-0100).
+      if (( from <= to ? (from <= now && now < to) : (now >= from || now < to) )); then die 13 "device $serial reserved by another tenant until ${w#*-}"; fi
+    done
     cores=$(nproc); load=$(cut -d' ' -f1 /proc/loadavg)
     mem=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
     if awk -v l="$load" -v c="$cores" -v m="$max_load_pct" 'BEGIN{exit !(l*100 > c*m)}'; then
@@ -210,7 +218,8 @@ case "$step" in
     echo "seeded pushed=$pushed present=$kept removed=$removed app_cleared=$cleared"
     ;;
   build)
-    dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" abi="$5" timeout_s="$6"
+    dir=$(job_dir "$1") repo="$2" pr="$3" sha="$4" abi="$5" timeout_s="$6" app_id="${7:-}"
+    need app_id "$app_id" '^([A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+)?$'
     need repo "$repo" '^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$'; need pr "$pr" '^[0-9]{1,9}$'
     need sha "$sha" '^[a-f0-9]{40}$'; need abi "$abi" '^(arm64-v8a|x86_64|armeabi-v7a|x86)$'
     need timeout "$timeout_s" '^[0-9]{2,4}$'; (( timeout_s <= 5400 )) || die 2 "timeout above the lock's stale limit"
@@ -234,7 +243,7 @@ case "$step" in
         timeout -k 10 300 git fetch --quiet --no-tags "file://$2" "$3"
         git checkout --quiet --force --detach "$4"; git clean -qffdx
         git log -1 --format="commit %H %s"' sh "$work" "$mirror" "$sha" "$sha"
-      cd "$work" && as_build ABI="$abi" VERSION_CODE="$(( $(date +%s) / 60 ))" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"
+      cd "$work" && as_build ABI="$abi" APP_ID="$app_id" VERSION_CODE="$(( $(date +%s) / 60 ))" timeout -k 30 "$timeout_s" nice bash "$dir/build.sh"
     ) >"$dir/build.log" 2>&1
     rc=$?
     set -e

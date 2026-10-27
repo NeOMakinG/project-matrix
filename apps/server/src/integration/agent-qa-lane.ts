@@ -62,10 +62,36 @@ const projectSchema = z.object({
     .optional(),
 });
 
+const busyWindows = z
+  .array(z.string().regex(/^([01]\d|2[0-3])[0-5]\d-([01]\d|2[0-4])[0-5]\d$/))
+  .max(24)
+  .default([]);
+
+/** A fallback device: tried in order when the primary is unavailable or reserved. */
+const fallbackDeviceSchema = z.object({
+  serial: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/),
+  bootEmulator: z.boolean().default(false),
+  /**
+   * Appended to the project's appId (and given to the build as `APP_ID`) so the QA build lives
+   * beside an app already on the device (never uninstalled, never wiped). Default `.qa`.
+   */
+  appIdSuffix: z
+    .string()
+    .regex(/^(\.[a-z][a-z0-9_]{0,30})?$/)
+    .default(".qa"),
+  abi: z.enum(["arm64-v8a", "x86_64", "armeabi-v7a", "x86"]).optional(),
+  /** Device-host local `HHMM-HHMM` windows another tenant owns the device (cron scans). */
+  busy: busyWindows,
+});
+
 export const laneConfigSchema = z.object({
   host: z.string().regex(/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.:-]+$|^[A-Za-z0-9_.-]+$/),
   serial: z.string().regex(/^[A-Za-z0-9._:-]{1,64}$/),
   bootEmulator: z.boolean().default(false),
+  busy: busyWindows,
+  fallbackDevices: z.array(fallbackDeviceSchema).max(4).default([]),
+  /** Pause before the second round over the device pool when every device was unavailable. */
+  retryDelayMs: z.number().int().min(0).max(600_000).default(60_000),
   model: z
     .string()
     .regex(/^[a-z0-9.-]{3,60}$/)
@@ -99,7 +125,17 @@ export function loadLaneConfig(path: string): LaneConfig {
   return laneConfigSchema.parse(JSON.parse(readFileSync(path, "utf8")));
 }
 
-class LaneError extends Error {}
+class LaneError extends Error {
+  constructor(
+    message: string,
+    readonly code?: number,
+  ) {
+    super(message);
+  }
+}
+
+/** Exit codes meaning "this device cannot take the job now": try the next one. */
+const DEVICE_UNAVAILABLE = new Set([11, 13, 255]);
 
 /** A holder id the remote script accepts (`^[A-Za-z0-9._@-]{1,64}$`). */
 export function laneHolder(raw: string): string {
@@ -182,12 +218,16 @@ export class SshAgentQaLane implements AgentQaPort {
         10: "device host overloaded",
         11: "device unavailable",
         12: "device lane busy",
+        13: "device reserved",
         20: "build failed",
         21: "install failed",
         30: "QA agent failed",
         255: "device host unreachable over SSH",
       };
-      throw new LaneError(`${what[r.exitCode] ?? `${args[0]} failed (${r.exitCode})`}: ${tail}`);
+      throw new LaneError(
+        `${what[r.exitCode] ?? `${args[0]} failed (${r.exitCode})`}: ${tail}`,
+        r.exitCode,
+      );
     }
     return r.stdout.toString();
   }
@@ -208,7 +248,18 @@ export class SshAgentQaLane implements AgentQaPort {
     const started = Date.now();
     const c = this.config;
     const sig = request.signal;
-    const device: { serial: string; model?: string; android?: string } = { serial: c.serial };
+    const pool = [
+      {
+        serial: c.serial,
+        bootEmulator: c.bootEmulator,
+        appIdSuffix: "",
+        abi: project.abi,
+        busy: c.busy,
+      },
+      ...c.fallbackDevices.map((d) => ({ ...d, abi: d.abi ?? project.abi })),
+    ];
+    let pick = pool[0] as (typeof pool)[number];
+    const device: { serial: string; model?: string; android?: string } = { serial: pick.serial };
     const build = { appId: project.appId, kind: "release", abi: project.abi } as {
       appId: string;
       kind: string;
@@ -217,17 +268,43 @@ export class SshAgentQaLane implements AgentQaPort {
     };
     let locked = false;
     try {
-      const info = await this.#step(
-        [
-          "precheck",
-          c.serial,
-          c.bootEmulator ? "1" : "0",
-          String(c.maxLoadPct),
-          String(c.minMemMb),
-        ],
-        5 * 60_000,
-        sig,
-      );
+      // Device pool: primary first, then the fallbacks; one more round after a pause. Only when
+      // every device stayed unavailable does the job block (and only then does a human step in).
+      let info: string | undefined;
+      const misses: string[] = [];
+      for (let round = 0; round < 2 && info === undefined; round++) {
+        if (round > 0 && c.retryDelayMs > 0)
+          await new Promise((r) => setTimeout(r, c.retryDelayMs));
+        for (const candidate of pool) {
+          try {
+            info = await this.#step(
+              [
+                "precheck",
+                candidate.serial,
+                candidate.bootEmulator ? "1" : "0",
+                String(c.maxLoadPct),
+                String(c.minMemMb),
+                candidate.busy.join(","),
+              ],
+              5 * 60_000,
+              sig,
+            );
+            pick = candidate;
+            break;
+          } catch (error) {
+            const code = error instanceof LaneError ? error.code : undefined;
+            if (code === undefined || !DEVICE_UNAVAILABLE.has(code)) throw error;
+            misses.push(`${candidate.serial}: ${(error as Error).message.slice(0, 120)}`);
+          }
+        }
+      }
+      if (info === undefined)
+        throw new LaneError(
+          `all automated Android devices unavailable after retries (${misses.slice(-pool.length).join("; ")})`,
+        );
+      device.serial = pick.serial;
+      build.appId = `${project.appId}${pick.appIdSuffix}`;
+      build.abi = pick.abi;
       const model = info.match(/^model=(.{1,60})$/m)?.[1];
       const android = info.match(/^android=(.{1,20})$/m)?.[1];
       if (model) device.model = model;
@@ -251,29 +328,25 @@ export class SshAgentQaLane implements AgentQaPort {
           project.repo,
           String(request.pullRequest.number),
           request.headSha,
-          project.abi,
+          build.abi,
           String(Math.round(c.buildTimeoutMs / 1000)),
+          build.appId,
         ],
         c.buildTimeoutMs + 15 * 60_000,
         sig,
       );
       const version = (
-        await this.#step(["install", job, c.serial, project.apk, project.appId], 25 * 60_000, sig)
+        await this.#step(["install", job, pick.serial, project.apk, build.appId], 25 * 60_000, sig)
       ).trim();
       if (/^[\w.+-]{1,40}$/.test(version)) build.version = version;
-      if (project.fixtures) await this.#seed(job, project.fixtures, project.appId, sig);
+      if (project.fixtures) await this.#seed(job, project.fixtures, pick.serial, build.appId, sig);
       await this.#step(
-        [
-          "write",
-          job,
-          "prompt.md",
-          b64(this.prompt(request, project.appId, project.fixtures?.note)),
-        ],
+        ["write", job, "prompt.md", b64(this.prompt(request, build.appId, project.fixtures?.note))],
         60_000,
         sig,
       );
       await this.#step(
-        ["agent", job, c.model, String(Math.round(c.agentTimeoutMs / 1000)), c.serial],
+        ["agent", job, c.model, String(Math.round(c.agentTimeoutMs / 1000)), pick.serial],
         c.agentTimeoutMs + 120_000,
         sig,
       );
@@ -319,6 +392,7 @@ export class SshAgentQaLane implements AgentQaPort {
   async #seed(
     job: string,
     fixtures: NonNullable<LaneConfig["projects"][string]["fixtures"]>,
+    serial: string,
     appId: string,
     sig: AbortSignal,
   ): Promise<void> {
@@ -332,7 +406,7 @@ export class SshAgentQaLane implements AgentQaPort {
         );
     }
     const out = await this.#step(
-      ["seed", job, this.config.serial, fixtures.deviceDir, appId],
+      ["seed", job, serial, fixtures.deviceDir, appId],
       10 * 60_000,
       sig,
     );

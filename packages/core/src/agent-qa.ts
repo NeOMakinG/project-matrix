@@ -81,6 +81,8 @@ export interface AgentQaDevice {
   serial: string;
   model?: string;
   android?: string;
+  /** Any other OS/runtime line ("iOS 18.2", "Chrome 141, 1280x800"); shown instead of Android. */
+  os?: string;
 }
 
 export interface AgentQaBuild {
@@ -104,6 +106,8 @@ export type AgentQaOutcome =
       device: AgentQaDevice;
       build: AgentQaBuild;
       durationMs: number;
+      /** Lane-collected evidence lines (console errors, failed requests), untrusted text. */
+      evidence?: string[];
     }
   | { kind: "blocked"; reason: string; device?: AgentQaDevice; build?: AgentQaBuild };
 
@@ -170,7 +174,12 @@ export function effectiveVerdict(
   code?: readonly CodeCriterionResult[],
 ): { verdict: AgentQaVerdict; note?: string } {
   if (code) return splitVerdict(report, criteriaCount, shots, code);
-  const failedSteps = report.steps.filter((s) => !s.ok).length;
+  // A step the agent could not run (tooling/environment) is no defect: it never makes a FAIL, and
+  // the criterion it belongs to is not covered (a PASS cannot stand on an untested part).
+  const failedSteps = report.steps.filter((s) => !s.ok && !s.notTested).length;
+  const untested = new Set(
+    report.steps.flatMap((s) => (s.notTested && s.criterion ? [s.criterion] : [])),
+  );
   const serious = report.findings.filter((f) => f.severity !== "P3").length;
   if (report.verdict === "PASS") {
     if (!report.steps.length)
@@ -182,15 +191,15 @@ export function effectiveVerdict(
     const evidenced = (s: AgentQaReport["steps"][number]) =>
       !shots || (s.screenshot !== undefined && shots.has(s.screenshot));
     const covered = new Set(
-      report.steps.flatMap((s) => (s.criterion && evidenced(s) ? [s.criterion] : [])),
+      report.steps.flatMap((s) => (s.criterion && s.ok && evidenced(s) ? [s.criterion] : [])),
     );
     const missing = Array.from({ length: criteriaCount }, (_, i) => i + 1).filter(
-      (n) => !covered.has(n),
+      (n) => !covered.has(n) || untested.has(n),
     );
     if (!failedSteps && !serious && missing.length)
       return {
         verdict: "BLOCKED",
-        note: `the QA agent did not check acceptance criteria ${missing.join(", ")} with a collected screenshot`,
+        note: `the QA agent did not fully check acceptance criteria ${missing.join(", ")} with a collected screenshot`,
       };
     if (failedSteps || serious)
       return {
@@ -423,7 +432,7 @@ export function renderAgentQaReport(
     ? `[draft PR](${ctx.pullRequestUrl})`
     : "draft PR";
   const device = outcome.device
-    ? `${md(outcome.device.model ?? outcome.device.serial, 80)}${outcome.device.android ? `, Android ${md(outcome.device.android, 20)}` : ""}`
+    ? `${md(outcome.device.model ?? outcome.device.serial, 160)}${outcome.device.os ? `, ${md(outcome.device.os, 80)}` : outcome.device.android ? `, Android ${md(outcome.device.android, 20)}` : ""}`
     : "n/a";
   const build = outcome.build
     ? `${md(outcome.build.appId, 80)}${outcome.build.version ? ` ${md(outcome.build.version, 40)}` : ""} (${md(outcome.build.kind, 30)}${outcome.build.abi ? `, ${md(outcome.build.abi, 20)}` : ""})`
@@ -506,6 +515,15 @@ export function renderAgentQaReport(
           const id = ctx.filed?.get(i);
           return `${finding(f)} Cause: ${f.cause === "environment" ? "environment" : "pre-existing"}; check: ${md(f.causeCheck, 300)}.${id ? ` Filed as ${md(id, 40)}.` : ""}`;
         })
+        .join("\n"),
+    );
+  }
+  if (outcome.evidence?.length) {
+    lines.push("### Lane evidence");
+    lines.push(
+      outcome.evidence
+        .slice(0, 30)
+        .map((e) => `- ${md(e, 300)}`)
         .join("\n"),
     );
   }

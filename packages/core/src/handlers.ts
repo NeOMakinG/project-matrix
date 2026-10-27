@@ -36,6 +36,7 @@ import {
   isManualQaHandoff,
   manualQaPlan,
   manualQaReceipt,
+  ticketSurfaces,
 } from "./manual-qa.js";
 import { phaseResources, phaseTimeoutMs, resolveModel, selectModel } from "./models.js";
 import type {
@@ -55,6 +56,7 @@ import type {
   VerifyPort,
 } from "./ports-internal.js";
 import { formatQaEvidence, persistedQaReceipt, scenarioEvidence } from "./qa-evidence.js";
+import { routeQaSurfaces } from "./qa-surfaces.js";
 import {
   lanePrompt,
   parseFindings,
@@ -673,7 +675,26 @@ const qa =
   async (ctx) => {
     try {
       await ctx.validateDesign?.();
-      const plan = manualQaPlan(ctx.project, ctx.ticket, deps.qa?.surfaces);
+      // The host-computed diff narrows platform-specific changes and spots backend-only ones;
+      // unknown (no context or it failed) means no path narrowing, never fewer surfaces.
+      const changed = deps.reviewContext
+        ? await deps.reviewContext(ctx).then(
+            (c) => c.changedFiles,
+            () => undefined,
+          )
+        : undefined;
+      const plan = manualQaPlan(ctx.project, ctx.ticket, deps.qa?.surfaces, changed);
+      const route = routeQaSurfaces(
+        ctx.project,
+        ctx.ticket,
+        changed,
+        ticketSurfaces(ctx.ticket.body),
+      );
+      if (route.backendOnly)
+        ctx.emit(
+          "backend-only change: device/browser QA skipped, the existing checks decide",
+          "log",
+        );
       if (plan.mode === "unavailable") {
         const summary = `no ${plan.surfaces.join("/")} QA driver on this host; set the project's qa.driver to "manual" (human) or "agent" (agent QA lane) to test the draft PR`;
         ctx.emit(summary, "error");
