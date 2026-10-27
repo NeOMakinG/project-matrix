@@ -83,7 +83,7 @@ bash "$repo/ops/bosgame/install-gitleaks.sh" "${MATRIX_GITLEAKS:-$HOME/tools/bin
 (cd "$repo/apps/dashboard" && "$HOME/.bun/bin/bun" run build >/dev/null)
 podman build -q -t matrix-runner:dev --build-arg BUN_SHA256="$MATRIX_BUN_SHA256" \
   -f "$repo/packages/sandbox/images/runner/Containerfile" "$repo/packages/sandbox" >/dev/null
-bash "$repo/ops/bosgame/check-runner-image.sh" matrix-runner:dev git codex claude node bun
+bash "$repo/ops/bosgame/check-runner-image.sh" matrix-runner:dev git codex claude node bun pnpm
 
 cat > "$HOME/.local/bin/matrix-cli" <<WRAP
 #!/usr/bin/env bash

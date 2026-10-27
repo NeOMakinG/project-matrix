@@ -267,6 +267,10 @@ export const HUMAN_STOP = "stopped by human";
 
 /** Abort reason of a run a human stopped (vs. timeouts, lease loss, shutdown). */
 export class HumanStopError extends Error {}
+/** Abort reason when this reconciler shuts down (deploy/restart): the run is re-queued, never counted. */
+export class ShutdownError extends Error {}
+export const INTERRUPTED_SUMMARY =
+  "interrupted by reconciler shutdown; re-queued (not counted as an attempt)";
 
 const ACTIVE_STATUSES = ["pending", "running", "waiting_approval"] as const;
 
@@ -312,6 +316,8 @@ export class Reconciler {
   /** Consecutive quota deferrals per workflow; past the cap a failure counts as an attempt. */
   private readonly quotaDeferrals = new Map<string, number>();
   private usage: Promise<ProviderUsage> | undefined;
+  /** Set by stop(): a shutting-down reconciler never dispatches again (re-queued runs wait). */
+  private stopping = false;
 
   constructor(private readonly o: ReconcilerOptions) {
     this.clock = o.clock ?? (() => new Date());
@@ -338,7 +344,9 @@ export class Reconciler {
   }
 
   stop(): void {
-    for (const run of this.active.values()) run.controller.abort(new Error("reconciler stopped"));
+    this.stopping = true;
+    for (const run of this.active.values())
+      run.controller.abort(new ShutdownError("reconciler stopped"));
   }
 
   private get maxRequeues(): number {
@@ -396,6 +404,7 @@ export class Reconciler {
         continue;
       }
       if (this.o.projectDispatchAllowed?.(project.id) === false) continue;
+      if (this.stopping) break;
       const result = await this.dispatch(project, w);
       this.usage = undefined;
       if (result === "dispatched") report.dispatched.push(w.ticketId);
@@ -2299,9 +2308,15 @@ export class Reconciler {
         .cleanup({ workdir: w.workdir, ref: w.workspaceRef })
         .catch(() => undefined);
     }
-    const quota = fenced
-      ? undefined
-      : await this.quotaOutcome(project.id, w.ticketId, runId, outcome);
+    // Shutdown (a deploy restarting the server) is never the ticket's failure: re-queue it as is.
+    const interrupted =
+      !fenced && !humanStop && signal.reason instanceof ShutdownError && !runTimeout.aborted;
+    if (interrupted)
+      outcome = { ...outcome, ok: false, summary: INTERRUPTED_SUMMARY, runStatus: "cancelled" };
+    const quota =
+      fenced || interrupted
+        ? undefined
+        : await this.quotaOutcome(project.id, w.ticketId, runId, outcome);
     // A quota failure is never a completed step (so it re-runs, not replays) nor an attempt.
     if (quota)
       outcome = {
@@ -2312,7 +2327,8 @@ export class Reconciler {
       };
     await this.finish(project, runId, key, outcome, reserved, fenced, humanStop !== undefined);
     if (fenced) return;
-    if (quota) await this.deferForQuota(project, latest as WorkflowState, quota);
+    if (interrupted) await this.requeueInterrupted(latest as WorkflowState);
+    else if (quota) await this.deferForQuota(project, latest as WorkflowState, quota);
     else await this.transition(project, latest as WorkflowState, outcome);
   }
 
@@ -2364,6 +2380,21 @@ export class Reconciler {
       ticketId,
     });
     return cooldown;
+  }
+
+  /** Puts a run interrupted by shutdown back in the queue now: same phase, attempt unchanged. */
+  private async requeueInterrupted(w: WorkflowState): Promise<void> {
+    const next: WorkflowState = { ...w, status: "pending", lastError: INTERRUPTED_SUMMARY };
+    delete next.leaseOwner;
+    delete next.leaseExpiresAt;
+    delete next.nextAttemptAt;
+    try {
+      const saved = await this.o.store.saveWorkflow(next);
+      this.o.bus.publish({ type: "workflow.changed", workflow: saved });
+    } catch (error) {
+      // Someone else moved the workflow meanwhile (cancel, takeover): their state wins.
+      if (!(error instanceof VersionConflictError)) throw error;
+    }
   }
 
   /** Puts the workflow back in the queue until the provider's cooldown ends; attempt unchanged. */

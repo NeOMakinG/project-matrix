@@ -24,5 +24,22 @@ ARG CODEX_VERSION=latest
 RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" "@openai/codex@${CODEX_VERSION}" \
   && npm cache clean --force
 
+# pnpm through corepack (bundled with Node 22). Each repo's `packageManager` field picks its
+# version; checks run offline, so every pinned version a project uses is pre-fetched into a
+# world-readable COREPACK_HOME (the first one is the default when a repo pins none). Add a
+# project's pin here and rebuild; an unfetched pin fails the capability preflight, not the ticket.
+ARG PNPM_VERSIONS="11.10.0 10.31.0"
+ENV COREPACK_HOME=/opt/corepack \
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+  COREPACK_ENABLE_AUTO_PIN=0 \
+  COREPACK_ENABLE_STRICT=0
+RUN corepack enable pnpm \
+  && for v in ${PNPM_VERSIONS}; do \
+    printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' && corepack install -g "pnpm@${v}" || exit 1; \
+  done \
+  && corepack install -g "pnpm@${PNPM_VERSIONS%% *}" \
+  && test "$(cd /tmp && pnpm --version)" = "${PNPM_VERSIONS%% *}" \
+  && chmod -R a+rX "${COREPACK_HOME}"
+
 RUN mkdir -p /work /run/matrix /opt/matrix
 WORKDIR /work

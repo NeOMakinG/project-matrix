@@ -13,7 +13,7 @@ podman run --rm --network=none --userns=keep-id --cap-drop=all \
   "$image" sh -eu -c '
     for tool do
       command -v "$tool" >/dev/null || { echo "Missing required stack tool: $tool" >&2; exit 127; }
-      case "$tool" in go|sqlc) "$tool" version;; git|node|bun|codex|claude|cargo|rustc|python3) "$tool" --version;; *) echo "Required executable present: $tool";; esac
+      case "$tool" in go|sqlc) "$tool" version;; git|node|bun|codex|claude|cargo|rustc|python3|pnpm) "$tool" --version;; *) echo "Required executable present: $tool";; esac
     done
     if command -v bun >/dev/null; then test "$(bun --version)" = 1.3.9; fi
   ' matrix-preflight "$@"
