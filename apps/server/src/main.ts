@@ -5,6 +5,7 @@ import { type CredentialSource, resolveCredential } from "@matrix/sandbox";
 import { hashToken, KeyStore } from "./auth/keys.js";
 import { createServer } from "./http/app.js";
 import { parseDeployHosts } from "./integration/deploy-plan.js";
+import { DeckLifecycle, type DeckConfig } from "./integration/deck-lifecycle.js";
 import { parseRepoRoots } from "./integration/existing-repo.js";
 import { createFactory } from "./integration/factory.js";
 import { parseLimitsEnv } from "./integration/host-limits.js";
@@ -118,6 +119,56 @@ const factory = await createFactory({
 });
 if (!env.MATRIX_DATABASE_URL) {
   console.warn("MATRIX_DATABASE_URL not set: using the in-memory store (state is lost on restart)");
+}
+
+// Deck lifecycle mirroring: Matrix ticket events → EagleRay deck(s).
+// Per-deck keys read from 0600 files; MATRIX_DECK_REPOS maps "owner/repo" → deck name.
+if (env.MATRIX_DECK_URL) {
+  const deckBaseUrl = env.MATRIX_DECK_URL.replace(/\/$/, "");
+  const repoToDeck = new Map<string, string>(
+    Object.entries(
+      env.MATRIX_DECK_REPOS ? (JSON.parse(env.MATRIX_DECK_REPOS) as Record<string, string>) : {},
+    ),
+  );
+  // Build decks map from available keys.
+  const deckKeyFiles: Record<string, string | undefined> = {
+    delta: env.MATRIX_DECK_KEY_FILE,
+    tj: env.MATRIX_DECK_TJ_KEY_FILE,
+    station: env.MATRIX_DECK_STATION_KEY_FILE,
+  };
+  const decks = new Map<string, DeckConfig>();
+  for (const [name, keyFile] of Object.entries(deckKeyFiles)) {
+    if (!keyFile) continue;
+    try {
+      const key = readFileSync(keyFile, "utf8").trim();
+      if (key) decks.set(name, { name, url: deckBaseUrl, key });
+    } catch {
+      console.warn(`deck-lifecycle: could not read key file for deck "${name}": ${keyFile}`);
+    }
+  }
+  if (decks.size > 0 && repoToDeck.size > 0) {
+    const lifecycle = new DeckLifecycle({
+      bus: factory.bus,
+      store: factory.store,
+      decks,
+      repoToDeck,
+      log: (msg) => console.log(msg),
+    });
+    lifecycle.start();
+    console.log(
+      `deck-lifecycle: active (${decks.size} deck(s), ${repoToDeck.size} repo mapping(s))`,
+    );
+    // Register Matrix factory as an agent on startup (idempotent).
+    for (const [, deck] of decks) {
+      fetch(`${deckBaseUrl}/agents/me`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${deck.key}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Matrix factory", type: "automation" }),
+        signal: AbortSignal.timeout(10_000),
+      }).catch(() => {});
+      break; // Register once (first available deck)
+    }
+  }
 }
 
 const control = createServer({
