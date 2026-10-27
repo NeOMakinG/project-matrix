@@ -30,6 +30,8 @@ export interface PullRequestRecord {
   headSha: string;
   url: string;
   at: string;
+  /** Earlier heads Matrix itself pushed to this branch (newest last, at most 20). */
+  previous?: string[];
 }
 
 export interface GitHubPullRequestsOptions {
@@ -285,6 +287,11 @@ export class GitHubPullRequests implements PullRequestPort {
         headSha: request.headSha,
         url: result.url,
         at: new Date(now).toISOString(),
+        previous: known
+          ? [...(known.previous ?? []), known.headSha]
+              .filter((sha) => sha !== request.headSha)
+              .slice(-20)
+          : [],
       };
       this.#records.set(key, record);
       this.#state.save({ prs: [...this.#records.values()] });
@@ -640,7 +647,15 @@ export class GitHubPullRequests implements PullRequestPort {
     if (!repo?.github || !known) return undefined;
     const { repo: slug, number } = prNumber(known.url);
     const pr = await this.#pull(slug, number);
-    if (pr.merged || pr.state !== "open" || !SHA.test(pr.headSha) || pr.headSha === known.headSha)
+    // A head Matrix itself pushed earlier is GitHub lagging behind Matrix's latest push, not an
+    // external push.
+    if (
+      pr.merged ||
+      pr.state !== "open" ||
+      !SHA.test(pr.headSha) ||
+      pr.headSha === known.headSha ||
+      known.previous?.includes(pr.headSha)
+    )
       return undefined;
     const base = project.baseBranch;
     if (!validBranch(base)) throw new Error("invalid base branch");
@@ -667,6 +682,8 @@ export class GitHubPullRequests implements PullRequestPort {
       `refs/remotes/origin/${base}^{commit}`,
     ]);
     await this.#fastForwardBase(project.repoPath, gitDir, base, tip);
+    // The fork point against today's base tip (possibly older than the author's): the trusted
+    // BASE only bounds which commits count as ticket work; a stale fork is rebased before merge.
     const forkSha = await this.#git(gitDir, ["merge-base", tip, fetched]);
     if (!SHA.test(forkSha)) throw new Error("adopted PR head shares no history with the base");
     await this.#assertNoMatrixArtifacts(gitDir, base, fetched);

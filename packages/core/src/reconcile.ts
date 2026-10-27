@@ -986,17 +986,30 @@ export class Reconciler {
     this.externalHeadAt.set(key, now);
     try {
       const external = await port.externalHead(project, w.ticketId);
-      if (!external) return false;
       const head = await this.o.git.headSha(w.workdir);
-      if (external.headSha === head) return false;
-      await this.o.git.adoptHead(w.workdir, external.headSha, external.forkSha);
-      await this.requeueForBase(
-        (await this.o.store.getProject(project.id)) ?? project,
-        w,
-        "checks",
-        `adopted the PR head ${external.headSha.slice(0, 12)} pushed outside Matrix (Matrix had ${head.slice(0, 12)}); checks, review and QA run again on it`,
-      );
-      return true;
+      const fresh = (await this.o.store.getProject(project.id)) ?? project;
+      if (external && external.headSha !== head) {
+        await this.o.git.adoptHead(w.workdir, external.headSha, external.forkSha);
+        await this.requeueForBase(
+          fresh,
+          w,
+          "checks",
+          `adopted the PR head ${external.headSha.slice(0, 12)} pushed outside Matrix (Matrix had ${head.slice(0, 12)}); checks, review and QA run again on it`,
+        );
+        return true;
+      }
+      // An adoption whose requeue was lost (crash, version race) left an unvalidated head: re-run.
+      const qa = await this.latestRun(w, "qa");
+      if (qa?.headSha && qa.headSha !== head && (await this.o.git.isClean(w.workdir))) {
+        await this.requeueForBase(
+          fresh,
+          w,
+          "checks",
+          `the branch head ${head.slice(0, 12)} differs from the QA-validated ${qa.headSha.slice(0, 12)}; checks, review and QA run again`,
+        );
+        return true;
+      }
+      return false;
     } catch (error) {
       this.trackerFailed(project.id, w.ticketId, "adopt-head", error);
       return false;
