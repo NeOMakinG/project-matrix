@@ -193,7 +193,10 @@ async function typeScript(
     if (!ready) await sleep(500);
   }
   if (!ready) throw new Error("orca route: the remote shell never became ready");
-  await send(`umask 077; _mx_f="\${TMPDIR:-/tmp}/mx-${nonce}.b64"; : >"$_mx_f"`);
+  // The trap removes a partial upload when the terminal is closed (HUP) on any failure path.
+  await send(
+    `umask 077; _mx_f="\${TMPDIR:-/tmp}/mx-${nonce}.b64"; trap 'rm -f "$_mx_f"' EXIT HUP INT TERM; : >"$_mx_f"`,
+  );
   for (let i = 0; i < encoded.length; i += CHUNK)
     await send(`printf %s ${encoded.slice(i, i + CHUNK)} >>"$_mx_f"`);
   // Runs only a complete, decodable upload; anything else prints the failure sentinel.
