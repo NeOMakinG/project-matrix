@@ -7,10 +7,9 @@ import { DeckLifecycle, type DeckConfig } from "./deck-lifecycle.js";
 
 // Minimal Store mock
 function makeStore(github?: string, ticket?: Partial<Ticket>): Store {
-  const project: Partial<StoredProject> = {
-    id: "proj1",
-    matrix: github ? ({ repo: { github } } as StoredProject["matrix"]) : undefined,
-  };
+  const project: Partial<StoredProject> = github
+    ? { id: "proj1", matrix: { repo: { github } } as StoredProject["matrix"] }
+    : { id: "proj1" };
   return {
     getProject: vi.fn().mockResolvedValue(project),
     getIndexedTicket: vi.fn().mockResolvedValue(
@@ -90,11 +89,12 @@ describe("DeckLifecycle", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [searchCall, createCall] = fetchMock.mock.calls;
+    const searchCall = fetchMock.mock.calls[0]!;
+    const createCall = fetchMock.mock.calls[1]!;
     expect(searchCall[0]).toContain("/tasks?q=");
     expect(createCall[0]).toContain("/tasks");
     expect(createCall[1].method).toBe("POST");
-    const body = JSON.parse(createCall[1].body);
+    const body = JSON.parse(createCall[1].body as string);
     expect(body.title).toBe("Add dark mode");
     expect(body.status).toBe("in_progress");
     expect(body.description).toContain("linearId:ticket1");
@@ -144,9 +144,9 @@ describe("DeckLifecycle", () => {
     await new Promise((r) => setTimeout(r, 50));
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const activityCall = fetchMock.mock.calls[1];
+    const activityCall = fetchMock.mock.calls[1]!;
     expect(activityCall[0]).toContain("/activities");
-    const body = JSON.parse(activityCall[1].body);
+    const body = JSON.parse(activityCall[1].body as string);
     expect(body.summary).toContain("Matrix picked up ticket");
 
     lifecycle.stop();
@@ -198,9 +198,9 @@ describe("DeckLifecycle", () => {
     });
     await new Promise((r) => setTimeout(r, 50));
 
-    const prCall = fetchMock.mock.calls[2];
+    const prCall = fetchMock.mock.calls[2]!;
     expect(prCall[0]).toContain("/activities");
-    const body = JSON.parse(prCall[1].body);
+    const body = JSON.parse(prCall[1].body as string);
     expect(body.summary).toContain("PR opened");
     expect(body.summary).toContain("https://github.com/pr/1");
     expect(body.entityId).toBe("task-pr");
@@ -260,10 +260,10 @@ describe("DeckLifecycle", () => {
     });
     await new Promise((r) => setTimeout(r, 50));
 
-    const patchCall = fetchMock.mock.calls[2];
+    const patchCall = fetchMock.mock.calls[2]!;
     expect(patchCall[0]).toContain("/tasks/task-done");
     expect(patchCall[1].method).toBe("PATCH");
-    const body = JSON.parse(patchCall[1].body);
+    const body = JSON.parse(patchCall[1].body as string);
     expect(body.status).toBe("done");
 
     lifecycle.stop();

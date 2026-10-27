@@ -46,18 +46,20 @@ export class DeckLifecycle {
   constructor(options: DeckLifecycleOptions) {
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#retryDelays = options.retryDelays ?? DEFAULT_RETRY_DELAYS;
-    const { fetch: _f, retryDelays: _r, ...rest } = options;
-    this.#o = { log: () => {}, ...rest };
+    const { fetch: _f, retryDelays: _r, log, ...rest } = options;
+    this.#o = { log: log ?? (() => {}), ...rest };
   }
 
   start(): () => void {
-    this.#unsubscribe ??= this.#o.bus.subscribe((event) => {
-      void this.#on(event).catch((err) => {
-        this.#o.log(
-          `deck-lifecycle: unhandled error: ${err instanceof Error ? err.message : String(err)}`,
-        );
+    if (!this.#unsubscribe) {
+      this.#unsubscribe = this.#o.bus.subscribe((event) => {
+        void this.#on(event).catch((err) => {
+          this.#o.log(
+            `deck-lifecycle: unhandled error: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
       });
-    });
+    }
     return () => this.stop();
   }
 
@@ -75,15 +77,16 @@ export class DeckLifecycle {
     let lastErr: unknown;
     for (let attempt = 0; attempt <= this.#retryDelays.length; attempt++) {
       try {
-        const res = await this.#fetch(url, {
+        const init: RequestInit = {
           method,
           headers: {
             Authorization: `Bearer ${key}`,
             "Content-Type": "application/json",
           },
-          body: body !== undefined ? JSON.stringify(body) : undefined,
           signal: AbortSignal.timeout(15_000),
-        });
+        };
+        if (body !== undefined) init.body = JSON.stringify(body);
+        const res = await this.#fetch(url, init);
         if (res.status === 429 && attempt < this.#retryDelays.length) {
           await new Promise((resolve) => setTimeout(resolve, this.#retryDelays[attempt]));
           continue;
