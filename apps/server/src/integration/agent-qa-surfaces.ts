@@ -134,8 +134,18 @@ export function combineOutcomes(
     // Each surface keeps its share of the 40-step report, failures and criterion checks first,
     // so one long report never pushes another surface's evidence out.
     const share = Math.max(1, Math.floor(40 / results.length));
-    const rank = (x: (typeof outcome.report.steps)[number]) => (!x.ok ? 0 : x.criterion ? 1 : 2);
-    for (const s of [...outcome.report.steps].sort((a, b) => rank(a) - rank(b)).slice(0, share))
+    // Failures first, then the first evidenced passing step of each criterion, then the rest.
+    const firstOk = new Set<number>();
+    const rank = (x: (typeof outcome.report.steps)[number], i: number) => {
+      if (!x.ok) return 0;
+      if (x.criterion && x.screenshot && !firstOk.has(x.criterion)) {
+        firstOk.add(x.criterion);
+        return 1;
+      }
+      return 2 + i / 1000;
+    };
+    const ranked = outcome.report.steps.map((x, i) => ({ x, r: rank(x, i) }));
+    for (const { x: s } of ranked.sort((a, b) => a.r - b.r).slice(0, share))
       steps.push({ ...s, action: `[${t}] ${s.action}`, screenshot: rename(s.screenshot) });
     for (const f of outcome.report.findings)
       findings.push({ ...f, title: `[${t}] ${f.title}`, screenshot: rename(f.screenshot) });

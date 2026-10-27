@@ -6,7 +6,15 @@
 // ./qa-shot (simctl over SSH): the relay's screenshot/UI-tree routes need a relay-installed build.
 import { randomUUID } from "node:crypto";
 
-const { TAPFLOW_RELAY_WS, TAPFLOW_TOKEN, QA_UDID } = process.env;
+import { readFileSync } from "node:fs";
+
+const { TAPFLOW_RELAY_WS, QA_TOKEN_FILE, QA_UDID } = process.env;
+let TAPFLOW_TOKEN = "";
+try {
+  TAPFLOW_TOKEN = QA_TOKEN_FILE ? readFileSync(QA_TOKEN_FILE, "utf8").trim() : "";
+} catch {
+  // reported below
+}
 const fail = (m, code = 2) => {
   console.error(m);
   process.exit(code);

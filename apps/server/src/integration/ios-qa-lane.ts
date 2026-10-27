@@ -224,7 +224,7 @@ export class TapflowIosQaLane implements AgentQaPort {
       writeTool(
         job.dir,
         "qa-ios",
-        `#!/usr/bin/env bash\nexec env QA_UDID=${c.udid} ${q(node)} ${q(join(REPO_ROOT, "packages", "qa", "bin", "qa-ios.mjs"))} "$@"\n`,
+        `#!/usr/bin/env bash\nexec env QA_UDID=${c.udid} QA_TOKEN_FILE=${q(`${job.dir}.tok`)} ${q(node)} ${q(join(REPO_ROOT, "packages", "qa", "bin", "qa-ios.mjs"))} "$@"\n`,
       );
       const intro = `Test the draft PR https://github.com/${project.repo}/pull/${request.pullRequest.number} at commit ${request.headSha} on the iOS simulator. The PR's simulator build of \`${project.appId}\` is installed and was just launched on the simulator ${device.model ?? "iPhone"} (${device.os ?? "iOS"}). See the screen with \`./qa-shot <name>\` (writes out/shots/<name>.png; Read the PNG to look at it) and drive it with \`./qa-ios\` (run \`./qa-ios help\`): tap/swipe take FRACTIONS of the screen (x = pixelX / imageWidth of your screenshot, 0..1). Both tools are locked to that one simulator. Write out/report.json (you can only write under out/).`;
       writeFileSafe(
@@ -255,8 +255,9 @@ export class TapflowIosQaLane implements AgentQaPort {
     } catch (error) {
       return { kind: "blocked", reason: (error as Error).message.slice(0, 600), device, build };
     } finally {
+      // Cleanup touches the shared build dir: it runs while this job still holds the lock.
+      await this.#step(["cleanup", job.id], 5 * 60_000).catch(() => undefined);
       if (locked) await this.#step(["unlock", job.id], 60_000).catch(() => undefined);
-      await this.#step(["cleanup", job.id], 60_000).catch(() => undefined);
       removeLocalJob(job.dir);
     }
   }

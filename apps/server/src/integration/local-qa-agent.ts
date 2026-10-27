@@ -87,6 +87,7 @@ export function removeLocalJob(dir: string): void {
   if (!/\/mx-[a-z0-9-]{8,40}$/.test(dir)) return;
   rmSync(dir, { recursive: true, force: true });
   rmSync(`${dir}.mcp.json`, { force: true });
+  rmSync(`${dir}.tok`, { force: true });
 }
 
 /** The QA agent's prompt: manual, job text, optional test data, then fenced untrusted ticket data. */

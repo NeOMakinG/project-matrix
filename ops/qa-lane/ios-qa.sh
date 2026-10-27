@@ -11,7 +11,9 @@ set -euo pipefail
 ROOT="${MATRIX_QA_ROOT:-$HOME/matrix-qa.noindex}"
 LOCK=/tmp/matrix-qa-ios.lock
 STALE_S=7200
-NODE_BIN="${MATRIX_QA_NODE_BIN:-$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)}"
+NODE_BIN="${MATRIX_QA_NODE_BIN:-$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | tail -1)}"
+# Never an empty PATH entry (it would put the PR checkout's own binaries first).
+[[ -n "$NODE_BIN" && -d "$NODE_BIN" ]] || { echo "no node found (set MATRIX_QA_NODE_BIN)" >&2; exit 2; }
 BASE_PATH="$NODE_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH="$BASE_PATH"
 
