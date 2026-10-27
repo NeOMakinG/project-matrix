@@ -88,7 +88,15 @@ export function deployPort(o: DeployStageOptions): DeployPort {
       const held: string[] = [];
       for (const step of plan.steps) {
         if (step.action === "dry-run" && step.host) {
-          const r = await rehearse(o, plan, step, profile, ctx.signal);
+          const r = await rehearse(o, plan, step, profile, ctx.signal).catch(
+            (e: Error): Receipt[] => [
+              {
+                kind: "log",
+                ok: false,
+                summary: `${step.target}: dry run on ${step.host} failed: ${e.message.slice(0, 300)}`,
+              },
+            ],
+          );
           receipts.push(...r);
           if (r.some((x) => !x.ok))
             return {
@@ -372,7 +380,10 @@ export function verifyPort(o: DeployStageOptions): VerifyPort {
   };
 }
 
-/** `$1` app, `$2` image that must still be newest, `$3` image to roll back to. */
+/**
+ * `$1` app, `$2` image that must still be newest, `$3` image to roll back to. Needs python3 on
+ * the host (macOS and the Linux hosts ship it); without it the guard exits 4 and nothing deploys.
+ */
 export const GUARDED_ROLLBACK = [
   'cur="$(fly releases -a "$1" --json --image | python3 -c \'import json,sys; r=json.load(sys.stdin); print(max(r, key=lambda x: x.get("Version", 0)).get("ImageRef", ""))\')" || exit 4',
   '[ "$cur" = "$2" ] || { echo "rollback refused: newest release is now $cur" >&2; exit 3; }',
