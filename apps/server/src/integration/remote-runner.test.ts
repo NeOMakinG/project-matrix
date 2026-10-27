@@ -63,6 +63,7 @@ function orca(stdout: string, rc = 0, att?: string) {
   const calls: string[][] = [];
   let nonce = "";
   let typed = "";
+  let ready = "";
   const cli: OrcaCaller = {
     async call(args) {
       calls.push(args);
@@ -77,6 +78,7 @@ function orca(stdout: string, rc = 0, att?: string) {
       }
       if (args[1] === "send") {
         const text = args[args.indexOf("--text") + 1]!;
+        if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
         const m = /^printf %s (\S+) >>/.exec(text);
         if (m) typed += m[1];
         if (text.includes('/bin/sh -c "$_mx_s"'))
@@ -84,7 +86,7 @@ function orca(stdout: string, rc = 0, att?: string) {
         return {};
       }
       if (args[1] === "read") {
-        if (!nonce) return { terminal: { tail: ["$ "] } };
+        if (!nonce) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
         const body = Buffer.concat([
           Buffer.from(
             `rc=${rc} out=${Buffer.byteLength(stdout)} full=${Buffer.byteLength(stdout)} att=${att === undefined ? -1 : Buffer.byteLength(att)}\n${stdout}${att ?? ""}`,

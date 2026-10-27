@@ -147,7 +147,8 @@ export function decodePayload(
 
 /** Longest startup command typed as-is (under macOS's 1024-byte canonical line limit). */
 export const INLINE_COMMAND_MAX = 900;
-const CHUNK = 3_000;
+/** base64 per typed line: the whole line stays under macOS's 1024-byte canonical limit. */
+const CHUNK = 880;
 
 /** Waits for the prompt, then types the base64 script in short lines into a 0600 file and runs it. */
 async function typeScript(
@@ -175,7 +176,23 @@ async function typeScript(
   // A plain POSIX shell takes the long lines: zsh line-editor plugins (highlighting,
   // autosuggestions) re-render on every typed character and crawl on 3000-byte lines.
   await send("exec /bin/sh");
-  await sleep(1_000);
+  // Readiness: the sentinel only prints once /bin/sh itself is reading our input.
+  await send(`printf '__MX%s_%s__\\n' R ${nonce}`);
+  let ready = false;
+  for (let i = 0; i < 60 && !ready; i++) {
+    const read = record(
+      record(
+        await cli.call(
+          ["terminal", "read", "--terminal", terminal, "--limit", "200", "--json"],
+          budget(30_000),
+        ),
+      ).terminal,
+    );
+    const tail = Array.isArray(read.tail) ? read.tail.map(String) : [];
+    ready = tail.some((l) => l.trim() === `__MXR_${nonce}__`);
+    if (!ready) await sleep(500);
+  }
+  if (!ready) throw new Error("orca route: the remote shell never became ready");
   await send(`umask 077; _mx_f="\${TMPDIR:-/tmp}/mx-${nonce}.b64"; : >"$_mx_f"`);
   for (let i = 0; i < encoded.length; i += CHUNK)
     await send(`printf %s ${encoded.slice(i, i + CHUNK)} >>"$_mx_f"`);

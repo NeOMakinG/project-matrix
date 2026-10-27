@@ -45,6 +45,7 @@ describe("orca deploy route", () => {
     const calls: string[][] = [];
     let script = "";
     let typed = "";
+    let ready = "";
     const cli: OrcaCaller = {
       async call(args) {
         calls.push(args);
@@ -59,6 +60,7 @@ describe("orca deploy route", () => {
         }
         if (args[1] === "send") {
           const text = args[args.indexOf("--text") + 1]!;
+          if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
           const m = /^printf %s (\S+) >>/.exec(text);
           if (m) typed += m[1];
           if (text.includes('/bin/sh -c "$_mx_s"'))
@@ -66,7 +68,7 @@ describe("orca deploy route", () => {
           return {};
         }
         if (args[1] === "read") {
-          if (!script) return { terminal: { tail: ["$ "] } };
+          if (!script) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
           const lines = shRun(script.replace(/git [^&]*&& |test [^&]*&& /g, ""), "echo deployed");
           return { terminal: { tail: lines, nextCursor: "9" } };
         }
@@ -190,6 +192,7 @@ describe("orca route: long scripts", () => {
     const calls: string[][] = [];
     let encoded = "";
     let ran = false;
+    let ready = "";
     const cli: OrcaCaller = {
       async call(args) {
         calls.push(args);
@@ -201,13 +204,14 @@ describe("orca route: long scripts", () => {
         if (args[1] === "send") {
           const text = args[args.indexOf("--text") + 1]!;
           expect(text.length).toBeLessThan(3_100);
+          if (text.startsWith("printf '__MX%s_%s__")) ready = text.split(" ").at(-1)!;
           const m = /^printf %s (\S+) >>/.exec(text);
           if (m) encoded += m[1];
           if (text.includes('/bin/sh -c "$_mx_s"')) ran = true;
           return {};
         }
         if (args[1] === "read") {
-          if (!ran) return { terminal: { tail: ["$ "] } };
+          if (!ran) return { terminal: { tail: ready ? [`__MXR_${ready}__`] : ["$ "] } };
           const script = Buffer.from(encoded, "base64").toString();
           const lines = execFileSync("/bin/sh", ["-c", `fly() { echo big; }\n${script}`], {
             encoding: "utf8",
