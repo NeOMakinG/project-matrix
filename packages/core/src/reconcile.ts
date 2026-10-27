@@ -1022,12 +1022,20 @@ export class Reconciler {
     }
     // A head moved after QA (a rebase whose requeue was lost to a crash or a version race) is
     // never merged and never waited on: checks, review and QA run again on it.
+    // Uncommitted changes here can only be an interrupted conflict sync (git conflict markers):
+    // Implement resolves and commits them.
     const qa = await this.latestRun(w, "qa");
-    if (
-      qa?.headSha &&
-      qa.headSha !== headSha &&
-      (await this.o.git.isClean(w.workdir).catch(() => false))
-    ) {
+    const clean = await this.o.git.isClean(w.workdir).catch(() => undefined);
+    if (clean === false) {
+      await this.requeueForBase(
+        fresh,
+        w,
+        "implement",
+        "the run worktree has uncommitted changes while waiting to merge (an interrupted base sync leaves git conflict markers): resolve every conflict marker, keeping the base's newer behaviour plus this ticket's change, and keep the tests passing",
+      );
+      return;
+    }
+    if (clean && qa?.headSha && qa.headSha !== headSha) {
       await this.requeueForBase(
         fresh,
         w,
