@@ -48,6 +48,12 @@ import { gatewayModels, type ModelLister } from "./model-plan.js";
 import { redactNativeDiagnostic } from "./native-diagnostics.js";
 import { type OrcaRuntimeBridge, orcaBridge, trustedTicketWorktree } from "./orca-runtime.js";
 import { committedQaSnapshot } from "./qa-snapshot.js";
+import {
+  type RemoteRunners,
+  remoteAwareSandbox,
+  remoteContext,
+  remoteLineExecutor,
+} from "./remote-runner.js";
 import { hostReviewContext } from "./review-context.js";
 import type { Runtime } from "./runtime.js";
 import { scenarioQaDriver } from "./scenario-qa.js";
@@ -107,6 +113,8 @@ export interface NativeRuntimeOptions {
   projectPolicy?: (projectId: string) => Promise<ProjectEditPolicy>;
   /** Gateway model list (default: GET <gatewayUrl>/v1/models with the gateway key). Tests inject it. */
   listModels?: ModelLister;
+  /** Runner hosts (MATRIX_RUNNER_HOSTS) for implement / checks runs routed off this host. */
+  remote?: RemoteRunners;
 }
 
 export interface ProjectEditPolicy {
@@ -175,13 +183,24 @@ function sandboxedRunner(
       opts.stateOwner?.assertOwned();
       // Any model the gateway serves (Claude, GPT, GLM, ...); never an id it does not list.
       await served.assert(req.model);
-      assertHostCapacity(Math.min(req.resources?.memoryGb ?? 4, sandboxResourceCeiling().memoryGb));
-      await validateImageCapabilities(
-        sandbox,
+      const remote = await remoteContext(
+        opts.remote,
+        req.host,
+        req.projectId,
         req.workdir,
-        await requiredStackTools(req.workdir, [RUNNER_BINARY[id]]),
-        signal,
+        req.runId,
       );
+      if (!remote) {
+        assertHostCapacity(
+          Math.min(req.resources?.memoryGb ?? 4, sandboxResourceCeiling().memoryGb),
+        );
+        await validateImageCapabilities(
+          sandbox,
+          req.workdir,
+          await requiredStackTools(req.workdir, [RUNNER_BINARY[id]]),
+          signal,
+        );
+      }
       const expectedHead = req.phase === "implement" ? await git.headSha(req.workdir) : undefined;
       const policy: ProjectEditPolicy = (await opts.projectPolicy?.(req.projectId)) ?? {
         external: false,
@@ -189,23 +208,32 @@ function sandboxedRunner(
       const approvedPaths = policy.editablePaths?.length
         ? policy.editablePaths
         : NATIVE_SOURCE_PATHS;
-      const viaOrca = await orca?.phase(req);
+      const viaOrca = remote ? undefined : await orca?.phase(req);
+      const gw = opts.gatewayUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
       const ran = await createRunner(id, {
-        gateway: {
-          anthropicBaseUrl: local,
-          openaiBaseUrl: `${local}/v1`,
-          apiKey: RUN_TOKEN_PLACEHOLDER,
-        },
-        executor: sandbox.lineExecutor({
-          runId: req.runId,
-          projectId: req.projectId,
-          ticketId: req.ticketId,
-          network: "gateway",
-          ...(req.resources ? { resources: req.resources } : {}),
-          ...(viaOrca ? { launcher: viaOrca.launcher } : {}),
-        }),
+        // Runner hosts call the gateway directly; their own key replaces the placeholder there.
+        gateway: remote
+          ? { anthropicBaseUrl: gw, openaiBaseUrl: `${gw}/v1`, apiKey: RUN_TOKEN_PLACEHOLDER }
+          : {
+              anthropicBaseUrl: local,
+              openaiBaseUrl: `${local}/v1`,
+              apiKey: RUN_TOKEN_PLACEHOLDER,
+            },
+        executor: remote
+          ? remoteLineExecutor(remote, {
+              placeholder: RUN_TOKEN_PLACEHOLDER,
+              collect: req.phase === "implement" && req.readOnly !== true,
+            })
+          : sandbox.lineExecutor({
+              runId: req.runId,
+              projectId: req.projectId,
+              ticketId: req.ticketId,
+              network: "gateway",
+              ...(req.resources ? { resources: req.resources } : {}),
+              ...(viaOrca ? { launcher: viaOrca.launcher } : {}),
+            }),
         skipPermissions: true,
-        baseEnv: id === "codex" ? { CODEX_HOME: "/home/agent" } : {},
+        baseEnv: id === "codex" && !remote ? { CODEX_HOME: "/home/agent" } : {},
       }).run(
         {
           ...req,
@@ -404,7 +432,8 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
     cacheRoot: join(opts.dataDir, "deps-cache"),
     policy: (ctx) => {
       const repo = (ctx.project as StoredProject).matrix?.repo;
-      if (!repo) return undefined;
+      // Checks on a runner host install dependencies there (the remote job runs repo.setup).
+      if (!repo || ctx.host) return undefined;
       return {
         ...(repo.setup ? { steps: repo.setup } : {}),
         ...(repo.setupScripts ? { scripts: true } : {}),
@@ -528,7 +557,7 @@ export function nativeRuntime(opts: NativeRuntimeOptions): Runtime & { broker: C
       },
       runners,
       reviewContext: (ctx) => hostReviewContext(ctx, git, trusted, opts.dataDir),
-      sandbox: checkedSandbox,
+      sandbox: remoteAwareSandbox(checkedSandbox, opts.remote),
       setup,
       // Flaky-test retries start from the same clean committed tree the checks ran on.
       resetForRetry: async (ctx) => {

@@ -102,6 +102,8 @@ export interface SandboxExecSpec {
   workdir: string;
   /** Runner machine when not the project host (the runtime routes the command there). */
   host?: string;
+  /** Set with `host`: whose repo checkout the remote machine uses. */
+  projectId?: string;
   cmd: string[];
   env?: Record<string, string>;
   network: NetworkPolicy;

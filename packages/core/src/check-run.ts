@@ -31,7 +31,7 @@ export async function runCheck(
   const res = await sandbox.exec(
     {
       workdir,
-      ...(ctx.host ? { host: ctx.host } : {}),
+      ...(ctx.host ? { host: ctx.host, projectId: ctx.project.id } : {}),
       cmd: inv.cmd,
       ...("env" in inv && inv.env ? { env: inv.env } : {}),
       network: "none",

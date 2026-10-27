@@ -26,6 +26,7 @@ import type { DeployHost } from "./deploy-plan.js";
 import { deployPort, verifyPort } from "./deploy-stage.js";
 import { externalAwareMerge, GitHubPullRequests } from "./github-pr.js";
 import { autoLimits } from "./host-limits.js";
+import { type RunnerHost, runnerSlots } from "./remote-runner.js";
 import { repoKnowledge } from "./knowledge.js";
 import type { StoredProject } from "./mapping.js";
 import { gatewayModels } from "./model-plan.js";
@@ -60,6 +61,8 @@ export interface FactoryOptions {
   host: string;
   /** Deploy capability map (`MATRIX_DEPLOY_HOSTS`). */
   deployHosts?: DeployHost[];
+  /** Runner hosts (MATRIX_RUNNER_HOSTS): implement / checks runs off this host, via Orca. */
+  runnerHosts?: RunnerHost[];
   /** Deck note before coordinated deploys (EagleRay activity log). */
   deckNote?: (summary: string) => Promise<void>;
   /** Run concurrency per host (`MATRIX_LIMITS`); defaults keep one heavy run per host. */
@@ -190,6 +193,15 @@ async function createOwnedFactory(
           ...options.native,
           dataDir: options.dataDir,
           stateOwner,
+          ...(options.runnerHosts?.length
+            ? {
+                remote: {
+                  hosts: options.runnerHosts,
+                  project: (projectId: string) => store.getProject(projectId),
+                  ...(options.native.orcaBinary ? { orcaBinary: options.native.orcaBinary } : {}),
+                },
+              }
+            : {}),
           // Resolved per run (the store exists by then): existing repos' edit policy.
           projectPolicy: async (projectId: string) => {
             const project = (await store.getProject(projectId)) as StoredProject | null;
@@ -302,6 +314,9 @@ async function createOwnedFactory(
     ...(options.runtime === "fake" && !options.quota ? {} : resolveQuota(options.quota)),
     ...(runtime.gatewayReady ? { gatewayReady: runtime.gatewayReady } : {}),
     host: options.host,
+    ...(options.runnerHosts?.length && options.runtime !== "fake"
+      ? { runnerHosts: runnerSlots(options.runnerHosts) }
+      : {}),
     scratchRoot: join(options.dataDir, "scratch"),
     pullRequests: stateOwner.fence(pullRequests),
     ...(agentQa ? { agentQa } : {}),

@@ -7,6 +7,7 @@ import { createServer } from "./http/app.js";
 import { parseDeployHosts } from "./integration/deploy-plan.js";
 import { parseRepoRoots } from "./integration/existing-repo.js";
 import { createFactory } from "./integration/factory.js";
+import { parseRunnerHosts } from "./integration/remote-runner.js";
 import { parseLimitsEnv } from "./integration/host-limits.js";
 import { parseQuotaEnv } from "./integration/quota-config.js";
 import { parseRuntimeKind } from "./integration/runtime.js";
@@ -97,6 +98,7 @@ const factory = await createFactory({
   dataDir,
   host: env.MATRIX_NODE_NAME ?? "localhost",
   deployHosts: parseDeployHosts(env.MATRIX_DEPLOY_HOSTS),
+  runnerHosts: parseRunnerHosts(env.MATRIX_RUNNER_HOSTS),
   ...(deckNote ? { deckNote } : {}),
   ...(env.MATRIX_LIMITS ? { limits: parseLimitsEnv(env.MATRIX_LIMITS) ?? {} } : {}),
   ...(env.MATRIX_QUOTA ? { quota: parseQuotaEnv(env.MATRIX_QUOTA) } : {}),
